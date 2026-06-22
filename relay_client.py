@@ -44,6 +44,7 @@ class RelayClient:
         self._send_lock = asyncio.Lock()
         self._auth_future: asyncio.Future | None = None
         self._ack_waiters: dict[tuple[str, str], list[asyncio.Future]] = {}
+        self._delivery_tasks: set[asyncio.Task] = set()
         self.agent_id = config.agent_id
 
     async def connect(self) -> bool:
@@ -59,6 +60,12 @@ class RelayClient:
         self._closed.set()
         self._cancel_task(self._heartbeat_task)
         self._cancel_task(self._receiver_task)
+        delivery_tasks = list(self._delivery_tasks)
+        for task in delivery_tasks:
+            self._cancel_task(task)
+        if delivery_tasks:
+            await asyncio.gather(*delivery_tasks, return_exceptions=True)
+            self._delivery_tasks.clear()
         if self.ws is not None:
             await self.ws.close()
         self.ws = None
@@ -68,7 +75,7 @@ class RelayClient:
     async def send_accepted(self, delivery_id: str, session_key: str | None) -> None:
         await self._send_with_ack(
             accepted_message(delivery_id, session_key),
-            ack_events=("delivery.accepted",),
+            ack_events=("delivery.accepted", "command.accepted"),
             delivery_id=delivery_id,
             fallback=lambda: self._accepted_http(delivery_id, session_key),
         )
@@ -84,7 +91,7 @@ class RelayClient:
     async def send_kept_silent(self, delivery_id: str, session_key: str | None, reason: str) -> None:
         await self._send_with_ack(
             kept_silent_message(delivery_id, session_key, reason),
-            ack_events=("kept_silent.accepted",),
+            ack_events=("kept_silent.accepted", "command.accepted"),
             delivery_id=delivery_id,
             fallback=lambda: self._kept_silent_http(delivery_id, reason),
         )
@@ -164,7 +171,22 @@ class RelayClient:
 
         envelope = build_inbound_envelope(message)
         if envelope is not None:
-            await self.on_delivery(envelope)
+            self._dispatch_delivery(envelope)
+
+    def _dispatch_delivery(self, envelope) -> None:
+        task = asyncio.create_task(self.on_delivery(envelope), name=f"claworld-delivery-{envelope.delivery_id}")
+        self._delivery_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._delivery_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("claworld delivery handler failed: %s", exc)
+
+        task.add_done_callback(_done)
 
     async def _send_json(self, payload: dict) -> None:
         if self.ws is None:
@@ -179,32 +201,38 @@ class RelayClient:
             await asyncio.to_thread(fallback)
             return
 
-        ack_future = self._register_ack_waiter(ack_events, delivery_id)
+        ack_ids = _ack_ids_for_payload(payload, delivery_id)
+        ack_future = self._register_ack_waiter(ack_events, ack_ids)
         try:
             await self._send_json(payload)
             await asyncio.wait_for(ack_future, timeout=timeout)
         except Exception as exc:
-            self.logger.warning("claworld relay ack failed; using HTTP fallback: %s", exc)
+            detail = str(exc) or type(exc).__name__
+            self.logger.warning("claworld relay ack failed; using HTTP fallback: %s", detail)
             await asyncio.to_thread(fallback)
         finally:
-            self._remove_ack_waiter(ack_events, delivery_id, ack_future)
+            self._remove_ack_waiter(ack_events, ack_ids, ack_future)
 
-    def _register_ack_waiter(self, ack_events: tuple[str, ...], delivery_id: str) -> asyncio.Future:
+    def _register_ack_waiter(self, ack_events: tuple[str, ...], delivery_id: str | tuple[str, ...]) -> asyncio.Future:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
+        delivery_ids = _normalize_ack_ids(delivery_id)
         for event in ack_events:
-            self._ack_waiters.setdefault((event, delivery_id), []).append(future)
+            for ack_id in delivery_ids:
+                self._ack_waiters.setdefault((event, ack_id), []).append(future)
         return future
 
-    def _remove_ack_waiter(self, ack_events: tuple[str, ...], delivery_id: str, future: asyncio.Future) -> None:
+    def _remove_ack_waiter(self, ack_events: tuple[str, ...], delivery_id: str | tuple[str, ...], future: asyncio.Future) -> None:
+        delivery_ids = _normalize_ack_ids(delivery_id)
         for event in ack_events:
-            key = (event, delivery_id)
-            waiters = self._ack_waiters.get(key)
-            if not waiters:
-                continue
-            self._ack_waiters[key] = [item for item in waiters if item is not future]
-            if not self._ack_waiters[key]:
-                self._ack_waiters.pop(key, None)
+            for ack_id in delivery_ids:
+                key = (event, ack_id)
+                waiters = self._ack_waiters.get(key)
+                if not waiters:
+                    continue
+                self._ack_waiters[key] = [item for item in waiters if item is not future]
+                if not self._ack_waiters[key]:
+                    self._ack_waiters.pop(key, None)
 
     def _resolve_ack_waiters(self, event: str, message: dict) -> None:
         data = message.get("data") if isinstance(message.get("data"), dict) else {}
@@ -215,15 +243,25 @@ class RelayClient:
             or data.get("keptSilentDeliveryId")
             or data.get("deliveryId")
             or data.get("inboxItemId")
-            or (command.get("deliveryId") if command.get("name") == "delivery.reply.requested" else None)
-            or (command.get("aggregateId") if command.get("name") == "delivery.reply.requested" else None)
-            or (command.get("partitionKey") if command.get("name") == "delivery.reply.requested" else None)
+            or command.get("deliveryId")
+            or command.get("aggregateId")
+            or command.get("partitionKey")
             or message.get("deliveryId")
         )
         delivery_id = str(delivery_id or "").strip()
         if not delivery_id:
+            self.logger.debug("claworld relay ack ignored without delivery/session key: event=%s", event)
             return
         waiters = self._ack_waiters.pop((event, delivery_id), [])
+        if not waiters:
+            self.logger.debug(
+                "claworld relay ack had no waiter: event=%s key=%s pending=%s",
+                event,
+                delivery_id,
+                [f"{item[0]}:{item[1]}" for item in self._ack_waiters.keys()],
+            )
+            return
+        self.logger.debug("claworld relay ack resolved: event=%s key=%s waiters=%d", event, delivery_id, len(waiters))
         for future in waiters:
             if not future.done():
                 future.set_result(message)
@@ -315,6 +353,23 @@ def _delivery_status(body) -> str | None:
         return None
     delivery = body.get("delivery") if isinstance(body.get("delivery"), dict) else {}
     return str(delivery.get("status") or body.get("status") or "").strip() or None
+
+
+def _ack_ids_for_payload(payload: dict, delivery_id: str) -> tuple[str, ...]:
+    return _normalize_ack_ids((delivery_id, payload.get("deliveryId"), payload.get("sessionKey")))
+
+
+def _normalize_ack_ids(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    values = value if isinstance(value, tuple) else (value,)
+    result = []
+    seen = set()
+    for item in values:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        result.append(normalized)
+        seen.add(normalized)
+    return tuple(result)
 
 
 def _request_json_with_delivery_visibility_retry(config: ClaworldConfig, method: str, path: str, **kwargs) -> dict:

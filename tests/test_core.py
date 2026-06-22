@@ -23,7 +23,7 @@ from claworld_hermes_plugin import hooks as claworld_hooks
 from claworld_hermes_plugin.config import ClaworldConfig
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url
 from claworld_hermes_plugin import tools as claworld_tools
-from claworld_hermes_plugin.protocol import build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
+from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
 from claworld_hermes_plugin.working_memory import build_prompt_context, ensure_working_memory, read_session_index, record_claworld_route
@@ -93,6 +93,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(normalize_ws_url("https://api.example.com"), "wss://api.example.com/ws")
         self.assertEqual(normalize_ws_url("http://api.example.com/relay"), "ws://api.example.com/relay/ws")
         self.assertEqual(normalize_http_base_url("wss://api.example.com/ws"), "https://api.example.com")
+
+    def test_auth_message_uses_agent_token_credential_shape(self):
+        payload = auth_message("agent-1", "token-1", "client-1")
+        self.assertEqual(payload["type"], "auth")
+        self.assertEqual(payload["agentId"], "agent-1")
+        self.assertEqual(payload["credential"], {"type": "agent_token", "token": "token-1"})
 
     def test_builds_safe_text_for_slash_delivery(self):
         envelope = build_inbound_envelope(
@@ -189,6 +195,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("hello from peer", text)
         self.assertIn("Backend says this is a warm intro.", text)
         self.assertIn("Peer profile summary.", text)
+        self.assertIn("Claworld live conversation rules", text)
+        self.assertIn("Continue naturally", text)
+        self.assertIn("[[request_conversation_end]]", text)
+        self.assertIn("NO_REPLY", text)
 
     def test_merges_top_level_delivery_fields_into_payload(self):
         envelope = build_inbound_envelope(
@@ -246,6 +256,47 @@ class PluginEntryTests(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(plugin._env_enablement()["app_token"], "tok")
+
+
+class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_home_channel_notice_does_not_consume_replyable_delivery(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d1",
+            relay_session_key="conversation:abc",
+            chat_id="conversation-abc",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        notice = (
+            "No home channel is set for Claworld. "
+            "A home channel is where Hermes delivers cron job results and cross-platform messages.\n\n"
+            "Type /sethome to make this chat your home channel, or ignore to skip."
+        )
+        notice_result = await adapter.send(record.chat_id, notice)
+
+        self.assertTrue(notice_result.success)
+        self.assertFalse(record.replied)
+        self.assertEqual(adapter.client.replies, [])
+
+        reply_result = await adapter.send(record.chat_id, "real peer-visible reply")
+
+        self.assertTrue(reply_result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
 
 
 class ToolSchemaTests(unittest.TestCase):
@@ -643,6 +694,50 @@ class ToolRoutingTests(unittest.TestCase):
 
 
 class RelayClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delivery_dispatch_does_not_block_ack_processing(self):
+        import asyncio
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def on_delivery(envelope):
+            started.set()
+            await finish.wait()
+
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=on_delivery)
+        future = client._register_ack_waiter(("command.accepted",), "d1")
+        await client._handle_raw_message(
+            json.dumps(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "d1",
+                        "sessionKey": "conversation:abc",
+                        "payload": {"text": "hello"},
+                    },
+                }
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await client._handle_raw_message(
+            json.dumps(
+                {
+                    "event": "command.accepted",
+                    "data": {
+                        "command": {
+                            "name": "delivery.reply.requested",
+                            "partitionKey": "d1",
+                        }
+                    },
+                }
+            )
+        )
+
+        self.assertTrue(future.done())
+        finish.set()
+        await asyncio.gather(*list(client._delivery_tasks), return_exceptions=True)
+
     async def test_resolves_command_accepted_ack_by_command_delivery_id(self):
         cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
         client = RelayClient(cfg, on_delivery=lambda envelope: None)
@@ -660,6 +755,57 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertTrue(future.done())
+
+    async def test_resolves_command_accepted_ack_by_session_key_alias(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=lambda envelope: None)
+        future = client._register_ack_waiter(("command.accepted",), ("d1", "conversation:abc"))
+        client._resolve_ack_waiters(
+            "command.accepted",
+            {
+                "event": "command.accepted",
+                "data": {
+                    "command": {
+                        "name": "delivery.accepted.requested",
+                        "partitionKey": "conversation:abc",
+                    }
+                },
+            },
+        )
+        self.assertTrue(future.done())
+
+    async def test_resolves_kept_silent_command_accepted_ack_by_partition_key(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=lambda envelope: None)
+        future = client._register_ack_waiter(("command.accepted",), "d1")
+        client._resolve_ack_waiters(
+            "command.accepted",
+            {
+                "event": "command.accepted",
+                "data": {
+                    "command": {
+                        "name": "delivery.kept_silent.requested",
+                        "partitionKey": "d1",
+                    }
+                },
+            },
+        )
+        self.assertTrue(future.done())
+
+    async def test_accepted_and_kept_silent_wait_for_command_accepted_ack(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=lambda envelope: None)
+        calls = []
+
+        async def fake_send_with_ack(payload, *, ack_events, delivery_id, fallback):
+            calls.append((payload["type"], ack_events, delivery_id))
+
+        client._send_with_ack = fake_send_with_ack
+        await client.send_accepted("d1", "conversation:abc")
+        await client.send_kept_silent("d2", "conversation:def", "no_renderable_reply")
+
+        self.assertIn("command.accepted", calls[0][1])
+        self.assertIn("command.accepted", calls[1][1])
 
     def test_delivery_visibility_retry_retries_404_delivery_not_found(self):
         calls = []
@@ -679,6 +825,23 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AdapterCompletionTests(unittest.TestCase):
+    def test_adapter_exposes_basic_chat_info(self):
+        adapter = import_adapter_with_gateway_shim()
+        instance = adapter.ClaworldPlatformAdapter(types.SimpleNamespace(extra={}))
+
+        async def run():
+            return await instance.get_chat_info("conversation:test")
+
+        self.assertEqual(
+            self._run_async(run()),
+            {"name": "conversation:test", "type": "dm", "chat_id": "conversation:test"},
+        )
+
+    def _run_async(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
     def test_completion_silence_reason_matches_claworld_delivery_semantics(self):
         adapter = import_adapter_with_gateway_shim()
         record = adapter.DeliveryRecord(
@@ -721,6 +884,7 @@ class HttpClientTests(unittest.TestCase):
     def test_auth_headers_and_url(self):
         cfg = ClaworldConfig(server_url="https://api.example.com", api_key="api", app_token="tok")
         headers = auth_headers(cfg)
+        self.assertIn("claworld-hermes-plugin/0.1.0", headers["User-Agent"])
         self.assertEqual(headers["authorization"], "Bearer tok")
         self.assertEqual(headers["x-claworld-app-token"], "tok")
         self.assertEqual(headers["x-api-key"], "api")

@@ -13,6 +13,7 @@ from .protocol import normalize_http_base_url
 
 PLUGIN_VERSION = "claworld-hermes-plugin/0.1.0"
 PLUGIN_VERSION_HEADER = "x-claworld-plugin-version"
+USER_AGENT = f"{PLUGIN_VERSION} hermes-agent"
 
 
 class ClaworldHttpError(RuntimeError):
@@ -24,6 +25,8 @@ class ClaworldHttpError(RuntimeError):
 
 def auth_headers(config: ClaworldConfig, base: dict | None = None) -> dict:
     headers = dict(base or {})
+    if not any(name.lower() == "user-agent" for name in headers):
+        headers["User-Agent"] = USER_AGENT
     headers[PLUGIN_VERSION_HEADER] = PLUGIN_VERSION
     if config.api_key:
         headers["x-api-key"] = config.api_key

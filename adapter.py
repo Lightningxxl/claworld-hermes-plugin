@@ -67,6 +67,9 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: str | None = None, metadata: dict | None = None) -> SendResult:
         if self.client is None:
             return SendResult(success=False, error="Claworld relay is not connected", retryable=True)
+        if _is_hermes_home_channel_notice(content):
+            logger.info("suppressed Hermes home-channel notice for Claworld chat_id=%s", chat_id)
+            return SendResult(success=True)
         record = self._record_for_send(chat_id, reply_to)
         if record is None:
             return SendResult(success=False, error=f"No Claworld delivery is known for chat_id={chat_id}")
@@ -100,6 +103,10 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
                 logger.warning("failed to mark Claworld delivery kept_silent: %s", exc)
         elif record.event_type == "delivery":
             record.replied = True
+
+    async def get_chat_info(self, chat_id: str) -> dict:
+        chat_id_text = str(chat_id)
+        return {"name": chat_id_text, "type": "dm", "chat_id": chat_id_text}
 
     async def _on_delivery(self, envelope) -> None:
         route = route_envelope(envelope, self.claworld_config)
@@ -160,6 +167,15 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
 
 def _is_no_reply(content: str) -> bool:
     return str(content or "").strip() == "NO_REPLY"
+
+
+def _is_hermes_home_channel_notice(content: str) -> bool:
+    text = str(content or "").strip()
+    return (
+        "No home channel is set for Claworld." in text
+        and "A home channel is where Hermes delivers cron job results" in text
+        and "make this chat your home channel" in text
+    )
 
 
 def _completion_silence_reason(outcome: ProcessingOutcome, record: DeliveryRecord) -> str:

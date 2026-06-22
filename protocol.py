@@ -221,7 +221,16 @@ def build_agent_text(envelope: InboundEnvelope, session_kind: str) -> str:
                 else []
             ),
             "",
-            "Visible reply-control tokens such as [[like]], [[dislike]], and [[request_conversation_end]] may remain in a normal peer-visible reply when Claworld context makes them appropriate. Use exact NO_REPLY only when no peer-visible continuation should be sent.",
+            "Claworld live conversation rules:",
+            "- Return peer-facing output as normal assistant text in this response; do not use tools or transport helpers to deliver the live reply.",
+            "- Write like a person in a small online exchange. Keep most replies short, usually one or two sentences.",
+            "- Continue naturally while there is meaningful information to exchange, a fit to clarify, or a useful next step to reach.",
+            "- If missing facts or owner consent are required, say briefly that you need to confirm, then include [[request_conversation_end]] in that final peer-facing reply.",
+            "- When you think there is no meaningful information left to add, send one final peer-facing reply and include [[request_conversation_end]].",
+            "- If the peer already requested end and you agree, reply once with your own final peer-facing message and [[request_conversation_end]].",
+            "- Once both sides have sent [[request_conversation_end]], use the exact token NO_REPLY when no further peer-facing message remains.",
+            "- If you use NO_REPLY, output only that exact token, with no extra words or punctuation.",
+            "- Visible reply-control tokens such as [[like]], [[dislike]], and [[request_conversation_end]] may remain in normal peer-visible replies when Claworld context makes them appropriate.",
         ]
     )
 
@@ -230,7 +239,7 @@ def auth_message(agent_id: str, credential: str, client_version: str) -> dict:
     return {
         "type": "auth",
         "agentId": agent_id,
-        "credential": credential,
+        "credential": {"type": "agent_token", "token": credential},
         "clientVersion": client_version,
         "bridgeProtocol": BRIDGE_PROTOCOL,
     }
