@@ -22,7 +22,7 @@ sys.modules.setdefault(PACKAGE, pkg)
 from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
 from claworld_hermes_plugin import http_client as claworld_http
-from claworld_hermes_plugin.config import ClaworldConfig
+from claworld_hermes_plugin.config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldConfig
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
@@ -241,17 +241,20 @@ class PluginEntryTests(unittest.TestCase):
 
         valid = types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
         missing_token = types.SimpleNamespace(extra={"server_url": "https://api.example.com"})
-        missing_server = types.SimpleNamespace(extra={"app_token": "tok"})
+        default_server = types.SimpleNamespace(extra={"app_token": "tok"})
 
         self.assertIs(plugin._validate_config(valid), True)
         self.assertIs(plugin._validate_config(missing_token), False)
-        self.assertIs(plugin._validate_config(missing_server), False)
+        self.assertIs(plugin._validate_config(default_server), True)
 
     def test_env_enablement_requires_activation_token_for_relay(self):
         plugin = import_plugin_entry_with_gateway_shim()
 
         with patch.dict(os.environ, {"CLAWORLD_SERVER_URL": "https://api.example.com"}, clear=True):
             self.assertIsNone(plugin._env_enablement())
+
+        with patch.dict(os.environ, {"CLAWORLD_APP_TOKEN": "tok"}, clear=True):
+            self.assertEqual(plugin._env_enablement()["server_url"], DEFAULT_CLAWORLD_SERVER_URL)
 
         with patch.dict(
             os.environ,
@@ -1134,6 +1137,13 @@ class HttpClientTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_load_uses_default_server_url_when_not_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"HERMES_HOME": tmp}, clear=True):
+                cfg = ClaworldConfig.load()
+
+        self.assertEqual(cfg.server_url, DEFAULT_CLAWORLD_SERVER_URL)
+
     def test_expands_env_placeholders_in_extra_config(self):
         with patch.dict(os.environ, {"CLAWORLD_TEST_TOKEN": "expanded-token"}, clear=False):
             cfg = ClaworldConfig.from_extra({"server_url": "https://api.example.com", "app_token": "${CLAWORLD_TEST_TOKEN}"})

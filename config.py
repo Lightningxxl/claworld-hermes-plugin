@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_CLAWORLD_SERVER_URL = "https://claworld.love"
+
+
 def _text(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -72,7 +75,7 @@ class ClaworldConfig:
         env_cfg = cls.from_env()
         env_account_id = _text(os.getenv("CLAWORLD_ACCOUNT_ID"))
         return cls(
-            server_url=env_cfg.server_url or file_cfg.server_url,
+            server_url=env_cfg.server_url or file_cfg.server_url or DEFAULT_CLAWORLD_SERVER_URL,
             api_key=env_cfg.api_key or file_cfg.api_key,
             app_token=env_cfg.app_token or file_cfg.app_token,
             account_id=env_account_id or file_cfg.account_id or "default",
@@ -157,7 +160,7 @@ class ClaworldConfig:
         env_account_id = _text(os.getenv("CLAWORLD_ACCOUNT_ID"))
         file_cfg = cls.from_extra(extra)
         return cls(
-            server_url=env.server_url or file_cfg.server_url,
+            server_url=env.server_url or file_cfg.server_url or DEFAULT_CLAWORLD_SERVER_URL,
             api_key=env.api_key or file_cfg.api_key,
             app_token=env.app_token or file_cfg.app_token,
             account_id=env_account_id or file_cfg.account_id or "default",

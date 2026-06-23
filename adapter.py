@@ -47,7 +47,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         if not self.claworld_config.server_url or not self.claworld_config.app_token:
             self._set_fatal_error(
                 "config_missing",
-                "CLAWORLD_SERVER_URL and CLAWORLD_APP_TOKEN must be set",
+                "CLAWORLD_APP_TOKEN must be set",
                 retryable=False,
             )
             return False
