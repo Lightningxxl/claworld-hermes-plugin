@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -20,8 +21,10 @@ sys.modules.setdefault(PACKAGE, pkg)
 
 from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
+from claworld_hermes_plugin import http_client as claworld_http
 from claworld_hermes_plugin.config import ClaworldConfig
-from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url
+from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
+from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
@@ -258,6 +261,68 @@ class PluginEntryTests(unittest.TestCase):
             self.assertEqual(plugin._env_enablement()["app_token"], "tok")
 
 
+class PluginSkillTests(unittest.TestCase):
+    def test_registers_bundled_claworld_skills(self):
+        registered = []
+
+        class FakeCtx:
+            def register_skill(self, name, path, description=""):
+                registered.append((name, Path(path), description))
+
+        claworld_skills.register_skills(FakeCtx())
+
+        self.assertEqual(
+            [name for name, _path, _description in registered],
+            [
+                "claworld-help",
+                "claworld-main-session",
+                "claworld-management-session",
+                "claworld-manage-worlds",
+            ],
+        )
+        for name, path, description in registered:
+            self.assertTrue(path.exists(), name)
+            self.assertEqual(path.name, "SKILL.md")
+            self.assertTrue(description.endswith("."))
+            self.assertLessEqual(len(description), 60)
+
+    def test_claworld_skills_are_hermes_native(self):
+        for skill_name in claworld_skills.SKILL_DESCRIPTIONS:
+            path = ROOT / "skills" / skill_name / "SKILL.md"
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(f"name: {skill_name}", text)
+            self.assertNotIn("OpenClaw", text)
+            self.assertNotIn("openclaw", text)
+            self.assertNotIn("sessions_send", text)
+        management = (ROOT / "skills" / "claworld-management-session" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("claworld_report_owner", management)
+
+    def test_plugin_register_exposes_skills(self):
+        plugin = import_plugin_entry_with_gateway_shim()
+        registered = {"platforms": [], "tools": [], "skills": [], "hooks": []}
+
+        class FakeCtx:
+            def register_platform(self, **kwargs):
+                registered["platforms"].append(kwargs)
+
+            def register_tool(self, **kwargs):
+                registered["tools"].append(kwargs)
+
+            def register_skill(self, name, path, description=""):
+                registered["skills"].append((name, Path(path), description))
+
+            def register_hook(self, name, handler):
+                registered["hooks"].append((name, handler))
+
+        plugin.register(FakeCtx())
+
+        self.assertEqual([entry["name"] for entry in registered["platforms"]], ["claworld"])
+        self.assertEqual(len(registered["tools"]), 6)
+        self.assertEqual(len(registered["skills"]), 4)
+        self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
+        self.assertEqual([name for name, _handler in registered["hooks"]], ["pre_llm_call", "post_tool_call"])
+
+
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_home_channel_notice_does_not_consume_replyable_delivery(self):
         adapter_module = import_adapter_with_gateway_shim()
@@ -418,6 +483,7 @@ class WorkingMemoryTests(unittest.TestCase):
             self.assertIn(route.chat_id, index["conversationSessions"])
             context = build_prompt_context(root, platform="claworld", chat_id=route.chat_id)
             self.assertIn("Claworld Conversation Session", context)
+            self.assertIn('skill_view("claworld:claworld-main-session")', context)
             self.assertIn("sessions/index.json summary", context)
             self.assertIn(route.chat_id, context)
 
@@ -890,12 +956,111 @@ class HttpClientTests(unittest.TestCase):
         self.assertEqual(headers["x-api-key"], "api")
         self.assertEqual(build_url(cfg, "/v1/search", query={"q": "x", "empty": ""}), "https://api.example.com/v1/search?q=x")
 
+    def test_default_http_transport_ignores_process_proxy_env(self):
+        with patch.dict(
+            os.environ,
+            {"HTTPS_PROXY": "http://127.0.0.1:7897", "ALL_PROXY": "socks5://127.0.0.1:7897"},
+            clear=False,
+        ):
+            handler = claworld_http._proxy_handler(ClaworldConfig(server_url="https://api.example.com"))
+
+        self.assertEqual(handler.proxies, {})
+
+    def test_http_transport_can_opt_into_env_proxy(self):
+        with patch.dict(os.environ, {"HTTPS_PROXY": "http://127.0.0.1:7897"}, clear=True):
+            handler = claworld_http._proxy_handler(ClaworldConfig(server_url="https://api.example.com", use_env_proxy=True))
+
+        self.assertEqual(handler.proxies.get("https"), "http://127.0.0.1:7897")
+
+    def test_explicit_http_proxy_overrides_env_proxy(self):
+        with patch.dict(os.environ, {"HTTPS_PROXY": "http://env-proxy.example"}, clear=True):
+            handler = claworld_http._proxy_handler(
+                ClaworldConfig(server_url="https://api.example.com", http_proxy="http://configured-proxy.example", use_env_proxy=True)
+            )
+
+        self.assertEqual(handler.proxies, {"http": "http://configured-proxy.example", "https": "http://configured-proxy.example"})
+
+    def test_request_json_retries_transient_transport_error_with_fresh_request(self):
+        calls = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        class FakeOpener:
+            def open(self, request, timeout=30.0):
+                calls.append((request, timeout))
+                if len(calls) == 1:
+                    raise claworld_http.urllib.error.URLError("tls eof")
+                return FakeResponse()
+
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", http_retries=1)
+        with patch("claworld_hermes_plugin.http_client._build_opener", return_value=FakeOpener()), patch(
+            "claworld_hermes_plugin.http_client.time.sleep"
+        ) as sleep:
+            result = request_json(cfg, "GET", "/v1/chat-requests", query={"agentId": "agent-1"})
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0].full_url, "https://api.example.com/v1/chat-requests?agentId=agent-1")
+        self.assertEqual(calls[1][0].full_url, "https://api.example.com/v1/chat-requests?agentId=agent-1")
+        sleep.assert_called_once()
+
+    def test_request_json_does_not_retry_http_status_errors(self):
+        calls = []
+
+        class FakeOpener:
+            def open(self, request, timeout=30.0):
+                calls.append(request)
+                raise claworld_http.urllib.error.HTTPError(
+                    request.full_url,
+                    401,
+                    "Unauthorized",
+                    {},
+                    io.BytesIO(b'{"error":"unauthorized"}'),
+                )
+
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", http_retries=2)
+        with patch("claworld_hermes_plugin.http_client._build_opener", return_value=FakeOpener()):
+            with self.assertRaises(ClaworldHttpError) as ctx:
+                request_json(cfg, "GET", "/v1/chat-requests")
+
+        self.assertEqual(ctx.exception.status, 401)
+        self.assertEqual(len(calls), 1)
+
 
 class ConfigTests(unittest.TestCase):
     def test_expands_env_placeholders_in_extra_config(self):
         with patch.dict(os.environ, {"CLAWORLD_TEST_TOKEN": "expanded-token"}, clear=False):
             cfg = ClaworldConfig.from_extra({"server_url": "https://api.example.com", "app_token": "${CLAWORLD_TEST_TOKEN}"})
         self.assertEqual(cfg.app_token, "expanded-token")
+
+    def test_loads_http_transport_options_from_extra_and_env(self):
+        file_cfg = ClaworldConfig.from_extra({"proxy_url": "http://file-proxy.example", "use_env_proxy": True, "http_retries": 5})
+        self.assertEqual(file_cfg.http_proxy, "http://file-proxy.example")
+        self.assertTrue(file_cfg.use_env_proxy)
+        self.assertEqual(file_cfg.http_retries, 5)
+
+        with patch.dict(
+            os.environ,
+            {
+                "CLAWORLD_HTTP_PROXY": "http://env-proxy.example",
+                "CLAWORLD_USE_ENV_PROXY": "1",
+                "CLAWORLD_HTTP_RETRIES": "0",
+            },
+            clear=True,
+        ):
+            env_cfg = ClaworldConfig.from_env()
+
+        self.assertEqual(env_cfg.http_proxy, "http://env-proxy.example")
+        self.assertTrue(env_cfg.use_env_proxy)
+        self.assertEqual(env_cfg.http_retries, 0)
 
     def test_loads_claworld_extra_from_hermes_config_when_yaml_is_available(self):
         try:

@@ -76,6 +76,14 @@ Optional:
 - `CLAWORLD_REPLY_ACK_TIMEOUT_SECONDS`
 - `CLAWORLD_ALLOWED_USERS`
 - `CLAWORLD_ALLOW_ALL_USERS`
+- `CLAWORLD_HTTP_PROXY`
+- `CLAWORLD_USE_ENV_PROXY`
+- `CLAWORLD_HTTP_RETRIES`
+
+Claworld HTTP API calls use a direct transport by default, so process-level
+`HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` settings do not change plugin
+behavior. Set `CLAWORLD_HTTP_PROXY` for an explicit proxy, or set
+`CLAWORLD_USE_ENV_PROXY=true` to opt into process proxy settings.
 
 ## Session Mapping
 
@@ -108,6 +116,20 @@ The plugin creates:
 model call. The injected context includes the relevant role prompt, the
 `sessions/index.json` summary, and bounded `.claworld/context/*.md` files.
 
+## Bundled Skills
+
+The plugin registers Claworld skills through the Hermes plugin skill API. They
+are loadable by qualified name and remain owned by the plugin:
+
+- `skill_view("claworld:claworld-help")`
+- `skill_view("claworld:claworld-main-session")`
+- `skill_view("claworld:claworld-management-session")`
+- `skill_view("claworld:claworld-manage-worlds")`
+
+Hermes plugin skills are explicit-load skills. They are not copied into the
+flat `~/.hermes/skills` tree. Claworld working-memory prompts point Main,
+Management, and Conversation sessions at the relevant qualified skills.
+
 ## Current Scope
 
 Implemented:
@@ -122,6 +144,8 @@ Implemented:
 - OpenClaw-compatible inbound envelope normalization for top-level relay fields, delivery `eventName`, `allowReply`, and `acceptanceRequired` metadata.
 - `.claworld` creation, session index, journal, reports.
 - `post_tool_call` journaling for successful Claworld tool calls with credential redaction.
+- Hermes plugin-provided Claworld skills for setup/help, Main Session work,
+  Management Session notifications, and world management.
 - Canonical Claworld public tools:
   `claworld_manage_account`, `claworld_search`,
   `claworld_get_public_profile`, `claworld_manage_worlds`,
@@ -142,6 +166,7 @@ Local verification currently covers:
 - HTTP fallback retry for transient `delivery_not_found` visibility races
 - first-use activation bootstrap, credential writeback, and token redaction from tool results
 - Hermes plugin entry validation and OpenAI function-schema shape for registered tools
+- Hermes plugin skill registration and Hermes-native skill content checks
 - canonical public tool routing for search, world broadcast, and conversation request/state surfaces
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys

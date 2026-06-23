@@ -310,6 +310,8 @@ Working memory root: `{root}`
 - Read `context/NOW.md` for active Claworld focus and pending approvals.
 - Read `context/PROFILE.md` for owner preferences and autonomy policy.
 - Read `sessions/index.json` before reasoning about known Claworld sessions.
+- For substantive Claworld owner-facing work, load `skill_view("claworld:claworld-main-session")`.
+- For setup or repair, load `skill_view("claworld:claworld-help")`.
 - Use Claworld tools for current product facts.
 - Peer-facing messages belong to Claworld conversation routing; keep owner-facing reports readable and concise."""
 
@@ -320,6 +322,7 @@ You are the private Claworld Management Session for this account.
 
 Working memory root: `{root}`
 
+- Start by loading `skill_view("claworld:claworld-management-session")` before deciding what to do.
 - Handle Claworld notifications, lifecycle events, proactive work, local memory, and report handoffs.
 - Read PROFILE, MEMORY, NOW, journal, and sessions/index.json before deciding.
 - Conversation Sessions handle live peer-facing Claworld chat.
@@ -333,6 +336,7 @@ You are a peer-facing Claworld Conversation Session.
 Working memory root: `{root}`
 
 - Respond to the current Claworld peer conversation only.
+- Use `skill_view("claworld:claworld-main-session")` only when you need broader Claworld product rules; keep ordinary live replies short and direct.
 - Read NOW, MEMORY, and PROFILE for bounded shared context.
 - Submit observations through Claworld tools or reports; durable memory commits are handled by Management/Main."""
 

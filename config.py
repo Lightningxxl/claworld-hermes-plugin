@@ -41,6 +41,14 @@ def _int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _nonnegative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
 @dataclass(frozen=True)
 class ClaworldConfig:
     server_url: str = ""
@@ -54,6 +62,9 @@ class ClaworldConfig:
     reply_ack_timeout_seconds: int = 5
     allow_all_users: bool = False
     allowed_users: tuple[str, ...] = ()
+    http_proxy: str = ""
+    use_env_proxy: bool = False
+    http_retries: int = 2
 
     @classmethod
     def load(cls) -> "ClaworldConfig":
@@ -72,6 +83,9 @@ class ClaworldConfig:
             reply_ack_timeout_seconds=_env_int("CLAWORLD_REPLY_ACK_TIMEOUT_SECONDS", file_cfg.reply_ack_timeout_seconds),
             allow_all_users=_env_bool("CLAWORLD_ALLOW_ALL_USERS", file_cfg.allow_all_users),
             allowed_users=env_cfg.allowed_users or file_cfg.allowed_users,
+            http_proxy=env_cfg.http_proxy or file_cfg.http_proxy,
+            use_env_proxy=_env_bool("CLAWORLD_USE_ENV_PROXY", file_cfg.use_env_proxy),
+            http_retries=_env_nonnegative_int("CLAWORLD_HTTP_RETRIES", file_cfg.http_retries),
         )
 
     @classmethod
@@ -88,6 +102,9 @@ class ClaworldConfig:
             reply_ack_timeout_seconds=_int(os.getenv("CLAWORLD_REPLY_ACK_TIMEOUT_SECONDS"), 5),
             allow_all_users=_bool(os.getenv("CLAWORLD_ALLOW_ALL_USERS"), False),
             allowed_users=_csv(os.getenv("CLAWORLD_ALLOWED_USERS")),
+            http_proxy=_text(os.getenv("CLAWORLD_HTTP_PROXY"), _text(os.getenv("CLAWORLD_PROXY_URL"))),
+            use_env_proxy=_bool(os.getenv("CLAWORLD_USE_ENV_PROXY"), False),
+            http_retries=_nonnegative_int(os.getenv("CLAWORLD_HTTP_RETRIES"), 2),
         )
 
     @classmethod
@@ -126,6 +143,9 @@ class ClaworldConfig:
             reply_ack_timeout_seconds=_int(extra.get("reply_ack_timeout_seconds", extra.get("replyAckTimeoutSeconds")), 5),
             allow_all_users=_bool(extra.get("allow_all_users", extra.get("allowAllUsers")), False),
             allowed_users=_csv(extra.get("allowed_users", extra.get("allowedUsers"))),
+            http_proxy=_text(extra.get("http_proxy"), _text(extra.get("httpProxy"), _text(extra.get("proxy_url"), _text(extra.get("proxyUrl"))))),
+            use_env_proxy=_bool(extra.get("use_env_proxy", extra.get("useEnvProxy")), False),
+            http_retries=_nonnegative_int(extra.get("http_retries", extra.get("httpRetries")), 2),
         )
 
     @classmethod
@@ -148,6 +168,9 @@ class ClaworldConfig:
             reply_ack_timeout_seconds=_env_int("CLAWORLD_REPLY_ACK_TIMEOUT_SECONDS", file_cfg.reply_ack_timeout_seconds),
             allow_all_users=_env_bool("CLAWORLD_ALLOW_ALL_USERS", file_cfg.allow_all_users),
             allowed_users=env.allowed_users or file_cfg.allowed_users,
+            http_proxy=env.http_proxy or file_cfg.http_proxy,
+            use_env_proxy=_env_bool("CLAWORLD_USE_ENV_PROXY", file_cfg.use_env_proxy),
+            http_retries=_env_nonnegative_int("CLAWORLD_HTTP_RETRIES", file_cfg.http_retries),
         )
 
     def to_platform_extra(self) -> dict:
@@ -163,6 +186,9 @@ class ClaworldConfig:
             "reply_ack_timeout_seconds": self.reply_ack_timeout_seconds,
             "allow_all_users": self.allow_all_users,
             "allowed_users": list(self.allowed_users),
+            "http_proxy": self.http_proxy,
+            "use_env_proxy": self.use_env_proxy,
+            "http_retries": self.http_retries,
         }
 
     def memory_root_path(self) -> Path:
@@ -188,6 +214,11 @@ def _env_int(name: str, default: int) -> int:
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     return _bool(raw, default) if raw not in (None, "") else default
+
+
+def _env_nonnegative_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    return _nonnegative_int(raw, default) if raw not in (None, "") else default
 
 
 def hermes_home_path() -> Path:

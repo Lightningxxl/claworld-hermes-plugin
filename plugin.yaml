@@ -63,3 +63,15 @@ optional_env:
     description: "Allow every Claworld sender to wake Hermes"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: CLAWORLD_HTTP_PROXY
+    description: "Explicit proxy URL for Claworld HTTP API calls"
+    prompt: "Claworld HTTP proxy"
+    password: true
+  - name: CLAWORLD_USE_ENV_PROXY
+    description: "Use process HTTP_PROXY/HTTPS_PROXY/ALL_PROXY settings for Claworld HTTP API calls"
+    prompt: "Use process proxy? (true/false)"
+    password: false
+  - name: CLAWORLD_HTTP_RETRIES
+    description: "Transport-level retry count for transient Claworld HTTP errors"
+    prompt: "HTTP retry count"
+    password: false

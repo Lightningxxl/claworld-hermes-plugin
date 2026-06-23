@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import socket
+import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,6 +18,16 @@ from .protocol import normalize_http_base_url
 PLUGIN_VERSION = "claworld-hermes-plugin/0.1.0"
 PLUGIN_VERSION_HEADER = "x-claworld-plugin-version"
 USER_AGENT = f"{PLUGIN_VERSION} hermes-agent"
+RETRY_BASE_DELAY_SECONDS = 0.2
+RETRY_MAX_DELAY_SECONDS = 1.0
+TRANSPORT_ERRORS = (
+    urllib.error.URLError,
+    http.client.RemoteDisconnected,
+    ssl.SSLError,
+    TimeoutError,
+    ConnectionResetError,
+    socket.timeout,
+)
 
 
 class ClaworldHttpError(RuntimeError):
@@ -52,18 +66,41 @@ def request_json(
         data = json.dumps(body).encode("utf-8")
         headers["content-type"] = "application/json"
 
-    request = urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = response.read().decode("utf-8")
-            return json.loads(payload) if payload else {}
-    except urllib.error.HTTPError as error:
-        payload = error.read().decode("utf-8", "replace")
+        retry_count = int(config.http_retries)
+    except (TypeError, ValueError):
+        retry_count = 0
+    attempts = max(1, retry_count + 1)
+    for attempt in range(attempts):
+        request = urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
         try:
-            body_payload = json.loads(payload) if payload else {}
-        except json.JSONDecodeError:
-            body_payload = {"message": payload}
-        raise ClaworldHttpError(error.code, body_payload) from error
+            with _build_opener(config).open(request, timeout=timeout) as response:
+                payload = response.read().decode("utf-8")
+                return json.loads(payload) if payload else {}
+        except urllib.error.HTTPError as error:
+            payload = error.read().decode("utf-8", "replace")
+            try:
+                body_payload = json.loads(payload) if payload else {}
+            except json.JSONDecodeError:
+                body_payload = {"message": payload}
+            raise ClaworldHttpError(error.code, body_payload) from error
+        except TRANSPORT_ERRORS:
+            if attempt >= attempts - 1:
+                raise
+            time.sleep(min(RETRY_BASE_DELAY_SECONDS * (attempt + 1), RETRY_MAX_DELAY_SECONDS))
+    return {}
+
+
+def _build_opener(config: ClaworldConfig) -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_proxy_handler(config))
+
+
+def _proxy_handler(config: ClaworldConfig) -> urllib.request.ProxyHandler:
+    if config.http_proxy:
+        return urllib.request.ProxyHandler({"http": config.http_proxy, "https": config.http_proxy})
+    if config.use_env_proxy:
+        return urllib.request.ProxyHandler()
+    return urllib.request.ProxyHandler({})
 
 
 def build_url(config: ClaworldConfig, path: str, *, query: dict | None = None) -> str:
