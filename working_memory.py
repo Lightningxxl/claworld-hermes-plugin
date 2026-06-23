@@ -7,9 +7,6 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-
 CONTEXT_DIR = "context"
 JOURNAL_DIR = "journal"
 REPORTS_DIR = "reports"
@@ -310,6 +307,7 @@ Working memory root: `{root}`
 - Read `context/NOW.md` for active Claworld focus and pending approvals.
 - Read `context/PROFILE.md` for owner preferences and autonomy policy.
 - Read `sessions/index.json` before reasoning about known Claworld sessions.
+- Canonical Claworld guidance lives in plugin-qualified skills. Use these `claworld:...` skill names even when local/user-authored Claworld notes also exist.
 - For substantive Claworld owner-facing work, load `skill_view("claworld:claworld-main-session")`.
 - For setup or repair, load `skill_view("claworld:claworld-help")`.
 - Use Claworld tools for current product facts.
@@ -323,6 +321,7 @@ You are the private Claworld Management Session for this account.
 Working memory root: `{root}`
 
 - Start by loading `skill_view("claworld:claworld-management-session")` before deciding what to do.
+- Canonical Claworld guidance lives in plugin-qualified skills. Use `claworld:claworld-management-session` for this role even when local/user-authored Claworld notes also exist.
 - Handle Claworld notifications, lifecycle events, proactive work, local memory, and report handoffs.
 - Read PROFILE, MEMORY, NOW, journal, and sessions/index.json before deciding.
 - Conversation Sessions handle live peer-facing Claworld chat.
@@ -336,6 +335,7 @@ You are a peer-facing Claworld Conversation Session.
 Working memory root: `{root}`
 
 - Respond to the current Claworld peer conversation only.
+- Canonical Claworld guidance lives in plugin-qualified skills. Use `claworld:claworld-main-session` for broader product rules even when local/user-authored Claworld notes also exist.
 - Use `skill_view("claworld:claworld-main-session")` only when you need broader Claworld product rules; keep ordinary live replies short and direct.
 - Read NOW, MEMORY, and PROFILE for bounded shared context.
 - Submit observations through Claworld tools or reports; durable memory commits are handled by Management/Main."""

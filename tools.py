@@ -11,7 +11,7 @@ from typing import Any
 
 from .config import ClaworldConfig, hermes_home_path
 from .http_client import public_error_payload, request_json
-from .working_memory import append_journal, read_session_index, record_owner_route_from_context, write_report
+from .working_memory import append_journal, read_session_index, record_owner_route_from_context
 
 TOOLSET = "claworld"
 
@@ -90,7 +90,7 @@ def register_tools(ctx) -> None:
         ),
         (
             "claworld_report_owner",
-            "Send a constrained Claworld report to the recorded owner route.",
+            "Send a constrained Claworld report to the recorded human chat route.",
             REPORT_OWNER_SCHEMA,
             report_owner,
         ),
@@ -218,7 +218,7 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
 REPORT_OWNER_SCHEMA = _schema(
     None,
     {"report_text": {"type": "string"}, "deliver": {"type": "boolean"}},
-    description="Send a constrained Claworld report to the recorded owner route.",
+    description="Send a constrained Claworld report to the recorded human chat route.",
 )
 
 
@@ -668,13 +668,25 @@ def _report_owner(cfg: ClaworldConfig, args: dict) -> dict:
     index = read_session_index(root)
     route = route or index.get("main") or {}
     report_text = args.get("report_text") or args.get("message") or ""
-    report_path = write_report(root, report_text, metadata={"ownerRoute": route})
-    append_journal(root, {"kind": "owner_report", "reportPath": str(report_path), "ownerRoute": route})
 
     delivery = None
     if args.get("deliver", True) is not False and route.get("platform") and route.get("chatId"):
         delivery = _send_owner_route(route, report_text)
-    return {"reportPath": str(report_path), "ownerRoute": route, "delivery": delivery}
+    transcript = _append_main_session_context(route, report_text)
+    append_journal(
+        root,
+        {
+            "kind": "owner_report",
+            "ownerRoute": route,
+            "delivery": delivery,
+            "mainContext": {"transcript": transcript},
+        },
+    )
+    return {
+        "ownerRoute": route,
+        "delivery": delivery,
+        "mainContext": {"transcript": transcript},
+    }
 
 
 def _activate_account_without_token(cfg: ClaworldConfig, args: dict, account_id: str | None) -> dict:
@@ -785,6 +797,97 @@ def _send_owner_route(route: dict, message: str):
             return {"ok": True, "result": raw}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _append_main_session_context(route: dict, report_text: str) -> dict:
+    """Write the human-facing report into the recorded Main Session transcript.
+
+    Hermes send_message may mirror sent text into a target session, but that is
+    best-effort. Claworld human-facing reports need the stronger OpenClaw
+    sessions_send-style property: the human sees the report and Main has
+    durable context for later follow-up questions.
+    """
+
+    session_id = _resolve_owner_session_id(route)
+    if not session_id:
+        return {"status": "skipped", "reason": "owner_session_not_found"}
+    if not str(report_text or "").strip():
+        return {"status": "skipped", "reason": "empty_report", "sessionId": session_id}
+    db = None
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        if not db.get_session(session_id):
+            return {"status": "skipped", "reason": "session_missing_in_db", "sessionId": session_id}
+        if _transcript_contains(db, session_id, report_text):
+            return {"status": "already_present", "sessionId": session_id, "role": "assistant"}
+        message_id = db.append_message(session_id=session_id, role="assistant", content=report_text)
+        return {"status": "appended", "sessionId": session_id, "role": "assistant", "messageId": message_id}
+    except Exception as exc:
+        return {"status": "error", "sessionId": session_id, "error": str(exc)}
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _resolve_owner_session_id(route: dict) -> str | None:
+    if not isinstance(route, dict):
+        return None
+    direct = _text(route.get("sessionId"), _text(route.get("session_id")))
+    if direct:
+        return direct
+
+    session_key = _text(route.get("sessionKey"), _text(route.get("session_key")))
+    if session_key:
+        resolved = _session_id_from_sessions_index(session_key)
+        if resolved:
+            return resolved
+
+    platform = _text(route.get("platform"))
+    chat_id = _text(route.get("chatId"), _text(route.get("chat_id")))
+    if platform and chat_id:
+        try:
+            from gateway.mirror import _find_session_id
+
+            return _find_session_id(
+                platform,
+                chat_id,
+                thread_id=_text(route.get("threadId"), _text(route.get("thread_id"))),
+                user_id=_text(route.get("userId"), _text(route.get("user_id"))),
+            )
+        except Exception:
+            return None
+    return None
+
+
+def _session_id_from_sessions_index(session_key: str) -> str | None:
+    try:
+        data = json.loads((hermes_home_path() / "sessions" / "sessions.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    entry = data.get(session_key) if isinstance(data, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    return _text(entry.get("session_id"), _text(entry.get("sessionId")))
+
+
+def _transcript_contains(db, session_id: str, report_text: str) -> bool:
+    try:
+        recent = db.get_messages_as_conversation(session_id)[-30:]
+    except Exception:
+        return False
+    expected = str(report_text or "").strip()
+    for message in recent:
+        if str(message.get("role") or "") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip() == expected:
+            return True
+    return False
 
 
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:

@@ -97,6 +97,9 @@ Claworld relay events map into Hermes `SessionSource` buckets:
 
 Hermes serializes one bucket at a time through its adapter active-session guard. Different Claworld conversation buckets can run concurrently.
 
+Developer-facing notes for the OpenClaw-to-Hermes semantic mapping live in
+[`docs/openclaw-porting-notes.md`](docs/openclaw-porting-notes.md).
+
 ## Working Memory
 
 The plugin creates:
@@ -152,7 +155,9 @@ Implemented:
   and `claworld_manage_conversations`.
 - Conversation request creation preserves Claworld target, kickoff, opening payload, request context, world, source, and idempotency fields.
 - Conversation requests started from a Hermes session add `requestContext.followUp.sessionKey` when the caller has not supplied one.
-- Restricted `claworld_report_owner` using the recorded owner route.
+- Restricted `claworld_report_owner` using the recorded human chat route, with
+  human-chat delivery, Main Session transcript injection, and journal
+  evidence.
 
 ## Verification
 
@@ -171,6 +176,8 @@ Local verification currently covers:
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
+- human-chat report delivery plus Main Session transcript injection, without runtime
+  edits to `context/NOW.md`
 - Hermes `pre_llm_call` context injection with `.claworld/sessions/index.json` summary
 
 Commands:
