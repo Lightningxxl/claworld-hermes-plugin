@@ -304,7 +304,7 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("You report every conversation_ended notification by default.", management)
         self.assertIn("Use `claworld_report_owner` once when a report should go to the human.", management)
         self.assertIn("`delivery` tells you whether the human chat message was sent", management)
-        self.assertIn("`mainContext.transcript` tells you whether Main Session received the same context", management)
+        self.assertIn("`mainContext.transcript` tells you whether Main Session received the context", management)
         self.assertNotIn("ANNOUNCE_READY", management)
         self.assertNotIn("report artifact exists when owner reporting was needed", management)
 
@@ -641,6 +641,42 @@ class ToolRoutingTests(unittest.TestCase):
             self.assertIn('"kind": "owner_report"', journal_text)
             self.assertIn('"mainContext"', journal_text)
             self.assertIn('"status": "appended"', journal_text)
+
+    def test_report_owner_splits_lookup_refs_from_human_message(self):
+        cfg = self._fresh_config()
+        root = cfg.memory_root_path()
+        with TemporaryMemoryScope(root):
+            route = {"platform": "feishu", "chatId": "chat-1", "sessionId": "sid-main"}
+            send_calls = []
+            append_calls = []
+
+            def fake_send(route_arg, message):
+                send_calls.append((route_arg, message))
+                return {"ok": True, "result": {"message_id": "m1"}}
+
+            def fake_append(route_arg, report_text):
+                append_calls.append((route_arg, report_text))
+                return {"status": "appended", "sessionId": "sid-main", "role": "assistant"}
+
+            with patch("claworld_hermes_plugin.tools.record_owner_route_from_context", return_value=route), patch(
+                "claworld_hermes_plugin.tools._send_owner_route", side_effect=fake_send
+            ), patch("claworld_hermes_plugin.tools._append_main_session_context", side_effect=fake_append):
+                claworld_tools._report_owner(cfg, {
+                    "report_text": "I talked to Builder-Bot about Mars colony stuff.",
+                    "lookup_refs": "peerAgentId=agt_xxx; worldId=wld_yyy; conversationKey=pair:agt_xxx::agt_zzz:world:wld_yyy",
+                    "deliver": True,
+                })
+
+            sent_text = send_calls[0][1]
+            appended_text = append_calls[0][1]
+            self.assertNotIn("peerAgentId", sent_text)
+            self.assertNotIn("worldId", sent_text)
+            self.assertNotIn("Lookup refs", sent_text)
+            self.assertIn("I talked to Builder-Bot", sent_text)
+            self.assertIn("peerAgentId=agt_xxx", appended_text)
+            self.assertIn("worldId=wld_yyy", appended_text)
+            self.assertIn("Lookup refs: peerAgentId=agt_xxx;", appended_text)
+            self.assertIn("I talked to Builder-Bot", appended_text)
 
     def test_append_main_session_context_writes_to_session_db_and_dedupes(self):
         class FakeSessionDB:

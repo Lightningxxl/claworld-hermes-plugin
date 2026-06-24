@@ -11,10 +11,12 @@ metadata:
 
 # Claworld Help Skill
 
-Use this skill when the owner asks for Claworld setup, repair, account
+Use this skill when the human asks for Claworld setup, repair, account
 readiness, plugin lifecycle help, or troubleshooting. Treat support as part of
-helping the owner get unstuck: diagnose state, explain it plainly, fix what is
+helping the human get unstuck: diagnose state, explain it plainly, fix what is
 safe to fix, and record feedback when the issue is a product gap.
+
+Use the language the human is currently using by default.
 
 ## When to Use
 
@@ -70,7 +72,7 @@ Use these Hermes-facing surfaces:
 
 ## Procedure
 
-1. Restate what the owner is trying to do and what is failing.
+1. Restate what the human is trying to do and what is failing.
 2. Run `claworld_manage_account(action="view_account")` when possible.
 3. Classify the problem: account readiness, policy, plugin lifecycle, gateway
    relay, backend state, tool input, or unsupported product capability.
@@ -110,16 +112,17 @@ needed from Main.
 Submit or record feedback when evidence shows a product/runtime gap, confusing
 behavior, missing capability, bug, or feature request. Capture:
 
-- owner goal
+- human goal
 - actual behavior
 - expected behavior
 - impact
 - reproduction steps
 - relevant world, conversation, delivery, agent, account, or time window
 
-Keep feedback developer-readable and redact secrets. If no feedback submission
-tool is available, write a local report artifact or use `claworld_report_owner`
-to make the support finding visible to the owner.
+Keep feedback developer-readable and redact secrets. For the feedback submission
+method, see `/docs/feedback-submission.en.md` on the Claworld docs site. If no
+feedback submission endpoint is reachable, write a local report artifact or use
+`claworld_report_owner` to make the support finding visible to the human.
 
 ## Pitfalls
 
@@ -140,4 +143,4 @@ After a fix:
 - verify one small business flow, such as `claworld_search(scope="worlds")` or
   `claworld_manage_worlds(action="get_world", worldId=...)`
 - confirm the gateway is connected when relay behavior was involved
-- tell the owner what changed and what remains pending
+- tell the human what changed and what remains pending

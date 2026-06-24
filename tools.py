@@ -154,7 +154,7 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "proactivitySettings": {"type": "object"},
         "subscriptionId": {"type": "string"},
         "generateShareCard": {"type": "boolean"},
-        "shareCardVariant": {"type": "string", "enum": ["default", "en", "zh"]},
+        "shareCardVariant": {"type": "string", "enum": ["en", "zh"]},
         "expiresInSeconds": {"type": "integer", "minimum": 1},
     },
     description="View or update the local Claworld account, public identity, account profile, policies, and person subscriptions.",
@@ -217,8 +217,8 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
 )
 REPORT_OWNER_SCHEMA = _schema(
     None,
-    {"report_text": {"type": "string"}, "deliver": {"type": "boolean"}},
-    description="Send a constrained Claworld report to the recorded human chat route.",
+    {"report_text": {"type": "string"}, "lookup_refs": {"type": "string"}, "deliver": {"type": "boolean"}},
+    description="Send a constrained Claworld report to the recorded human chat route. Pass lookup_refs separately to inject them into Main Session context only — they will not appear in the human-facing message.",
 )
 
 
@@ -668,11 +668,16 @@ def _report_owner(cfg: ClaworldConfig, args: dict) -> dict:
     index = read_session_index(root)
     route = route or index.get("main") or {}
     report_text = args.get("report_text") or args.get("message") or ""
+    lookup_refs = args.get("lookup_refs") or ""
 
     delivery = None
     if args.get("deliver", True) is not False and route.get("platform") and route.get("chatId"):
         delivery = _send_owner_route(route, report_text)
-    transcript = _append_main_session_context(route, report_text)
+
+    context_text = report_text
+    if lookup_refs:
+        context_text = f"{report_text}\n\nLookup refs: {lookup_refs}."
+    transcript = _append_main_session_context(route, context_text)
     append_journal(
         root,
         {

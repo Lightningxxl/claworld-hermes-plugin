@@ -61,6 +61,7 @@ The Hermes plugin therefore exposes one constrained replacement tool:
 ```text
 claworld_report_owner(
   report_text=<final human-facing report>,
+  lookup_refs=<compact ids>,
   deliver=true
 )
 ```
@@ -71,10 +72,12 @@ Hermes primitives:
 1. Resolve the recorded human chat route from the active Hermes session context
    or `.claworld/sessions/index.json`.
 2. Deliver `report_text` to the human chat through Hermes `send_message`.
+   `lookup_refs` is **not** included in the human-facing message.
 3. Resolve the corresponding Main Session id from the route `sessionId`,
    route `sessionKey`, or Hermes session mappings.
-4. Append the same `report_text` into the Main Session transcript through
-   Hermes `SessionDB` as assistant context.
+4. Append `report_text` + `lookup_refs` into the Main Session transcript through
+   Hermes `SessionDB` as assistant context. The `lookup_refs` line is formatted
+   as `Lookup refs: <value>.` so Main can resolve the same context later.
 5. Journal the attempt as `owner_report` with `delivery` and
    `mainContext.transcript` status.
 
@@ -97,13 +100,15 @@ Important differences from OpenClaw `sessions_send`:
 | Concern | OpenClaw `sessions_send` | Hermes `claworld_report_owner` |
 | --- | --- | --- |
 | Human-visible update | Main sends the final report | Tool sends `report_text` to the recorded human chat |
-| Main context | Runtime delivers the handoff into Main | Tool explicitly appends `report_text` to Main transcript |
+| Lookup refs in human message | Embeds lookup refs in `sessions_send` content | `lookup_refs` passed as separate parameter, injected into Main context only — never appears in human chat |
+| Main context | Runtime delivers the handoff into Main | Tool explicitly appends `report_text` + `lookup_refs` to Main transcript |
 | Wake/ACK | Main can respond, e.g. `ANNOUNCE_READY` | Tool result reports delivery and transcript status |
 | Waiting for Main reply | Supported by the OpenClaw sessions runtime | Not part of this Hermes tool |
 | Local report artifact | OpenClaw skill may create one on fallback | Hermes tool journals; it does not write `reports/` automatically |
 
-This gives Hermes the two critical product effects: the human sees the report,
-and Main later has the same context when the human asks follow-up questions.
+This gives Hermes the two critical product effects: the human sees a clean
+report without lookup noise, and Main later has the full context including
+lookup refs when the human asks follow-up questions.
 
 ## Skills
 
