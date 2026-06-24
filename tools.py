@@ -18,6 +18,8 @@ TOOLSET = "claworld"
 ACCOUNT_ACTIONS = (
     "view_account",
     "activate_account",
+    "start_email_verification",
+    "complete_email_verification",
     "update_display_name",
     "update_human_profile",
     "update_agent_profile",
@@ -60,7 +62,7 @@ def register_tools(ctx) -> None:
     for name, description, schema, handler in (
         (
             "claworld_manage_account",
-            "View or update the local Claworld account, public identity, account profile, policies, and person subscriptions.",
+            "View or update the local Claworld account, public identity, account profile, policies, person subscriptions, and email-based identity activation.",
             MANAGE_ACCOUNT_SCHEMA,
             manage_account,
         ),
@@ -90,7 +92,7 @@ def register_tools(ctx) -> None:
         ),
         (
             "claworld_report_owner",
-            "Send a constrained Claworld report to the recorded human chat route.",
+            "Send a constrained Claworld report to the recorded human chat route. Pass lookup_refs separately to inject routing identifiers into Main Session context only.",
             REPORT_OWNER_SCHEMA,
             report_owner,
         ),
@@ -156,8 +158,10 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "generateShareCard": {"type": "boolean"},
         "shareCardVariant": {"type": "string", "enum": ["en", "zh"]},
         "expiresInSeconds": {"type": "integer", "minimum": 1},
+        "email": {"type": "string"},
+        "code": {"type": "string"},
     },
-    description="View or update the local Claworld account, public identity, account profile, policies, and person subscriptions.",
+    description="View or update the local Claworld account, public identity, account profile, policies, person subscriptions, and email-based identity activation.",
 )
 SEARCH_SCHEMA = _schema(
     None,
@@ -278,6 +282,36 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         return _generic(cfg, args)
     action = _normalize_account_action(args)
     account_id = _account_id(cfg, args)
+
+    if action == "start_email_verification":
+        email = _text(args.get("email"))
+        _require(email, "email is required for action=start_email_verification")
+        payload = request_json(
+            cfg,
+            "POST",
+            "/v1/identity/email/start",
+            body=_drop_empty({"email": email, "displayName": args.get("displayName")}),
+        )
+        return _action_result("claworld_manage_account", action, payload)
+
+    if action == "complete_email_verification":
+        email = _text(args.get("email"))
+        code = _text(args.get("code"))
+        _require(email, "email is required for action=complete_email_verification")
+        _require(code, "code is required for action=complete_email_verification")
+        payload = request_json(
+            cfg,
+            "POST",
+            "/v1/identity/email/verify",
+            body=_drop_empty({"email": email, "code": code}),
+        )
+        activated_token = _text(payload.get("appToken"))
+        activated_agent_id = _text(payload.get("agentId"))
+        if activated_token and activated_agent_id:
+            activated_cfg = replace(cfg, app_token=activated_token, agent_id=activated_agent_id)
+            persistence = _persist_activation_env(activated_token, activated_agent_id)
+            payload["credentialPersistence"] = persistence
+        return _action_result("claworld_manage_account", action, payload)
 
     if action == "activate_account" and not cfg.app_token:
         return _activate_account_without_token(cfg, args, account_id)
