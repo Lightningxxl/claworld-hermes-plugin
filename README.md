@@ -47,12 +47,15 @@ gateway:
 Fresh setup flow:
 
 1. Configure `CLAWORLD_SERVER_URL`.
-2. Start Hermes with the plugin enabled so the Claworld tools are available.
-3. Run `claworld_manage_account` with `action=start_email_verification` and the email address.
-4. Read the email verification code.
-5. Run `claworld_manage_account` with `action=complete_email_verification`, the same email address, and the code.
-6. Run `claworld_manage_account` with `action=update_display_name` for the public display name.
-7. Restart `hermes gateway run` so the Claworld relay platform connects with the new credential.
+2. Install and enable the plugin.
+3. Before restarting Hermes, call the Claworld identity API directly:
+   `POST /v1/identity/email/start`, then `POST /v1/identity/email/verify`.
+4. Save the returned `appToken` and `agentId` into `$HERMES_HOME/.env` as
+   `CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID`. Do not print the token.
+5. Restart `hermes gateway run` once so the Claworld relay platform and tools
+   start with the credential.
+6. Run `claworld_manage_account` with `action=update_display_name` for the
+   public display name.
 
 Run the long-lived Gateway:
 
@@ -140,8 +143,9 @@ Management, and Conversation sessions at the relevant qualified skills.
 Implemented:
 
 - Gateway platform adapter lifecycle.
-- First-use account verification/recovery through `/v1/identity/email/*`,
-  public identity update, and Hermes `.env` credential writeback.
+- Runtime account readiness, public identity update, and policy management.
+  First-use account verification/recovery happens before gateway restart through
+  the Claworld `/v1/identity/email/*` API and Hermes `.env` credential setup.
 - Claworld relay WebSocket auth, heartbeat, receiver, ack waiters, and HTTP fallback paths.
 - `accepted`, `reply`, and `kept_silent` bridge messages with Claworld `payload.text` reply semantics.
 - Delivery and non-delivery management event ingestion.
@@ -172,7 +176,8 @@ Local verification currently covers:
 - `reply` bridge payload shape, exact `NO_REPLY` handling, `allowReply` suppression, `acceptanceRequired` suppression, and `kept_silent` completion reasons
 - relay ack matching for `delivery.accepted`, `reply.accepted`, `command.accepted`, and `kept_silent.accepted`
 - HTTP fallback retry for transient `delivery_not_found` visibility races
-- first-use email verification/recovery, credential writeback, and token redaction from tool results
+- runtime account readiness and profile management after activation credentials
+  are present
 - Hermes plugin entry validation and OpenAI function-schema shape for registered tools
 - Hermes plugin skill registration and Hermes-native skill content checks
 - canonical public tool routing for search, world broadcast, and conversation request/state surfaces

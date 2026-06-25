@@ -795,87 +795,16 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
         self.assertEqual(result["identityVerification"]["status"], "ready")
 
-    def test_email_verification_start_strips_session_id(self):
-        calls = []
-
-        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
-            calls.append(
-                {
-                    "cfg": cfg,
-                    "method": method,
-                    "endpoint": endpoint,
-                    "body": body,
-                    "query": query,
-                    "timeout": timeout,
-                }
-            )
-            self.assertFalse(cfg.app_token)
-            return {
-                "status": "verification_started",
-                "email": "agent@example.com",
-                "verificationId": "legacy-session",
-                "expiresAt": "2026-06-24T00:10:00.000Z",
-            }
-
-        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
-            result = claworld_tools._manage_account(
+    def test_email_verification_is_not_a_runtime_account_tool(self):
+        with self.assertRaisesRegex(ValueError, "action must be one of"):
+            claworld_tools._manage_account(
                 ClaworldConfig(server_url="https://api.example.com", app_token="old-token", agent_id="old-agent"),
-                {"action": "start_email_verification", "email": "agent@example.com", "displayName": "Hermes Agent"},
+                {"action": "start_email_verification", "email": "agent@example.com"},
             )
 
-        self.assertEqual(calls[0]["endpoint"], "/v1/identity/email/start")
-        self.assertEqual(calls[0]["body"], {"email": "agent@example.com", "displayName": "Hermes Agent"})
-        self.assertEqual(result["action"], "start_email_verification")
-        self.assertEqual(result["status"], "verification_started")
-        self.assertNotIn("verificationId", result)
-
-    def test_complete_email_verification_persists_env_and_redacts_token(self):
-        calls = []
-
-        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
-            calls.append(
-                {
-                    "cfg": cfg,
-                    "method": method,
-                    "endpoint": endpoint,
-                    "body": body,
-                    "query": query,
-                    "timeout": timeout,
-                }
-            )
-            self.assertFalse(cfg.app_token)
-            return {
-                "status": "verified",
-                "agentId": "agent-email",
-                "appToken": "token-email",
-                "credential": {"type": "agent_token", "token": "token-email"},
-                "created": False,
-                "recovered": True,
-                "publicIdentity": {"status": "pending", "displayName": "Hermes Agent"},
-            }
-
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), patch(
-            "claworld_hermes_plugin.tools.hermes_home_path",
-            return_value=Path(tmp),
-        ), patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
-            result = claworld_tools._manage_account(
-                ClaworldConfig(server_url="https://api.example.com", app_token="old-token", agent_id="old-agent"),
-                {"action": "complete_email_verification", "email": "agent@example.com", "code": "123456"},
-            )
-            env_text = (Path(tmp) / ".env").read_text(encoding="utf-8")
-
-        self.assertEqual(calls[0]["endpoint"], "/v1/identity/email/verify")
-        self.assertEqual(calls[0]["body"], {"email": "agent@example.com", "code": "123456"})
-        self.assertEqual(result["action"], "complete_email_verification")
-        self.assertEqual(result["runtimeIdentity"]["status"], "verified")
-        self.assertEqual(result["runtimeIdentity"]["agentId"], "agent-email")
-        self.assertEqual(result["runtimeIdentity"]["recovered"], True)
-        self.assertEqual(result["credentialPersistence"]["status"], "saved_to_hermes_env")
-        self.assertIn("CLAWORLD_APP_TOKEN=token-email", env_text)
-        self.assertIn("CLAWORLD_AGENT_ID=agent-email", env_text)
-        self.assertNotIn("appToken", result)
-        self.assertNotIn("credential", result)
-        self.assertNotIn("token-email", json.dumps(result, sort_keys=True))
+        action_schema = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        self.assertNotIn("start_email_verification", action_schema)
+        self.assertNotIn("complete_email_verification", action_schema)
 
     def test_tool_result_exposes_backend_remediation_fields(self):
         def failing_tool(cfg, args):

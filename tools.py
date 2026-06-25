@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +15,6 @@ TOOLSET = "claworld"
 
 ACCOUNT_ACTIONS = (
     "view_account",
-    "start_email_verification",
-    "complete_email_verification",
     "update_display_name",
     "update_human_profile",
     "update_agent_profile",
@@ -157,10 +153,8 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "generateShareCard": {"type": "boolean"},
         "shareCardVariant": {"type": "string", "enum": ["en", "zh"]},
         "expiresInSeconds": {"type": "integer", "minimum": 1},
-        "email": {"type": "string"},
-        "code": {"type": "string"},
     },
-    description="Check account readiness, verify identity, manage public profile and policy, and subscribe to people.",
+    description="Check account readiness, manage public profile and policy, and subscribe to people.",
 )
 SEARCH_SCHEMA = _schema(
     None,
@@ -281,51 +275,6 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         return _generic(cfg, args)
     action = _normalize_account_action(args)
     account_id = _account_id(cfg, args)
-
-    if action == "start_email_verification":
-        email = _text(args.get("email"))
-        _require(email, "email is required for action=start_email_verification")
-        payload = request_json(
-            _identity_request_config(cfg),
-            "POST",
-            "/v1/identity/email/start",
-            body=_drop_empty({"email": email, "displayName": args.get("displayName")}),
-        )
-        if isinstance(payload, dict):
-            payload = dict(payload)
-            payload.pop("verificationId", None)
-        return _action_result("claworld_manage_account", action, payload)
-
-    if action == "complete_email_verification":
-        email = _text(args.get("email"))
-        code = _text(args.get("code"))
-        _require(email, "email is required for action=complete_email_verification")
-        _require(code, "code is required for action=complete_email_verification")
-        payload = request_json(
-            _identity_request_config(cfg),
-            "POST",
-            "/v1/identity/email/verify",
-            body=_drop_empty({"email": email, "code": code}),
-        )
-        verified_token = _text(payload.get("appToken"))
-        verified_agent_id = _text(payload.get("agentId"))
-        if not verified_token or not verified_agent_id:
-            raise ValueError("claworld email verification did not return appToken and agentId")
-        persistence = _persist_identity_credential_env(verified_token, verified_agent_id)
-        if isinstance(payload, dict):
-            payload = dict(payload)
-            payload.pop("appToken", None)
-            payload.pop("credential", None)
-            payload.pop("bootstrapCredential", None)
-        payload["runtimeIdentity"] = {
-            "status": "verified",
-            "agentId": verified_agent_id,
-            "bindingSource": "email_verification",
-            "created": payload.get("created"),
-            "recovered": payload.get("recovered"),
-        }
-        payload["credentialPersistence"] = persistence
-        return _action_result("claworld_manage_account", action, payload)
 
     agent_id = _agent_id(cfg, args)
 
@@ -736,60 +685,6 @@ def _report_owner(cfg: ClaworldConfig, args: dict) -> dict:
         "delivery": delivery,
         "mainContext": {"transcript": transcript},
     }
-
-
-def _identity_request_config(cfg: ClaworldConfig) -> ClaworldConfig:
-    return replace(cfg, app_token="", agent_id="")
-
-
-def _persist_identity_credential_env(app_token: str, agent_id: str) -> dict:
-    os.environ["CLAWORLD_APP_TOKEN"] = app_token
-    os.environ["CLAWORLD_AGENT_ID"] = agent_id
-    env_path = hermes_home_path() / ".env"
-    try:
-        _write_dotenv_values(
-            env_path,
-            {
-                "CLAWORLD_APP_TOKEN": app_token,
-                "CLAWORLD_AGENT_ID": agent_id,
-            },
-        )
-        return {"status": "saved_to_hermes_env", "path": str(env_path), "restartRequired": True}
-    except Exception as exc:
-        return {"status": "env_updated_for_current_process", "path": str(env_path), "restartRequired": True, "error": str(exc)}
-
-
-def _write_dotenv_values(path: Path, values: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    updated_keys = set()
-    lines: list[str] = []
-    for line in existing:
-        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
-        if key in values:
-            lines.append(f"{key}={_dotenv_value(values[key])}")
-            updated_keys.add(key)
-        else:
-            lines.append(line)
-    for key, value in values.items():
-        if key not in updated_keys:
-            lines.append(f"{key}={_dotenv_value(value)}")
-
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines).rstrip() + "\n")
-        os.replace(tmp_name, path)
-    finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-
-
-def _dotenv_value(value: str) -> str:
-    value = str(value).replace("\n", "").replace("\r", "")
-    if any(ch.isspace() or ch in {'"', "#", "'"} for ch in value):
-        return json.dumps(value)
-    return value
 
 
 def _send_owner_route(route: dict, message: str):

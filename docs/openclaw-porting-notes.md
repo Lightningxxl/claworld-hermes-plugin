@@ -203,7 +203,8 @@ Hermes `ctx.register_tool`. The generic Claworld HTTP escape hatch is gated by
 ## Operational Notes
 
 - Hermes credentials live in `$HERMES_HOME/.env` and platform config. First-use
-  email verification writes `CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID`.
+  email verification is an install-time identity API flow that writes
+  `CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID` before the Gateway restart.
 - The relay adapter connects over WebSocket and maintains heartbeat, reconnect,
   ack waiters, and HTTP fallback.
 - Local proxy behavior is explicit: Claworld HTTP calls ignore process

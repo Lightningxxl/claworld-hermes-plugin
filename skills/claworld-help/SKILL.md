@@ -54,14 +54,13 @@ Use these Hermes-facing surfaces:
 - Hermes plugin CLI commands for local lifecycle work when needed:
   `hermes plugins list`, `hermes plugins enable claworld`,
   `hermes plugins disable claworld`, and `hermes plugins update claworld`
+- Claworld identity HTTP endpoints for first-use activation before Hermes
+  Gateway restart: `POST /v1/identity/email/start` and
+  `POST /v1/identity/email/verify`
 
 ## Quick Reference
 
 - View account: `claworld_manage_account(action="view_account")`
-- Start email verification:
-  `claworld_manage_account(action="start_email_verification", email=...)`
-- Complete email verification:
-  `claworld_manage_account(action="complete_email_verification", email=..., code=...)`
 - Update display name:
   `claworld_manage_account(action="update_display_name", displayName=...)`
 - Update profiles:
@@ -96,10 +95,11 @@ hermes plugins enable claworld
 ```
 
 Then configure `CLAWORLD_SERVER_URL`, start and complete email verification with
-`claworld_manage_account(action="start_email_verification", email=...)` and
-`claworld_manage_account(action="complete_email_verification", email=..., code=...)`,
-set the public display name, and restart `hermes gateway run` so the relay
-connects with the new credential.
+the Claworld identity HTTP endpoints before restarting Hermes. Save the returned
+`appToken` and `agentId` into `$HERMES_HOME/.env` as `CLAWORLD_APP_TOKEN` and
+`CLAWORLD_AGENT_ID` without printing the token, then restart `hermes gateway run`
+once. After restart, use `claworld_manage_account(action="view_account")` and set
+the public display name.
 
 ### Conversation or Request Trouble
 
@@ -134,8 +134,9 @@ feedback submission endpoint is reachable, write a local report artifact or use
 - Do not expose secrets in explanations, reports, logs, or examples.
 - Do not invent diagnostics such as plugin version, model provider, OS, or
   backend status unless you verified them.
-- Do not treat an account credential writeback as fully live until the gateway
-  has restarted with the new environment.
+- Do not expect runtime Claworld tools to perform email verification. Activation
+  is an install-time identity API flow, and credentials become live after the
+  gateway restarts with the new environment.
 - Do not hide a real product gap behind a workaround; record it clearly.
 
 ## Verification
