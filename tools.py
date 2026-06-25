@@ -17,7 +17,6 @@ TOOLSET = "claworld"
 
 ACCOUNT_ACTIONS = (
     "view_account",
-    "activate_account",
     "start_email_verification",
     "complete_email_verification",
     "update_display_name",
@@ -62,37 +61,37 @@ def register_tools(ctx) -> None:
     for name, description, schema, handler in (
         (
             "claworld_manage_account",
-            "View or update the local Claworld account, public identity, account profile, policies, person subscriptions, and email-based identity activation.",
+            "Check account readiness, verify identity, manage public profile and policy, and subscribe to people.",
             MANAGE_ACCOUNT_SCHEMA,
             manage_account,
         ),
         (
             "claworld_search",
-            "Search Claworld people, worlds, and world members.",
+            "Search Claworld worlds, world members, and people by scope with optional filters.",
             SEARCH_SCHEMA,
             search,
         ),
         (
             "claworld_get_public_profile",
-            "Read or look up a public Claworld profile.",
+            "Get your own public Claworld profile or look up another agent's by identity.",
             PUBLIC_PROFILE_SCHEMA,
             get_public_profile,
         ),
         (
             "claworld_manage_worlds",
-            "List, inspect, create, join, update, subscribe to, or administer Claworld worlds.",
+            "List, create, join, update, or leave Claworld worlds. Manage members, invites, broadcasts, activity, and subscriptions.",
             MANAGE_WORLDS_SCHEMA,
             manage_worlds,
         ),
         (
             "claworld_manage_conversations",
-            "Create, inspect, accept, reject, or close Claworld chat requests and conversations.",
+            "Request, accept, reject, or close Claworld chat conversations. Inspect state or list related conversations.",
             MANAGE_CONVERSATIONS_SCHEMA,
             manage_conversations,
         ),
         (
             "claworld_report_owner",
-            "Send a constrained Claworld report to the recorded human chat route. Pass lookup_refs separately to inject routing identifiers into Main Session context only.",
+            "Send a Claworld update to the human chat and inject context into Main Session. Pass report_text for the human and lookup_refs for Main Session context only.",
             REPORT_OWNER_SCHEMA,
             report_owner,
         ),
@@ -161,7 +160,7 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "email": {"type": "string"},
         "code": {"type": "string"},
     },
-    description="View or update the local Claworld account, public identity, account profile, policies, person subscriptions, and email-based identity activation.",
+    description="Check account readiness, verify identity, manage public profile and policy, and subscribe to people.",
 )
 SEARCH_SCHEMA = _schema(
     None,
@@ -178,9 +177,9 @@ SEARCH_SCHEMA = _schema(
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "page": {"type": "integer", "minimum": 1},
     },
-    description="Search Claworld people, worlds, and world members.",
+    description="Search Claworld worlds, world members, and people by scope with optional filters.",
 )
-PUBLIC_PROFILE_SCHEMA = _schema(PUBLIC_PROFILE_ACTIONS, description="Read or look up a public Claworld profile.")
+PUBLIC_PROFILE_SCHEMA = _schema(PUBLIC_PROFILE_ACTIONS, description="Get your own public Claworld profile or look up another agent's by identity.")
 MANAGE_WORLDS_SCHEMA = _schema(
     WORLD_ACTIONS,
     {
@@ -202,7 +201,7 @@ MANAGE_WORLDS_SCHEMA = _schema(
         "status": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
     },
-    description="List, inspect, create, join, update, subscribe to, or administer Claworld worlds.",
+    description="List, create, join, update, or leave Claworld worlds. Manage members, invites, broadcasts, activity, and subscriptions.",
 )
 MANAGE_CONVERSATIONS_SCHEMA = _schema(
     CONVERSATION_ACTIONS,
@@ -217,12 +216,12 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
         "direction": {"type": "string", "enum": ["inbound", "outbound"]},
         "filters": {"type": "object"},
     },
-    description="Create, inspect, accept, reject, or close Claworld chat requests and conversations.",
+    description="Request, accept, reject, or close Claworld chat conversations. Inspect state or list related conversations.",
 )
 REPORT_OWNER_SCHEMA = _schema(
     None,
     {"report_text": {"type": "string"}, "lookup_refs": {"type": "string"}, "deliver": {"type": "boolean"}},
-    description="Send a constrained Claworld report to the recorded human chat route. Pass lookup_refs separately to inject them into Main Session context only — they will not appear in the human-facing message.",
+    description="Send a Claworld update to the human chat and inject context into Main Session. Pass report_text for the human and lookup_refs for Main Session context only.",
 )
 
 
@@ -287,11 +286,14 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         email = _text(args.get("email"))
         _require(email, "email is required for action=start_email_verification")
         payload = request_json(
-            cfg,
+            _identity_request_config(cfg),
             "POST",
             "/v1/identity/email/start",
             body=_drop_empty({"email": email, "displayName": args.get("displayName")}),
         )
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            payload.pop("verificationId", None)
         return _action_result("claworld_manage_account", action, payload)
 
     if action == "complete_email_verification":
@@ -300,21 +302,30 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         _require(email, "email is required for action=complete_email_verification")
         _require(code, "code is required for action=complete_email_verification")
         payload = request_json(
-            cfg,
+            _identity_request_config(cfg),
             "POST",
             "/v1/identity/email/verify",
             body=_drop_empty({"email": email, "code": code}),
         )
-        activated_token = _text(payload.get("appToken"))
-        activated_agent_id = _text(payload.get("agentId"))
-        if activated_token and activated_agent_id:
-            activated_cfg = replace(cfg, app_token=activated_token, agent_id=activated_agent_id)
-            persistence = _persist_activation_env(activated_token, activated_agent_id)
-            payload["credentialPersistence"] = persistence
+        verified_token = _text(payload.get("appToken"))
+        verified_agent_id = _text(payload.get("agentId"))
+        if not verified_token or not verified_agent_id:
+            raise ValueError("claworld email verification did not return appToken and agentId")
+        persistence = _persist_identity_credential_env(verified_token, verified_agent_id)
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            payload.pop("appToken", None)
+            payload.pop("credential", None)
+            payload.pop("bootstrapCredential", None)
+        payload["runtimeIdentity"] = {
+            "status": "verified",
+            "agentId": verified_agent_id,
+            "bindingSource": "email_verification",
+            "created": payload.get("created"),
+            "recovered": payload.get("recovered"),
+        }
+        payload["credentialPersistence"] = persistence
         return _action_result("claworld_manage_account", action, payload)
-
-    if action == "activate_account" and not cfg.app_token:
-        return _activate_account_without_token(cfg, args, account_id)
 
     agent_id = _agent_id(cfg, args)
 
@@ -360,7 +371,6 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         return _action_result("claworld_manage_account", action, payload)
 
     backend_action = {
-        "activate_account": "update_identity",
         "update_display_name": "update_identity",
     }.get(action, action)
     body = _drop_empty(
@@ -376,7 +386,7 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
             "contactable": args.get("contactable"),
             "chatRequestApprovalPolicy": args.get("chatRequestApprovalPolicy"),
             "proactivitySettings": args.get("proactivitySettings"),
-            "generateShareCard": args.get("generateShareCard", action in {"activate_account", "update_display_name"}),
+            "generateShareCard": args.get("generateShareCard", action == "update_display_name"),
             "shareCardVariant": args.get("shareCardVariant"),
             "expiresInSeconds": args.get("expiresInSeconds"),
         }
@@ -728,49 +738,11 @@ def _report_owner(cfg: ClaworldConfig, args: dict) -> dict:
     }
 
 
-def _activate_account_without_token(cfg: ClaworldConfig, args: dict, account_id: str | None) -> dict:
-    display_name = _text(args.get("displayName"), "Claworld Agent")
-    activation = request_json(
-        cfg,
-        "POST",
-        "/v1/onboarding/activate",
-        body=_drop_empty({"displayName": display_name, "shareInstanceId": args.get("shareInstanceId")}),
-    )
-    activated_token = _text(activation.get("appToken"))
-    activated_agent_id = _text(activation.get("agentId"))
-    if not activated_token or not activated_agent_id:
-        raise ValueError("claworld activation did not return appToken and agentId")
-
-    activated_cfg = replace(cfg, app_token=activated_token, agent_id=activated_agent_id)
-    persistence = _persist_activation_env(activated_token, activated_agent_id)
-    payload = request_json(
-        activated_cfg,
-        "POST",
-        "/v1/account",
-        body=_drop_empty(
-            {
-                "accountId": account_id,
-                "agentId": activated_agent_id,
-                "action": "update_identity",
-                "displayName": display_name,
-                "generateShareCard": args.get("generateShareCard", True),
-                "shareCardVariant": args.get("shareCardVariant"),
-                "expiresInSeconds": args.get("expiresInSeconds"),
-            }
-        ),
-    )
-    payload = _augment_account_binding(payload, cfg=activated_cfg, account_id=account_id, agent_id=activated_agent_id)
-    payload["runtimeActivation"] = {
-        "status": "activated",
-        "agentId": activated_agent_id,
-        "bindingSource": activation.get("bindingSource"),
-        "created": activation.get("created"),
-    }
-    payload["credentialPersistence"] = persistence
-    return _action_result("claworld_manage_account", "activate_account", payload)
+def _identity_request_config(cfg: ClaworldConfig) -> ClaworldConfig:
+    return replace(cfg, app_token="", agent_id="")
 
 
-def _persist_activation_env(app_token: str, agent_id: str) -> dict:
+def _persist_identity_credential_env(app_token: str, agent_id: str) -> dict:
     os.environ["CLAWORLD_APP_TOKEN"] = app_token
     os.environ["CLAWORLD_AGENT_ID"] = agent_id
     env_path = hermes_home_path() / ".env"
@@ -1012,10 +984,10 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
         return payload
     resolved_agent_id = _text(agent_id, _text(cfg.agent_id))
     binding_ready = bool(cfg.app_token and resolved_agent_id)
-    binding_status = "bound" if binding_ready else "identity_unresolved" if cfg.app_token else "unactivated"
+    binding_status = "bound" if binding_ready else "identity_unresolved" if cfg.app_token else "identity_unverified"
     diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
     relay = payload.get("relay") if isinstance(payload.get("relay"), dict) else {}
-    activation = payload.get("activation") if isinstance(payload.get("activation"), dict) else {}
+    identity_verification = payload.get("identityVerification") if isinstance(payload.get("identityVerification"), dict) else {}
     public_identity_ready = diagnostics.get("publicIdentityReady")
     if not isinstance(public_identity_ready, bool) and payload.get("readiness") in {
         "public_identity_incomplete",
@@ -1026,9 +998,9 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
         **payload,
         "accountId": payload.get("accountId") or account_id,
         "bindingSource": payload.get("bindingSource") or "hermes_config",
-        "activation": {
-            **activation,
-            "status": activation.get("status") or ("ready" if cfg.app_token else "pending"),
+        "identityVerification": {
+            **identity_verification,
+            "status": identity_verification.get("status") or ("ready" if cfg.app_token else "pending"),
         },
         "diagnostics": {
             **diagnostics,
@@ -1103,7 +1075,6 @@ def _validate_conversation_query_args(args: dict, action: str) -> None:
 
 def _normalize_account_action(args: dict) -> str:
     aliases = {
-        "activate": "activate_account",
         "view": "view_account",
         "view_public_identity": "view_account",
         "update_public_identity": "update_display_name",

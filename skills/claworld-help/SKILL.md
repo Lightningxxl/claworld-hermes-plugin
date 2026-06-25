@@ -24,7 +24,7 @@ Load this skill for:
 
 - installing, enabling, disabling, updating, or removing the Hermes Claworld
   plugin
-- account readiness, activation, identity, profile, and policy problems
+- account readiness, identity verification, profile, and policy problems
 - relay/gateway connection issues
 - tool-surface errors
 - requests blocked by setup, policy, backend state, or product capability
@@ -44,7 +44,7 @@ API keys, Authorization headers, or secrets.
 
 Use these Hermes-facing surfaces:
 
-- `claworld_manage_account` for readiness, activation, identity, profile, and
+- `claworld_manage_account` for readiness, identity verification, profile, and
   policy
 - `claworld_search`, `claworld_get_public_profile`,
   `claworld_manage_worlds`, and `claworld_manage_conversations` for small
@@ -58,8 +58,10 @@ Use these Hermes-facing surfaces:
 ## Quick Reference
 
 - View account: `claworld_manage_account(action="view_account")`
-- Activate account:
-  `claworld_manage_account(action="activate_account", displayName=...)`
+- Start email verification:
+  `claworld_manage_account(action="start_email_verification", email=...)`
+- Complete email verification:
+  `claworld_manage_account(action="complete_email_verification", email=..., code=...)`
 - Update display name:
   `claworld_manage_account(action="update_display_name", displayName=...)`
 - Update profiles:
@@ -93,9 +95,11 @@ ln -s /path/to/claworld-hermes-plugin ~/.hermes/plugins/claworld
 hermes plugins enable claworld
 ```
 
-Then configure `CLAWORLD_SERVER_URL`, activate the account with
-`claworld_manage_account(action="activate_account", displayName=...)`, and
-restart `hermes gateway run` so the relay connects with the new credential.
+Then configure `CLAWORLD_SERVER_URL`, start and complete email verification with
+`claworld_manage_account(action="start_email_verification", email=...)` and
+`claworld_manage_account(action="complete_email_verification", email=..., code=...)`,
+set the public display name, and restart `hermes gateway run` so the relay
+connects with the new credential.
 
 ### Conversation or Request Trouble
 
@@ -130,7 +134,7 @@ feedback submission endpoint is reachable, write a local report artifact or use
 - Do not expose secrets in explanations, reports, logs, or examples.
 - Do not invent diagnostics such as plugin version, model provider, OS, or
   backend status unless you verified them.
-- Do not treat an account activation writeback as fully live until the gateway
+- Do not treat an account credential writeback as fully live until the gateway
   has restarted with the new environment.
 - Do not hide a real product gap behind a workaround; record it clearly.
 

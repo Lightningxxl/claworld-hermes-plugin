@@ -643,9 +643,9 @@ class ToolRoutingTests(unittest.TestCase):
             self.assertIn('"status": "appended"', journal_text)
 
     def test_report_owner_splits_lookup_refs_from_human_message(self):
-        cfg = self._fresh_config()
-        root = cfg.memory_root_path()
-        with TemporaryMemoryScope(root):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", working_memory_root=str(root))
             route = {"platform": "feishu", "chatId": "chat-1", "sessionId": "sid-main"}
             send_calls = []
             append_calls = []
@@ -793,9 +793,9 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["accountProfileReady"], False)
         self.assertEqual(result["relay"]["agentId"], "agent-1")
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
-        self.assertEqual(result["activation"]["status"], "ready")
+        self.assertEqual(result["identityVerification"]["status"], "ready")
 
-    def test_activate_account_bootstraps_token_updates_identity_and_persists_env(self):
+    def test_email_verification_start_strips_session_id(self):
         calls = []
 
         def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
@@ -809,45 +809,73 @@ class ToolRoutingTests(unittest.TestCase):
                     "timeout": timeout,
                 }
             )
-            if endpoint == "/v1/onboarding/activate":
-                self.assertFalse(cfg.app_token)
-                return {
-                    "status": "activated",
-                    "created": True,
-                    "bindingSource": "created_agent_app_token",
-                    "agentId": "agent-new",
-                    "appToken": "token-new",
+            self.assertFalse(cfg.app_token)
+            return {
+                "status": "verification_started",
+                "email": "agent@example.com",
+                "verificationId": "legacy-session",
+                "expiresAt": "2026-06-24T00:10:00.000Z",
+            }
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._manage_account(
+                ClaworldConfig(server_url="https://api.example.com", app_token="old-token", agent_id="old-agent"),
+                {"action": "start_email_verification", "email": "agent@example.com", "displayName": "Hermes Agent"},
+            )
+
+        self.assertEqual(calls[0]["endpoint"], "/v1/identity/email/start")
+        self.assertEqual(calls[0]["body"], {"email": "agent@example.com", "displayName": "Hermes Agent"})
+        self.assertEqual(result["action"], "start_email_verification")
+        self.assertEqual(result["status"], "verification_started")
+        self.assertNotIn("verificationId", result)
+
+    def test_complete_email_verification_persists_env_and_redacts_token(self):
+        calls = []
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append(
+                {
+                    "cfg": cfg,
+                    "method": method,
+                    "endpoint": endpoint,
+                    "body": body,
+                    "query": query,
+                    "timeout": timeout,
                 }
-            if endpoint == "/v1/account":
-                self.assertEqual(cfg.app_token, "token-new")
-                self.assertEqual(cfg.agent_id, "agent-new")
-                return {
-                    "ready": True,
-                    "readiness": "paired_and_ready",
-                    "accountProfile": {"ready": True, "profile": "ready profile"},
-                }
-            raise AssertionError(f"unexpected endpoint {endpoint}")
+            )
+            self.assertFalse(cfg.app_token)
+            return {
+                "status": "verified",
+                "agentId": "agent-email",
+                "appToken": "token-email",
+                "credential": {"type": "agent_token", "token": "token-email"},
+                "created": False,
+                "recovered": True,
+                "publicIdentity": {"status": "pending", "displayName": "Hermes Agent"},
+            }
 
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), patch(
             "claworld_hermes_plugin.tools.hermes_home_path",
             return_value=Path(tmp),
         ), patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
             result = claworld_tools._manage_account(
-                ClaworldConfig(server_url="https://api.example.com", account_id="acct"),
-                {"action": "activate_account", "displayName": "Hermes Agent"},
+                ClaworldConfig(server_url="https://api.example.com", app_token="old-token", agent_id="old-agent"),
+                {"action": "complete_email_verification", "email": "agent@example.com", "code": "123456"},
             )
             env_text = (Path(tmp) / ".env").read_text(encoding="utf-8")
 
-        self.assertEqual([call["endpoint"] for call in calls], ["/v1/onboarding/activate", "/v1/account"])
-        self.assertEqual(calls[1]["body"]["action"], "update_identity")
-        self.assertEqual(calls[1]["body"]["agentId"], "agent-new")
-        self.assertEqual(result["action"], "activate_account")
-        self.assertEqual(result["runtimeActivation"]["status"], "activated")
-        self.assertEqual(result["runtimeActivation"]["agentId"], "agent-new")
+        self.assertEqual(calls[0]["endpoint"], "/v1/identity/email/verify")
+        self.assertEqual(calls[0]["body"], {"email": "agent@example.com", "code": "123456"})
+        self.assertEqual(result["action"], "complete_email_verification")
+        self.assertEqual(result["runtimeIdentity"]["status"], "verified")
+        self.assertEqual(result["runtimeIdentity"]["agentId"], "agent-email")
+        self.assertEqual(result["runtimeIdentity"]["recovered"], True)
         self.assertEqual(result["credentialPersistence"]["status"], "saved_to_hermes_env")
-        self.assertIn("CLAWORLD_APP_TOKEN=token-new", env_text)
-        self.assertIn("CLAWORLD_AGENT_ID=agent-new", env_text)
-        self.assertNotIn("token-new", json.dumps(result, sort_keys=True))
+        self.assertIn("CLAWORLD_APP_TOKEN=token-email", env_text)
+        self.assertIn("CLAWORLD_AGENT_ID=agent-email", env_text)
+        self.assertNotIn("appToken", result)
+        self.assertNotIn("credential", result)
+        self.assertNotIn("token-email", json.dumps(result, sort_keys=True))
 
     def test_tool_result_exposes_backend_remediation_fields(self):
         def failing_tool(cfg, args):
