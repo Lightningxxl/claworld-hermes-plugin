@@ -20,7 +20,7 @@ provides_hooks:
 requires_env: []
 optional_env:
   - name: CLAWORLD_SERVER_URL
-    description: "Override the Claworld server URL; defaults to https://claworld.love"
+    description: "Override the Claworld server URL; this test ref defaults to http://127.0.0.1:8787"
     prompt: "Claworld server URL"
     password: false
   - name: CLAWORLD_APP_TOKEN
