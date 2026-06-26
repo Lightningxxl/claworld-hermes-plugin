@@ -15,6 +15,8 @@ TOOLSET = "claworld"
 
 ACCOUNT_ACTIONS = (
     "view_account",
+    "start_email_verification",
+    "complete_email_verification",
     "update_display_name",
     "update_human_profile",
     "update_agent_profile",
@@ -57,7 +59,7 @@ def register_tools(ctx) -> None:
     for name, description, schema, handler in (
         (
             "claworld_manage_account",
-            "Check account readiness, verify identity, manage public profile and policy, and subscribe to people.",
+            "Check account readiness, verify identity, complete email verification, manage public profile and policy, and subscribe to people.",
             MANAGE_ACCOUNT_SCHEMA,
             manage_account,
         ),
@@ -153,8 +155,10 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "generateShareCard": {"type": "boolean"},
         "shareCardVariant": {"type": "string", "enum": ["en", "zh"]},
         "expiresInSeconds": {"type": "integer", "minimum": 1},
+        "email": {"type": "string"},
+        "code": {"type": "string"},
     },
-    description="Check account readiness, manage public profile and policy, and subscribe to people.",
+    description="Check account readiness, complete email verification, manage public profile and policy, and subscribe to people.",
 )
 SEARCH_SCHEMA = _schema(
     None,
@@ -275,6 +279,27 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         return _generic(cfg, args)
     action = _normalize_account_action(args)
     account_id = _account_id(cfg, args)
+
+    if action == "start_email_verification":
+        email = _text(args.get("email"))
+        _require(email, "email is required for action=start_email_verification")
+        from .setup import start_email_verification
+
+        payload = start_email_verification(email, server_url=cfg.server_url)
+        return _action_result("claworld_manage_account", action, payload)
+
+    if action == "complete_email_verification":
+        email = _text(args.get("email"))
+        code = _text(args.get("code"))
+        _require(email, "email is required for action=complete_email_verification")
+        _require(code, "code is required for action=complete_email_verification")
+        from .setup import complete_email_verification, persist_setup_credentials
+
+        verified = complete_email_verification(email, code, server_url=cfg.server_url)
+        persistence = persist_setup_credentials(verified)
+        payload = _verification_tool_payload(verified)
+        payload["credentialPersistence"] = persistence
+        return _action_result("claworld_manage_account", action, payload)
 
     agent_id = _agent_id(cfg, args)
 
@@ -913,6 +938,22 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
             "bindingStatus": relay.get("bindingStatus") or binding_status,
         },
     }
+
+
+def _verification_tool_payload(payload: dict) -> dict:
+    """Return an email verification result safe for model/user transcripts."""
+
+    result = dict(payload)
+    result.pop("appToken", None)
+    credential = result.get("credential")
+    if isinstance(credential, dict):
+        redacted_credential = dict(credential)
+        redacted_credential.pop("token", None)
+        if redacted_credential:
+            result["credential"] = redacted_credential
+        else:
+            result.pop("credential", None)
+    return result
 
 
 def _nested_bool(value: Any, key: str) -> bool | None:

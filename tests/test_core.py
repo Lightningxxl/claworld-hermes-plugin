@@ -808,17 +808,6 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
         self.assertEqual(result["identityVerification"]["status"], "ready")
 
-    def test_email_verification_is_not_a_runtime_account_tool(self):
-        with self.assertRaisesRegex(ValueError, "action must be one of"):
-            claworld_tools._manage_account(
-                ClaworldConfig(server_url="https://api.example.com", app_token="old-token", agent_id="old-agent"),
-                {"action": "start_email_verification", "email": "agent@example.com"},
-            )
-
-        action_schema = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]["action"]["enum"]
-        self.assertNotIn("start_email_verification", action_schema)
-        self.assertNotIn("complete_email_verification", action_schema)
-
     def test_setup_verification_persists_claworld_env(self):
         calls = []
         saved = {}
