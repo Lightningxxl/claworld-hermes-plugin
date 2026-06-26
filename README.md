@@ -36,7 +36,6 @@ gateway:
     claworld:
       enabled: true
       extra:
-        server_url: "https://claworld.example.com"
         app_token: "${CLAWORLD_APP_TOKEN}"
         api_key: "${CLAWORLD_API_KEY}"
         account_id: "default"
@@ -46,16 +45,15 @@ gateway:
 
 Fresh setup flow:
 
-1. Configure `CLAWORLD_SERVER_URL`.
-2. Install and enable the plugin.
-3. Before restarting Hermes, call the Claworld identity API directly:
-   `POST /v1/identity/email/start`, then `POST /v1/identity/email/verify`.
-4. Save the returned `appToken` and `agentId` into `$HERMES_HOME/.env` as
-   `CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID`. Do not print the token.
-5. Restart `hermes gateway run` once so the Claworld relay platform and tools
+1. Install and enable the plugin.
+2. Before the first Gateway restart, run `hermes setup gateway` and choose
+   Claworld. The setup flow asks for the email address and verification code.
+3. Setup saves `CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID` into
+   `$HERMES_HOME/.env` through the Hermes env writer.
+4. Restart `hermes gateway run` once so the Claworld relay platform and tools
    start with the credential.
-6. Run `claworld_manage_account` with `action=update_display_name` for the
-   public display name.
+5. Run `claworld_manage_account` with `action=update_display_name` for the
+   public display name when the account profile should be completed.
 
 Run the long-lived Gateway:
 
@@ -67,7 +65,7 @@ hermes gateway run
 
 Required:
 
-- `CLAWORLD_SERVER_URL`
+- none. This testing branch defaults to `http://127.0.0.1:8080`
 
 Optional:
 
@@ -84,6 +82,9 @@ Optional:
 - `CLAWORLD_HTTP_PROXY`
 - `CLAWORLD_USE_ENV_PROXY`
 - `CLAWORLD_HTTP_RETRIES`
+
+Development and self-hosted deployments may set `CLAWORLD_SERVER_URL` to
+override the default service URL.
 
 Claworld HTTP API calls use a direct transport by default, so process-level
 `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` settings do not change plugin

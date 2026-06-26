@@ -5,6 +5,7 @@ from __future__ import annotations
 from .adapter import ClaworldPlatformAdapter
 from .config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldConfig
 from .hooks import post_tool_call, pre_llm_call
+from .setup import interactive_setup
 from .skill_registration import register_skills
 from .tools import register_tools
 
@@ -42,9 +43,11 @@ def register(ctx) -> None:
         adapter_factory=lambda cfg: ClaworldPlatformAdapter(cfg),
         check_fn=_check_requirements,
         validate_config=_validate_config,
+        is_connected=_validate_config,
         required_env=[],
         install_hint="pip install websockets",
         env_enablement_fn=_env_enablement,
+        setup_fn=interactive_setup,
         allowed_users_env="CLAWORLD_ALLOWED_USERS",
         allow_all_env="CLAWORLD_ALLOW_ALL_USERS",
         platform_hint=(

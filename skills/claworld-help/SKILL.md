@@ -94,12 +94,14 @@ ln -s /path/to/claworld-hermes-plugin ~/.hermes/plugins/claworld
 hermes plugins enable claworld
 ```
 
-Then configure `CLAWORLD_SERVER_URL`, start and complete email verification with
-the Claworld identity HTTP endpoints before restarting Hermes. Save the returned
-`appToken` and `agentId` into `$HERMES_HOME/.env` as `CLAWORLD_APP_TOKEN` and
-`CLAWORLD_AGENT_ID` without printing the token, then restart `hermes gateway run`
-once. After restart, use `claworld_manage_account(action="view_account")` and set
-the public display name.
+Then run `hermes setup gateway` and choose Claworld before restarting Hermes.
+The setup flow asks for the email address and verification code, then saves the
+returned `appToken` and `agentId` into `$HERMES_HOME/.env` as
+`CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID` through the Hermes env writer. This
+testing branch uses the local backend default from plugin config; set
+`CLAWORLD_SERVER_URL` only when explicitly testing another server. Restart
+`hermes gateway run` once. After restart, use
+`claworld_manage_account(action="view_account")` and set the public display name.
 
 ### Conversation or Request Trouble
 

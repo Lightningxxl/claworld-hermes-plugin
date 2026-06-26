@@ -22,6 +22,7 @@ sys.modules.setdefault(PACKAGE, pkg)
 from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
 from claworld_hermes_plugin import http_client as claworld_http
+from claworld_hermes_plugin import setup as claworld_setup
 from claworld_hermes_plugin.config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldConfig
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
 from claworld_hermes_plugin import skill_registration as claworld_skills
@@ -263,6 +264,16 @@ class PluginEntryTests(unittest.TestCase):
         ):
             self.assertEqual(plugin._env_enablement()["app_token"], "tok")
 
+    def test_is_connected_requires_activation_token_for_setup_status(self):
+        plugin = import_plugin_entry_with_gateway_shim()
+        cfg = types.SimpleNamespace(extra={})
+
+        with patch.dict(os.environ, {"CLAWORLD_SERVER_URL": "https://api.example.com"}, clear=True):
+            self.assertIs(plugin._validate_config(cfg), False)
+
+        with patch.dict(os.environ, {"CLAWORLD_APP_TOKEN": "tok"}, clear=True):
+            self.assertIs(plugin._validate_config(cfg), True)
+
 
 class PluginSkillTests(unittest.TestCase):
     def test_registers_bundled_claworld_skills(self):
@@ -328,6 +339,8 @@ class PluginSkillTests(unittest.TestCase):
         plugin.register(FakeCtx())
 
         self.assertEqual([entry["name"] for entry in registered["platforms"]], ["claworld"])
+        self.assertIs(registered["platforms"][0]["setup_fn"], plugin.interactive_setup)
+        self.assertIs(registered["platforms"][0]["is_connected"], plugin._validate_config)
         self.assertEqual(len(registered["tools"]), 6)
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
@@ -805,6 +818,68 @@ class ToolRoutingTests(unittest.TestCase):
         action_schema = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]["action"]["enum"]
         self.assertNotIn("start_email_verification", action_schema)
         self.assertNotIn("complete_email_verification", action_schema)
+
+    def test_setup_verification_persists_claworld_env(self):
+        calls = []
+        saved = {}
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append(
+                {
+                    "cfg": cfg,
+                    "method": method,
+                    "endpoint": endpoint,
+                    "body": body,
+                    "query": query,
+                    "timeout": timeout,
+                }
+            )
+            if endpoint == "/v1/identity/email/start":
+                return {"status": "verification_started", "email": body["email"], "expiresAt": "2026-06-24T00:10:00.000Z"}
+            if endpoint == "/v1/identity/email/verify":
+                return {
+                    "status": "verified",
+                    "agentId": "agent-email",
+                    "appToken": "token-email",
+                    "created": True,
+                    "recovered": False,
+                }
+            raise AssertionError(endpoint)
+
+        def fake_save(values):
+            saved.update(values)
+            return {"status": "saved_to_hermes_env", "path": "/tmp/.hermes/.env", "restartRequired": True}
+
+        with patch("claworld_hermes_plugin.setup.request_json", side_effect=fake_request), patch(
+            "claworld_hermes_plugin.setup.save_env_values",
+            side_effect=fake_save,
+        ):
+            started = claworld_setup.start_email_verification(
+                "agent@example.com",
+                server_url="https://api.example.com",
+            )
+            verified = claworld_setup.complete_email_verification(
+                "agent@example.com",
+                "123456",
+                server_url="https://api.example.com",
+            )
+            persistence = claworld_setup.persist_setup_credentials(verified)
+
+        self.assertEqual(started["status"], "verification_started")
+        self.assertEqual(calls[0]["endpoint"], "/v1/identity/email/start")
+        self.assertEqual(calls[0]["body"], {"email": "agent@example.com"})
+        self.assertFalse(calls[0]["cfg"].app_token)
+        self.assertEqual(calls[1]["endpoint"], "/v1/identity/email/verify")
+        self.assertEqual(calls[1]["body"], {"email": "agent@example.com", "code": "123456"})
+        self.assertFalse(calls[1]["cfg"].app_token)
+        self.assertEqual(
+            saved,
+            {
+                "CLAWORLD_APP_TOKEN": "token-email",
+                "CLAWORLD_AGENT_ID": "agent-email",
+            },
+        )
+        self.assertEqual(persistence["status"], "saved_to_hermes_env")
 
     def test_tool_result_exposes_backend_remediation_fields(self):
         def failing_tool(cfg, args):
