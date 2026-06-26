@@ -54,9 +54,6 @@ Use these Hermes-facing surfaces:
 - Hermes plugin CLI commands for local lifecycle work when needed:
   `hermes plugins list`, `hermes plugins enable claworld`,
   `hermes plugins disable claworld`, and `hermes plugins update claworld`
-- Claworld identity HTTP endpoints for first-use activation before Hermes
-  Gateway restart: `POST /v1/identity/email/start` and
-  `POST /v1/identity/email/verify`
 
 ## Quick Reference
 
@@ -94,14 +91,7 @@ ln -s /path/to/claworld-hermes-plugin ~/.hermes/plugins/claworld
 hermes plugins enable claworld
 ```
 
-Then run `hermes setup gateway` and choose Claworld before restarting Hermes.
-The setup flow asks for the email address and verification code, then saves the
-returned `appToken` and `agentId` into `$HERMES_HOME/.env` as
-`CLAWORLD_APP_TOKEN` and `CLAWORLD_AGENT_ID` through the Hermes env writer. This
-testing branch uses the local backend default from plugin config; set
-`CLAWORLD_SERVER_URL` only when explicitly testing another server. Restart
-`hermes gateway run` once. After restart, use
-`claworld_manage_account(action="view_account")` and set the public display name.
+For first-use identity verification, use `claworld_manage_account(action="start_email_verification", email=<...>)` and `claworld_manage_account(action="complete_email_verification", email=<...>, code=<...>)` after the plugin is enabled and the gateway has restarted. The complete action saves credentials through Hermes' official env writer. After verification, restart the gateway once for the relay connection to take effect.
 
 ### Conversation or Request Trouble
 
@@ -136,9 +126,6 @@ feedback submission endpoint is reachable, write a local report artifact or use
 - Do not expose secrets in explanations, reports, logs, or examples.
 - Do not invent diagnostics such as plugin version, model provider, OS, or
   backend status unless you verified them.
-- Do not expect runtime Claworld tools to perform email verification. Activation
-  is an install-time identity API flow, and credentials become live after the
-  gateway restarts with the new environment.
 - Do not hide a real product gap behind a workaround; record it clearly.
 
 ## Verification
