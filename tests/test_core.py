@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.util
 import io
@@ -30,6 +31,72 @@ from claworld_hermes_plugin.protocol import auth_message, build_agent_text, buil
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
 from claworld_hermes_plugin.working_memory import build_prompt_context, ensure_working_memory, read_session_index, record_claworld_route
+
+
+_WS_CLOSED = object()
+
+
+class FakeRelayWebSocket:
+    def __init__(self, name: str):
+        self.name = name
+        self.sent = []
+        self.closed = False
+        self._queue = asyncio.Queue()
+
+    def feed_json(self, payload: dict) -> None:
+        self._queue.put_nowait(json.dumps(payload))
+
+    def fail(self, exc: Exception) -> None:
+        self._queue.put_nowait(exc)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = await self._queue.get()
+        if item is _WS_CLOSED:
+            raise StopAsyncIteration
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def send(self, encoded: str) -> None:
+        self.sent.append(json.loads(encoded))
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self._queue.put_nowait(_WS_CLOSED)
+
+
+class ListLogger:
+    def __init__(self):
+        self.entries = []
+
+    def info(self, message, *args):
+        self.entries.append(("info", message % args if args else message))
+
+    def debug(self, message, *args):
+        self.entries.append(("debug", message % args if args else message))
+
+    def warning(self, message, *args):
+        self.entries.append(("warning", message % args if args else message))
+
+    @property
+    def warnings(self):
+        return [message for level, message in self.entries if level == "warning"]
+
+
+async def wait_until(predicate, timeout: float = 1.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        result = predicate()
+        if result:
+            return result
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("timed out waiting for condition")
+        await asyncio.sleep(0.01)
 
 
 def import_adapter_with_gateway_shim():
@@ -332,6 +399,79 @@ class PluginSkillTests(unittest.TestCase):
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
         self.assertEqual([name for name, _handler in registered["hooks"]], ["pre_llm_call", "post_tool_call"])
+
+
+class RelayClientReconnectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reconnect_retry_keeps_receiver_bound_to_socket(self):
+        logger = ListLogger()
+        cfg = ClaworldConfig(
+            server_url="ws://relay.example/ws",
+            app_token="tok",
+            agent_id="agent-1",
+            heartbeat_seconds=1,
+            reconnect=True,
+        )
+        client = RelayClient(cfg, on_delivery=lambda _envelope: asyncio.sleep(0), logger=logger)
+        client._reconnect_delay_seconds = lambda: 0.01
+        ws1 = FakeRelayWebSocket("ws1")
+        ws2 = FakeRelayWebSocket("ws2")
+        ws1.feed_json({"event": "auth.ok"})
+        ws2.feed_json({"event": "auth.ok"})
+        connect_calls = 0
+
+        async def fake_connect(_url, ping_interval=None):
+            nonlocal connect_calls
+            connect_calls += 1
+            if connect_calls == 1:
+                return ws1
+            if connect_calls == 2:
+                raise OSError("temporary open failure")
+            if connect_calls == 3:
+                return ws2
+            raise AssertionError(f"unexpected reconnect attempt {connect_calls}")
+
+        with patch.dict(sys.modules, {"websockets": types.SimpleNamespace(connect=fake_connect)}):
+            await client.connect()
+            old_receiver = client._receiver_task
+            ws1.fail(RuntimeError("simulated relay close"))
+            await wait_until(lambda: client.ws is ws2)
+            await wait_until(lambda: old_receiver.done())
+
+        self.assertIs(client.ws, ws2)
+        self.assertIsNot(client._receiver_task, old_receiver)
+        self.assertEqual(connect_calls, 3)
+        self.assertTrue(ws1.closed)
+        self.assertFalse(any("NoneType" in warning for warning in logger.warnings))
+        await client.close()
+
+    async def test_open_failure_cleans_new_receiver_and_socket(self):
+        logger = ListLogger()
+        cfg = ClaworldConfig(
+            server_url="ws://relay.example/ws",
+            app_token="tok",
+            agent_id="agent-1",
+            heartbeat_seconds=1,
+            reconnect=False,
+        )
+        client = RelayClient(cfg, on_delivery=lambda _envelope: asyncio.sleep(0), logger=logger)
+        ws = FakeRelayWebSocket("ws-timeout")
+
+        async def fake_connect(_url, ping_interval=None):
+            return ws
+
+        async def fake_wait_for(_future, timeout=None):
+            raise asyncio.TimeoutError()
+
+        with patch.dict(sys.modules, {"websockets": types.SimpleNamespace(connect=fake_connect)}), patch(
+            "claworld_hermes_plugin.relay_client.asyncio.wait_for",
+            side_effect=fake_wait_for,
+        ):
+            with self.assertRaises(asyncio.TimeoutError):
+                await client.connect()
+
+        self.assertIsNone(client.ws)
+        self.assertTrue(ws.closed)
+        self.assertTrue(client._receiver_task is None or client._receiver_task.done())
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
