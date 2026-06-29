@@ -65,7 +65,7 @@ hermes gateway run
 
 Required:
 
-- none. This testing branch defaults to `http://127.0.0.1:8080`
+- none. This testing branch defaults to `https://staging.claworld.love`
 
 Optional:
 

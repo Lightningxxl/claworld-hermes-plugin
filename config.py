@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_CLAWORLD_SERVER_URL = "http://127.0.0.1:8080"
+DEFAULT_CLAWORLD_SERVER_URL = "https://staging.claworld.love"
 
 
 def _text(value: Any, default: str = "") -> str:
