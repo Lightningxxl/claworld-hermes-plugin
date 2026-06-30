@@ -39,6 +39,7 @@ def import_adapter_with_gateway_shim():
         gateway_config = types.ModuleType("gateway.config")
         gateway_platforms = types.ModuleType("gateway.platforms")
         gateway_base = types.ModuleType("gateway.platforms.base")
+        gateway_session = types.ModuleType("gateway.session")
 
         class Platform(str):
             pass
@@ -53,12 +54,17 @@ def import_adapter_with_gateway_shim():
                 pass
 
         class MessageEvent:
-            pass
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
 
         class MessageType:
             TEXT = "text"
 
         class SendResult:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class SessionSource:
             def __init__(self, **kwargs):
                 self.__dict__.update(kwargs)
 
@@ -68,10 +74,12 @@ def import_adapter_with_gateway_shim():
         gateway_base.MessageType = MessageType
         gateway_base.ProcessingOutcome = ProcessingOutcome
         gateway_base.SendResult = SendResult
+        gateway_session.SessionSource = SessionSource
         sys.modules["gateway"] = gateway
         sys.modules["gateway.config"] = gateway_config
         sys.modules["gateway.platforms"] = gateway_platforms
         sys.modules["gateway.platforms.base"] = gateway_base
+        sys.modules["gateway.session"] = gateway_session
     return importlib.import_module("claworld_hermes_plugin.adapter")
 
 
@@ -386,6 +394,183 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reply_result.success)
         self.assertTrue(record.replied)
         self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
+
+    async def test_runtime_error_reply_is_marked_kept_silent(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+                self.silences = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d1",
+            relay_session_key="conversation:abc",
+            chat_id="conversation-abc",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        result = await adapter.send(record.chat_id, "LLM request failed: provider unavailable")
+
+        self.assertTrue(result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [])
+        self.assertEqual(adapter.client.silences, [("d1", "conversation:abc", "runtime_failed_before_reply")])
+
+    async def test_operational_notice_reply_is_marked_kept_silent(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+                self.silences = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d2",
+            relay_session_key="conversation:def",
+            chat_id="conversation-def",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        result = await adapter.send(record.chat_id, "Sent the Claworld reply.\nUsage: 1 in / 2 out")
+
+        self.assertTrue(result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [])
+        self.assertEqual(adapter.client.silences, [("d2", "conversation:def", "operational_notice_only")])
+
+    async def test_reply_strips_operational_usage_suffix(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+                self.silences = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d3",
+            relay_session_key="conversation:ghi",
+            chat_id="conversation-ghi",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        result = await adapter.send(record.chat_id, "real reply\nUsage: 1 in / 2 out")
+
+        self.assertTrue(result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [("d3", "conversation:ghi", "real reply")])
+        self.assertEqual(adapter.client.silences, [])
+
+    async def test_acceptance_failure_does_not_block_delivery_handling(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            async def send_accepted(self, delivery_id, session_key):
+                raise RuntimeError("ack unavailable")
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                raise AssertionError("kept_silent should not be sent")
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        adapter.handle_message = fake_handle_message
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "data": {
+                    "deliveryId": "d4",
+                    "sessionKey": "conversation:abc",
+                    "payload": {"text": "hello"},
+                    "metadata": {},
+                },
+            }
+        )
+
+        with self.assertLogs(adapter_module.logger, level="WARNING") as logs:
+            await adapter._on_delivery(envelope)
+
+        self.assertEqual(len(handled), 1)
+        self.assertIn("hello", handled[0].text)
+        self.assertTrue(any("failed to acknowledge Claworld delivery acceptance" in item for item in logs.output))
+
+    async def test_handler_failure_marks_replyable_delivery_kept_silent(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.silences = []
+
+            async def send_accepted(self, delivery_id, session_key):
+                return None
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+
+        async def fake_handle_message(event):
+            raise RuntimeError("model unavailable")
+
+        adapter.handle_message = fake_handle_message
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "data": {
+                    "deliveryId": "d5",
+                    "sessionKey": "conversation:def",
+                    "payload": {"text": "hello"},
+                    "metadata": {},
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "model unavailable"):
+            await adapter._on_delivery(envelope)
+
+        self.assertEqual(adapter.client.silences, [("d5", "conversation:def", "runtime_failed_before_reply")])
 
 
 class ToolSchemaTests(unittest.TestCase):
@@ -980,6 +1165,42 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(future.done())
 
+    async def test_command_accepted_waiter_ignores_wrong_command_name(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=lambda envelope: None)
+        future = client._register_ack_waiter(
+            ("command.accepted",),
+            "d1",
+            command_names=("delivery.reply.requested",),
+        )
+        client._resolve_ack_waiters(
+            "command.accepted",
+            {
+                "event": "command.accepted",
+                "data": {
+                    "command": {
+                        "name": "delivery.kept_silent.requested",
+                        "aggregateId": "d1",
+                    }
+                },
+            },
+        )
+        self.assertFalse(future.done())
+
+        client._resolve_ack_waiters(
+            "command.accepted",
+            {
+                "event": "command.accepted",
+                "data": {
+                    "command": {
+                        "name": "delivery.reply.requested",
+                        "aggregateId": "d1",
+                    }
+                },
+            },
+        )
+        self.assertTrue(future.done())
+
     async def test_resolves_command_accepted_ack_by_session_key_alias(self):
         cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
         client = RelayClient(cfg, on_delivery=lambda envelope: None)
@@ -1021,8 +1242,8 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
         client = RelayClient(cfg, on_delivery=lambda envelope: None)
         calls = []
 
-        async def fake_send_with_ack(payload, *, ack_events, delivery_id, fallback):
-            calls.append((payload["type"], ack_events, delivery_id))
+        async def fake_send_with_ack(payload, *, ack_events, delivery_id, fallback, command_names=()):
+            calls.append((payload["type"], ack_events, delivery_id, command_names))
 
         client._send_with_ack = fake_send_with_ack
         await client.send_accepted("d1", "conversation:abc")
@@ -1030,6 +1251,8 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("command.accepted", calls[0][1])
         self.assertIn("command.accepted", calls[1][1])
+        self.assertEqual(calls[0][3], ("delivery.accepted.requested",))
+        self.assertEqual(calls[1][3], ("delivery.kept_silent.requested",))
 
     def test_delivery_visibility_retry_retries_404_delivery_not_found(self):
         calls = []

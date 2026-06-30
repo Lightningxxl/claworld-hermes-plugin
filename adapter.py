@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from gateway.config import Platform
@@ -25,6 +26,37 @@ class DeliveryRecord:
     event_type: str = "delivery"
     replyable: bool = True
     replied: bool = False
+
+
+@dataclass(frozen=True)
+class ReplyClassification:
+    text: str = ""
+    silence_reason: str | None = None
+
+
+_RELAY_OPERATIONAL_NOTICE_PATTERNS = (
+    re.compile("^\U0001f9ed\\s*New session:\\s+\\S+", re.IGNORECASE),
+    re.compile("^\U0001f9f9\\s*Auto-compaction complete(?:\\s*\\(count \\d+\\))?\\.$", re.IGNORECASE),
+    re.compile("^\u21aa\ufe0f?\\s*Model Fallback:", re.IGNORECASE),
+    re.compile("^\u21aa\ufe0f?\\s*Model Fallback cleared:", re.IGNORECASE),
+    re.compile("^\u26a0\ufe0f?\\s*Agent failed before reply:", re.IGNORECASE),
+    re.compile("^Sent the (?:reply|opener|Claworld reply)\\.?$", re.IGNORECASE),
+)
+
+_RELAY_RUNTIME_ERROR_PATTERNS = (
+    re.compile("^\u26a0\ufe0f?\\s*Agent failed before reply:", re.IGNORECASE),
+    re.compile("^LLM request failed:", re.IGNORECASE),
+    re.compile("^LLM request timed out\\.", re.IGNORECASE),
+    re.compile("^LLM request unauthorized\\.", re.IGNORECASE),
+    re.compile("^The AI service is temporarily overloaded\\.", re.IGNORECASE),
+    re.compile("^The AI service returned an error\\.", re.IGNORECASE),
+    re.compile("^\u26a0\ufe0f?\\s*API rate limit reached\\.", re.IGNORECASE),
+    re.compile("^\u26a0\ufe0f?\\s*.+\\s+returned a billing error\\b", re.IGNORECASE),
+)
+
+_RELAY_OPERATIONAL_SUFFIX_PATTERNS = (
+    re.compile("^Usage:\\s+.+\\s+in\\s+/\\s+.+\\s+out(?:\\s+\u00b7\\s+est\\s+.+)?$", re.IGNORECASE),
+)
 
 
 class ClaworldPlatformAdapter(BasePlatformAdapter):
@@ -80,15 +112,14 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             if not record.replyable:
                 record.replied = True
                 return SendResult(success=True, message_id=record.delivery_id)
-            elif not str(content or "").strip():
-                await self.client.send_kept_silent(record.delivery_id, record.relay_session_key, "empty_reply")
-            elif _is_no_reply(content):
-                await self.client.send_kept_silent(record.delivery_id, record.relay_session_key, "no_reply")
+            classification = _classify_reply_content(content)
+            if classification.silence_reason:
+                await self._mark_record_kept_silent(record, classification.silence_reason)
             else:
-                await self.client.send_reply(record.delivery_id, record.relay_session_key, content)
+                await self.client.send_reply(record.delivery_id, record.relay_session_key, classification.text)
+                record.replied = True
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
-        record.replied = True
         return SendResult(success=True, message_id=record.delivery_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
@@ -97,8 +128,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             return
         if record.event_type == "delivery" and record.replyable:
             try:
-                await self.client.send_kept_silent(record.delivery_id, record.relay_session_key, _completion_silence_reason(outcome, record))
-                record.replied = True
+                await self._mark_record_kept_silent(record, _completion_silence_reason(outcome, record))
             except Exception as exc:
                 logger.warning("failed to mark Claworld delivery kept_silent: %s", exc)
         elif record.event_type == "delivery":
@@ -142,7 +172,10 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         )
 
         if self.client is not None and _requires_acceptance_delivery(envelope):
-            await self.client.send_accepted(envelope.delivery_id, envelope.session_key)
+            try:
+                await self.client.send_accepted(envelope.delivery_id, envelope.session_key)
+            except Exception as exc:
+                logger.warning("failed to acknowledge Claworld delivery acceptance: %s", exc)
 
         event = MessageEvent(
             text=build_agent_text(envelope, route.session_kind),
@@ -152,7 +185,15 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             message_id=envelope.delivery_id,
             internal=True,
         )
-        await self.handle_message(event)
+        try:
+            await self.handle_message(event)
+        except Exception:
+            if record.event_type == "delivery" and record.replyable and not record.replied and self.client is not None:
+                try:
+                    await self._mark_record_kept_silent(record, "runtime_failed_before_reply")
+                except Exception as exc:
+                    logger.warning("failed to mark failed Claworld delivery kept_silent: %s", exc)
+            raise
 
     def _record_for_send(self, chat_id: str, reply_to: str | None) -> DeliveryRecord | None:
         if reply_to:
@@ -163,6 +204,12 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         if latest_id:
             return self._deliveries_by_id.get(latest_id)
         return None
+
+    async def _mark_record_kept_silent(self, record: DeliveryRecord, reason: str) -> None:
+        if self.client is None:
+            raise RuntimeError("Claworld relay is not connected")
+        await self.client.send_kept_silent(record.delivery_id, record.relay_session_key, reason)
+        record.replied = True
 
 
 def _is_no_reply(content: str) -> bool:
@@ -176,6 +223,37 @@ def _is_hermes_home_channel_notice(content: str) -> bool:
         and "A home channel is where Hermes delivers cron job results" in text
         and "make this chat your home channel" in text
     )
+
+
+def _strip_relay_operational_suffix(content: str) -> str:
+    lines = str(content or "").splitlines()
+    while lines:
+        last_line = str(lines[-1] or "").strip()
+        if not last_line:
+            lines.pop()
+            continue
+        if not any(pattern.search(last_line) for pattern in _RELAY_OPERATIONAL_SUFFIX_PATTERNS):
+            break
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _matches_any(patterns, text: str) -> bool:
+    return any(pattern.search(text) for pattern in patterns)
+
+
+def _classify_reply_content(content: str) -> ReplyClassification:
+    raw_text = str(content or "")
+    normalized = _strip_relay_operational_suffix(raw_text)
+    if not normalized:
+        return ReplyClassification(silence_reason="operational_notice_only" if raw_text.strip() else "empty_reply")
+    if _is_no_reply(normalized):
+        return ReplyClassification(silence_reason="no_reply")
+    if _matches_any(_RELAY_RUNTIME_ERROR_PATTERNS, normalized):
+        return ReplyClassification(silence_reason="runtime_failed_before_reply")
+    if _matches_any(_RELAY_OPERATIONAL_NOTICE_PATTERNS, normalized):
+        return ReplyClassification(silence_reason="operational_notice_only")
+    return ReplyClassification(text=normalized)
 
 
 def _completion_silence_reason(outcome: ProcessingOutcome, record: DeliveryRecord) -> str:

@@ -43,7 +43,7 @@ class RelayClient:
         self._closed = asyncio.Event()
         self._send_lock = asyncio.Lock()
         self._auth_future: asyncio.Future | None = None
-        self._ack_waiters: dict[tuple[str, str], list[asyncio.Future]] = {}
+        self._ack_waiters: dict[tuple[str, str], list[tuple[asyncio.Future, tuple[str, ...]]]] = {}
         self._delivery_tasks: set[asyncio.Task] = set()
         self.agent_id = config.agent_id
 
@@ -77,6 +77,7 @@ class RelayClient:
             accepted_message(delivery_id, session_key),
             ack_events=("delivery.accepted", "command.accepted"),
             delivery_id=delivery_id,
+            command_names=("delivery.accepted.requested",),
             fallback=lambda: self._accepted_http(delivery_id, session_key),
         )
 
@@ -85,6 +86,7 @@ class RelayClient:
             reply_message(delivery_id, session_key, reply_text),
             ack_events=("reply.accepted", "command.accepted"),
             delivery_id=delivery_id,
+            command_names=("delivery.reply.requested",),
             fallback=lambda: self._reply_http(delivery_id, reply_text),
         )
 
@@ -93,6 +95,7 @@ class RelayClient:
             kept_silent_message(delivery_id, session_key, reason),
             ack_events=("kept_silent.accepted", "command.accepted"),
             delivery_id=delivery_id,
+            command_names=("delivery.kept_silent.requested",),
             fallback=lambda: self._kept_silent_http(delivery_id, reason),
         )
 
@@ -195,14 +198,22 @@ class RelayClient:
         async with self._send_lock:
             await self.ws.send(encoded)
 
-    async def _send_with_ack(self, payload: dict, *, ack_events: tuple[str, ...], delivery_id: str, fallback) -> None:
+    async def _send_with_ack(
+        self,
+        payload: dict,
+        *,
+        ack_events: tuple[str, ...],
+        delivery_id: str,
+        fallback,
+        command_names: tuple[str, ...] = (),
+    ) -> None:
         timeout = max(float(self.config.reply_ack_timeout_seconds), 0.1)
         if self.ws is None:
             await asyncio.to_thread(fallback)
             return
 
         ack_ids = _ack_ids_for_payload(payload, delivery_id)
-        ack_future = self._register_ack_waiter(ack_events, ack_ids)
+        ack_future = self._register_ack_waiter(ack_events, ack_ids, command_names=command_names)
         try:
             await self._send_json(payload)
             await asyncio.wait_for(ack_future, timeout=timeout)
@@ -213,13 +224,20 @@ class RelayClient:
         finally:
             self._remove_ack_waiter(ack_events, ack_ids, ack_future)
 
-    def _register_ack_waiter(self, ack_events: tuple[str, ...], delivery_id: str | tuple[str, ...]) -> asyncio.Future:
+    def _register_ack_waiter(
+        self,
+        ack_events: tuple[str, ...],
+        delivery_id: str | tuple[str, ...],
+        *,
+        command_names: tuple[str, ...] = (),
+    ) -> asyncio.Future:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         delivery_ids = _normalize_ack_ids(delivery_id)
+        expected_command_names = tuple(str(name).strip() for name in command_names if str(name).strip())
         for event in ack_events:
             for ack_id in delivery_ids:
-                self._ack_waiters.setdefault((event, ack_id), []).append(future)
+                self._ack_waiters.setdefault((event, ack_id), []).append((future, expected_command_names))
         return future
 
     def _remove_ack_waiter(self, ack_events: tuple[str, ...], delivery_id: str | tuple[str, ...], future: asyncio.Future) -> None:
@@ -230,7 +248,7 @@ class RelayClient:
                 waiters = self._ack_waiters.get(key)
                 if not waiters:
                     continue
-                self._ack_waiters[key] = [item for item in waiters if item is not future]
+                self._ack_waiters[key] = [item for item in waiters if item[0] is not future]
                 if not self._ack_waiters[key]:
                     self._ack_waiters.pop(key, None)
 
@@ -252,7 +270,24 @@ class RelayClient:
         if not delivery_id:
             self.logger.debug("claworld relay ack ignored without delivery/session key: event=%s", event)
             return
-        waiters = self._ack_waiters.pop((event, delivery_id), [])
+        waiters = self._ack_waiters.get((event, delivery_id), [])
+        if event == "command.accepted":
+            command_name = str(command.get("name") or "").strip()
+            matching_waiters = [
+                item for item in waiters
+                if not item[1] or command_name in item[1]
+            ]
+            if matching_waiters:
+                remaining_waiters = [item for item in waiters if item not in matching_waiters]
+                if remaining_waiters:
+                    self._ack_waiters[(event, delivery_id)] = remaining_waiters
+                else:
+                    self._ack_waiters.pop((event, delivery_id), None)
+                waiters = matching_waiters
+            else:
+                waiters = []
+        else:
+            waiters = self._ack_waiters.pop((event, delivery_id), [])
         if not waiters:
             self.logger.debug(
                 "claworld relay ack had no waiter: event=%s key=%s pending=%s",
@@ -262,7 +297,7 @@ class RelayClient:
             )
             return
         self.logger.debug("claworld relay ack resolved: event=%s key=%s waiters=%d", event, delivery_id, len(waiters))
-        for future in waiters:
+        for future, _expected_command_names in waiters:
             if not future.done():
                 future.set_result(message)
 
