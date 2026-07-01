@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import asyncio
 import io
 import json
 import os
@@ -1157,6 +1158,68 @@ class ToolRoutingTests(unittest.TestCase):
 
 
 class RelayClientTests(unittest.IsolatedAsyncioTestCase):
+    def test_websocket_proxy_uses_claworld_proxy_settings(self):
+        direct = ClaworldConfig(server_url="https://api.example.com", app_token="tok")
+        env_proxy = ClaworldConfig(server_url="https://api.example.com", app_token="tok", use_env_proxy=True)
+        explicit_proxy = ClaworldConfig(
+            server_url="https://api.example.com",
+            app_token="tok",
+            http_proxy="http://127.0.0.1:7890",
+            use_env_proxy=True,
+        )
+
+        self.assertIsNone(claworld_relay._websocket_proxy(direct))
+        self.assertIs(claworld_relay._websocket_proxy(env_proxy), True)
+        self.assertEqual(claworld_relay._websocket_proxy(explicit_proxy), "http://127.0.0.1:7890")
+
+    def test_reconnect_delay_exponentially_backs_off(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=lambda envelope: None)
+
+        self.assertEqual(
+            [client._next_reconnect_delay() for _ in range(8)],
+            [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0],
+        )
+
+    async def test_open_once_cleans_up_websocket_when_auth_send_fails(self):
+        class FakeWebSocket:
+            def __init__(self):
+                self.closed = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                await asyncio.sleep(60)
+                raise StopAsyncIteration
+
+            async def send(self, payload):
+                raise RuntimeError("auth send failed")
+
+            async def close(self):
+                self.closed = True
+
+        ws = FakeWebSocket()
+        calls = []
+
+        async def fake_connect(url, *, ping_interval=None, proxy=True):
+            calls.append({"url": url, "ping_interval": ping_interval, "proxy": proxy})
+            return ws
+
+        fake_websockets = types.SimpleNamespace(connect=fake_connect)
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-1")
+        client = RelayClient(cfg, on_delivery=lambda envelope: None)
+
+        with patch.dict(sys.modules, {"websockets": fake_websockets}):
+            with self.assertRaisesRegex(RuntimeError, "auth send failed"):
+                await client._open_once()
+
+        self.assertEqual(calls, [{"url": "wss://api.example.com/ws", "ping_interval": None, "proxy": None}])
+        self.assertTrue(ws.closed)
+        self.assertIsNone(client.ws)
+        self.assertIsNone(client._receiver_task)
+        self.assertIsNone(client._auth_future)
+
     async def test_delivery_dispatch_does_not_block_ack_processing(self):
         import asyncio
 

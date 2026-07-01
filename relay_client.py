@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -24,6 +25,9 @@ DeliveryHandler = Callable[[object], Awaitable[None]]
 
 DELIVERY_VISIBILITY_RETRY_ATTEMPTS = 20
 DELIVERY_VISIBILITY_RETRY_DELAY_SECONDS = 0.01
+RELAY_AUTH_TIMEOUT_SECONDS = 30.0
+RELAY_RECONNECT_BASE_DELAY_SECONDS = 1.0
+RELAY_RECONNECT_MAX_DELAY_SECONDS = 60.0
 
 
 class RelayClient:
@@ -45,6 +49,7 @@ class RelayClient:
         self._auth_future: asyncio.Future | None = None
         self._ack_waiters: dict[tuple[str, str], list[tuple[asyncio.Future, tuple[str, ...]]]] = {}
         self._delivery_tasks: set[asyncio.Task] = set()
+        self._reconnect_attempts = 0
         self.agent_id = config.agent_id
 
     async def connect(self) -> bool:
@@ -58,8 +63,12 @@ class RelayClient:
 
     async def close(self) -> None:
         self._closed.set()
-        self._cancel_task(self._heartbeat_task)
-        self._cancel_task(self._receiver_task)
+        heartbeat_task = self._heartbeat_task
+        receiver_task = self._receiver_task
+        self._heartbeat_task = None
+        self._receiver_task = None
+        await self._cancel_task_and_wait(heartbeat_task)
+        await self._cancel_task_and_wait(receiver_task)
         delivery_tasks = list(self._delivery_tasks)
         for task in delivery_tasks:
             self._cancel_task(task)
@@ -102,8 +111,11 @@ class RelayClient:
     async def _open_once(self) -> None:
         import websockets
 
-        self._cancel_task(self._heartbeat_task)
+        await self._cancel_task_and_wait(self._heartbeat_task)
         self._heartbeat_task = None
+        if self._receiver_task is not asyncio.current_task():
+            await self._cancel_task_and_wait(self._receiver_task)
+            self._receiver_task = None
         if self.ws is not None:
             try:
                 await self.ws.close()
@@ -113,23 +125,46 @@ class RelayClient:
 
         ws_url = normalize_ws_url(self.config.server_url)
         self.logger.info("claworld relay connecting to %s", ws_url)
-        self.ws = await websockets.connect(ws_url, ping_interval=None)
-        loop = asyncio.get_running_loop()
-        self._auth_future = loop.create_future()
-        self._receiver_task = asyncio.create_task(self._receive_loop(), name="claworld-relay-receiver")
-        await self._send_json(
-            auth_message(
-                agent_id=self.agent_id,
-                credential=self.config.app_token,
-                client_version="claworld-hermes-plugin/0.1.0",
+        ws = None
+        receiver_task = None
+        try:
+            ws = await _websockets_connect(websockets, ws_url, self.config)
+            self.ws = ws
+            loop = asyncio.get_running_loop()
+            self._auth_future = loop.create_future()
+            receiver_task = asyncio.create_task(self._receive_loop(), name="claworld-relay-receiver")
+            self._receiver_task = receiver_task
+            await self._send_json(
+                auth_message(
+                    agent_id=self.agent_id,
+                    credential=self.config.app_token,
+                    client_version="claworld-hermes-plugin/0.1.0",
+                )
             )
-        )
-        await asyncio.wait_for(self._auth_future, timeout=30.0)
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="claworld-relay-heartbeat")
+            await asyncio.wait_for(self._auth_future, timeout=RELAY_AUTH_TIMEOUT_SECONDS)
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="claworld-relay-heartbeat")
+            self._reconnect_attempts = 0
+        except Exception:
+            await self._cancel_task_and_wait(receiver_task)
+            if self._receiver_task is receiver_task:
+                self._receiver_task = None
+            if ws is not None:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            if self.ws is ws:
+                self.ws = None
+            if self._auth_future and not self._auth_future.done():
+                self._auth_future.cancel()
+            self._auth_future = None
+            raise
 
     async def _receive_loop(self) -> None:
         while not self._closed.is_set():
             try:
+                if self.ws is None:
+                    raise RuntimeError("claworld relay websocket is not connected")
                 async for raw in self.ws:
                     await self._handle_raw_message(raw)
                 if self._closed.is_set():
@@ -143,13 +178,18 @@ class RelayClient:
                 if not self.config.reconnect or self._closed.is_set():
                     self.logger.warning("claworld relay receiver stopped: %s", exc)
                     return
-                self.logger.warning("claworld relay disconnected; reconnecting: %s", exc)
-                await asyncio.sleep(min(max(self.config.heartbeat_seconds / 2, 0.5), 5.0))
-                try:
-                    await self._open_once()
-                    return
-                except Exception as reconnect_exc:
-                    self.logger.warning("claworld relay reconnect failed: %s", reconnect_exc)
+                while self.config.reconnect and not self._closed.is_set():
+                    delay = self._next_reconnect_delay()
+                    self.logger.warning("claworld relay disconnected; reconnecting in %.1fs: %s", delay, exc)
+                    await asyncio.sleep(delay)
+                    try:
+                        await self._open_once()
+                        return
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as reconnect_exc:
+                        exc = reconnect_exc
+                        self.logger.warning("claworld relay reconnect failed: %s", reconnect_exc)
 
     async def _handle_raw_message(self, raw) -> None:
         try:
@@ -381,6 +421,47 @@ class RelayClient:
     def _cancel_task(self, task: asyncio.Task | None) -> None:
         if task and not task.done():
             task.cancel()
+
+    async def _cancel_task_and_wait(self, task: asyncio.Task | None) -> None:
+        if task is None or task is asyncio.current_task():
+            return
+        self._cancel_task(task)
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _next_reconnect_delay(self) -> float:
+        exponent = min(self._reconnect_attempts, 6)
+        delay = min(RELAY_RECONNECT_BASE_DELAY_SECONDS * (2 ** exponent), RELAY_RECONNECT_MAX_DELAY_SECONDS)
+        self._reconnect_attempts += 1
+        return delay
+
+
+async def _websockets_connect(websockets, ws_url: str, config: ClaworldConfig):
+    kwargs = {"ping_interval": None}
+    if _connect_supports_proxy(websockets.connect):
+        kwargs["proxy"] = _websocket_proxy(config)
+    try:
+        return await websockets.connect(ws_url, **kwargs)
+    except TypeError as exc:
+        if "proxy" not in kwargs or "proxy" not in str(exc):
+            raise
+        kwargs.pop("proxy", None)
+        return await websockets.connect(ws_url, **kwargs)
+
+
+def _connect_supports_proxy(connect) -> bool:
+    try:
+        signature = inspect.signature(connect)
+    except (TypeError, ValueError):
+        return True
+    return "proxy" in signature.parameters
+
+
+def _websocket_proxy(config: ClaworldConfig):
+    if config.http_proxy:
+        return config.http_proxy
+    if config.use_env_proxy:
+        return True
+    return None
 
 
 def _delivery_status(body) -> str | None:
