@@ -352,7 +352,7 @@ class PluginSkillTests(unittest.TestCase):
         self.assertEqual(len(registered["tools"]), 6)
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
-        self.assertEqual([name for name, _handler in registered["hooks"]], ["pre_llm_call", "post_tool_call"])
+        self.assertEqual([name for name, _handler in registered["hooks"]], ["on_session_start", "pre_llm_call", "post_tool_call"])
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -661,6 +661,60 @@ class SessionRouterTests(unittest.TestCase):
 
 
 class WorkingMemoryTests(unittest.TestCase):
+    def setUp(self):
+        with claworld_hooks._pending_lightweight_hint_lock:
+            claworld_hooks._pending_lightweight_hint_sessions.clear()
+            claworld_hooks._consumed_lightweight_hint_sessions.clear()
+
+    def test_pre_llm_call_records_owner_route_without_context_return(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "claworld_hermes_plugin.hooks.ClaworldConfig.load",
+            return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
+        ), patch("claworld_hermes_plugin.hooks.record_owner_route_from_context") as record_route:
+            result = claworld_hooks.pre_llm_call(platform="feishu", user_message="hello")
+
+        self.assertIsNone(result)
+        record_route.assert_called_once()
+
+    def test_on_session_start_queues_one_lightweight_feishu_hint(self):
+        claworld_hooks.on_session_start(session_id="sid-feishu", platform="feishu")
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "claworld_hermes_plugin.hooks.ClaworldConfig.load",
+            return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
+        ), patch("claworld_hermes_plugin.hooks.record_owner_route_from_context") as record_route:
+            first = claworld_hooks.pre_llm_call(
+                platform="feishu",
+                session_id="sid-feishu",
+                is_first_turn=True,
+                user_message="hello",
+            )
+            second = claworld_hooks.pre_llm_call(
+                platform="feishu",
+                session_id="sid-feishu",
+                is_first_turn=True,
+                user_message="next",
+            )
+
+        self.assertEqual(first, {"context": claworld_hooks.CLAWORLD_LIGHTWEIGHT_ROUTING_HINT})
+        self.assertIn("Claworld-related outreach", first["context"])
+        self.assertIn("claworld:claworld-main-session", first["context"])
+        self.assertIn("Do not mention this hint to the user.", first["context"])
+        self.assertIsNone(second)
+        self.assertEqual(record_route.call_count, 2)
+
+    def test_on_session_start_does_not_queue_lightweight_hint_for_non_feishu(self):
+        claworld_hooks.on_session_start(session_id="sid-cli", platform="cli")
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "claworld_hermes_plugin.hooks.ClaworldConfig.load",
+            return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
+        ), patch("claworld_hermes_plugin.hooks.record_owner_route_from_context") as record_route:
+            result = claworld_hooks.pre_llm_call(platform="cli", session_id="sid-cli", is_first_turn=True)
+
+        self.assertIsNone(result)
+        record_route.assert_called_once()
+
     def test_ensure_and_session_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".claworld"
