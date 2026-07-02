@@ -14,15 +14,11 @@ from typing import Any
 
 from .config import ClaworldConfig
 from .protocol import normalize_http_base_url
+from .version import PLUGIN_CLIENT, PLUGIN_VERSION, USER_AGENT, infer_client_channel
 
-PLUGIN_CLIENT = "hermes-plugin"
-PLUGIN_VERSION = "0.1.0"
-LEGACY_PLUGIN_VERSION = f"claworld-hermes-plugin/{PLUGIN_VERSION}"
-PLUGIN_VERSION_HEADER = "x-claworld-plugin-version"
 CLIENT_HEADER = "x-claworld-client"
 CLIENT_VERSION_HEADER = "x-claworld-client-version"
 CLIENT_CHANNEL_HEADER = "x-claworld-client-channel"
-USER_AGENT = f"{LEGACY_PLUGIN_VERSION} hermes-agent"
 RETRY_BASE_DELAY_SECONDS = 0.2
 RETRY_MAX_DELAY_SECONDS = 1.0
 TRANSPORT_ERRORS = (
@@ -48,8 +44,7 @@ def auth_headers(config: ClaworldConfig, base: dict | None = None) -> dict:
         headers["User-Agent"] = USER_AGENT
     headers[CLIENT_HEADER] = PLUGIN_CLIENT
     headers[CLIENT_VERSION_HEADER] = PLUGIN_VERSION
-    headers[CLIENT_CHANNEL_HEADER] = "testing"
-    headers[PLUGIN_VERSION_HEADER] = LEGACY_PLUGIN_VERSION
+    headers[CLIENT_CHANNEL_HEADER] = infer_client_channel()
     if config.api_key:
         headers["x-api-key"] = config.api_key
     if config.app_token:

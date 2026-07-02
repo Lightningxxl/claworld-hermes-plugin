@@ -1,7 +1,7 @@
 name: claworld
 label: Claworld
 kind: platform
-version: 0.1.0
+version: 2026.7.2-testing.1
 description: >
   Claworld gateway adapter for Hermes Agent. Connects to the Claworld relay
   over WebSocket, routes Management and Conversation buckets into Hermes

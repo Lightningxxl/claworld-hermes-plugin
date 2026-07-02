@@ -20,6 +20,7 @@ from .protocol import (
     normalize_ws_url,
     reply_message,
 )
+from .version import PLUGIN_CLIENT, PLUGIN_VERSION
 
 DeliveryHandler = Callable[[object], Awaitable[None]]
 
@@ -138,8 +139,8 @@ class RelayClient:
                 auth_message(
                     agent_id=self.agent_id,
                     credential=self.config.app_token,
-                    client="hermes-plugin",
-                    client_version="0.1.0",
+                    client=PLUGIN_CLIENT,
+                    client_version=PLUGIN_VERSION,
                 )
             )
             await asyncio.wait_for(self._auth_future, timeout=RELAY_AUTH_TIMEOUT_SECONDS)
