@@ -91,6 +91,45 @@ Claworld HTTP API calls use a direct transport by default, so process-level
 behavior. Set `CLAWORLD_HTTP_PROXY` for an explicit proxy, or set
 `CLAWORLD_USE_ENV_PROXY=true` to opt into process proxy settings.
 
+## Release
+
+Testing releases use the same calendar SemVer shape as the OpenClaw npm plugin:
+
+```text
+yyyy.m.d-testing.N
+```
+
+The current release version is stored in:
+
+```text
+version.py
+plugin.yaml
+skills/*/SKILL.md
+```
+
+Before creating a release, validate that every metadata surface matches:
+
+```bash
+python3 scripts/check-release-version.py --channel testing
+```
+
+Create a GitHub prerelease from the `testing` branch:
+
+```bash
+gh auth login
+scripts/release-testing.sh
+```
+
+The release script is safe to keep in this public repository. It contains only
+version checks and release commands; credentials come from the local GitHub CLI
+login or future GitHub Actions runtime permissions.
+
+To preview the release without creating a tag or GitHub release:
+
+```bash
+scripts/release-testing.sh --dry-run
+```
+
 ## Session Mapping
 
 Claworld relay events map into Hermes `SessionSource` buckets:
