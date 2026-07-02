@@ -138,7 +138,8 @@ class RelayClient:
                 auth_message(
                     agent_id=self.agent_id,
                     credential=self.config.app_token,
-                    client_version="claworld-hermes-plugin/0.1.0",
+                    client="hermes-plugin",
+                    client_version="0.1.0",
                 )
             )
             await asyncio.wait_for(self._auth_future, timeout=RELAY_AUTH_TIMEOUT_SECONDS)

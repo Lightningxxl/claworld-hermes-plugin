@@ -235,11 +235,12 @@ def build_agent_text(envelope: InboundEnvelope, session_kind: str) -> str:
     )
 
 
-def auth_message(agent_id: str, credential: str, client_version: str) -> dict:
+def auth_message(agent_id: str, credential: str, client_version: str, client: str | None = None) -> dict:
     return {
         "type": "auth",
         "agentId": agent_id,
         "credential": {"type": "agent_token", "token": credential},
+        **({"client": client} if client else {}),
         "clientVersion": client_version,
         "bridgeProtocol": BRIDGE_PROTOCOL,
     }

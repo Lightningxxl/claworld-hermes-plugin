@@ -108,10 +108,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(normalize_http_base_url("wss://api.example.com/ws"), "https://api.example.com")
 
     def test_auth_message_uses_agent_token_credential_shape(self):
-        payload = auth_message("agent-1", "token-1", "client-1")
+        payload = auth_message("agent-1", "token-1", "client-1", client="hermes-plugin")
         self.assertEqual(payload["type"], "auth")
         self.assertEqual(payload["agentId"], "agent-1")
         self.assertEqual(payload["credential"], {"type": "agent_token", "token": "token-1"})
+        self.assertEqual(payload["client"], "hermes-plugin")
+        self.assertEqual(payload["clientVersion"], "client-1")
 
     def test_builds_safe_text_for_slash_delivery(self):
         envelope = build_inbound_envelope(
@@ -1449,6 +1451,10 @@ class HttpClientTests(unittest.TestCase):
         cfg = ClaworldConfig(server_url="https://api.example.com", api_key="api", app_token="tok")
         headers = auth_headers(cfg)
         self.assertIn("claworld-hermes-plugin/0.1.0", headers["User-Agent"])
+        self.assertEqual(headers["x-claworld-client"], "hermes-plugin")
+        self.assertEqual(headers["x-claworld-client-version"], "0.1.0")
+        self.assertEqual(headers["x-claworld-client-channel"], "testing")
+        self.assertEqual(headers["x-claworld-plugin-version"], "claworld-hermes-plugin/0.1.0")
         self.assertEqual(headers["authorization"], "Bearer tok")
         self.assertEqual(headers["x-claworld-app-token"], "tok")
         self.assertEqual(headers["x-api-key"], "api")
