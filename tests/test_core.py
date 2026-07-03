@@ -321,15 +321,18 @@ class PluginSkillTests(unittest.TestCase):
             self.assertNotIn("OpenClaw", text)
             self.assertNotIn("openclaw", text)
             self.assertNotIn("sessions_send", text)
+            self.assertNotIn("claworld_report_owner", text)
         management = (ROOT / "skills" / "claworld-management-session" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertNotIn("claworld_report_owner", management)
         self.assertIn("You are currently acting as the private Claworld Manager for your human.", management)
         self.assertIn("You may initiate multiple chats at once.", management)
         self.assertIn("You report every conversation_ended notification by default.", management)
-        self.assertIn("Use Hermes `send_message` once when a report should go to the human.", management)
+        self.assertIn("Use `claworld_send_message` once when a report should go to the human.", management)
+        self.assertIn("claworld_send_message(", management)
         self.assertIn("`mirrored: true` means the Main Session transcript received the report", management)
         self.assertNotIn("ANNOUNCE_READY", management)
         self.assertNotIn("report artifact exists when owner reporting was needed", management)
+        main = (ROOT / "skills" / "claworld-main-session" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("send_message", main)
 
     def test_plugin_register_exposes_skills(self):
         plugin = import_plugin_entry_with_gateway_shim()
@@ -353,7 +356,8 @@ class PluginSkillTests(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in registered["platforms"]], ["claworld"])
         self.assertIs(registered["platforms"][0]["setup_fn"], plugin.interactive_setup)
         self.assertIs(registered["platforms"][0]["is_connected"], plugin._validate_config)
-        self.assertEqual(len(registered["tools"]), 5)
+        self.assertEqual(len(registered["tools"]), 6)
+        self.assertIn("claworld_send_message", {entry["name"] for entry in registered["tools"]})
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
         self.assertEqual([name for name, _handler in registered["hooks"]], ["post_tool_call"])
@@ -669,6 +673,7 @@ class ToolSchemaTests(unittest.TestCase):
             claworld_tools.PUBLIC_PROFILE_SCHEMA,
             claworld_tools.MANAGE_WORLDS_SCHEMA,
             claworld_tools.MANAGE_CONVERSATIONS_SCHEMA,
+            claworld_tools.SEND_MESSAGE_SCHEMA,
         ]
         for schema in schemas:
             self.assertIn("description", schema)
@@ -685,7 +690,7 @@ class ToolSchemaTests(unittest.TestCase):
 
         claworld_tools.register_tools(FakeCtx())
 
-        self.assertEqual(len(registered), 5)
+        self.assertEqual(len(registered), 6)
         for entry in registered:
             self.assertIn("parameters", entry["schema"])
             self.assertIn("description", entry["schema"])
@@ -698,6 +703,55 @@ class ToolSchemaTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "CLAWORLD_ENABLE_GENERIC_API"):
                 claworld_tools._search(ClaworldConfig(server_url="https://api.example.com", app_token="tok"), {"endpoint": "/v1/search"})
 
+
+class ClaworldSendMessageToolTests(unittest.TestCase):
+    def _cfg(self) -> ClaworldConfig:
+        return ClaworldConfig(server_url="https://api.example.com", app_token="tok")
+
+    def test_send_message_forwards_to_hermes_and_trusts_auto_mirror(self):
+        args = {"action": "send", "target": "feishu:oc_owner:thread-1", "message": "Owner-visible report"}
+        with patch("claworld_hermes_plugin.tools._call_send_message_tool", return_value={"success": True, "mirrored": True}) as send, patch(
+            "claworld_hermes_plugin.tools._fallback_mirror_send_message"
+        ) as mirror:
+            result = claworld_tools._send_message(self._cfg(), args)
+
+        send.assert_called_once_with(args)
+        mirror.assert_not_called()
+        self.assertEqual(result["status"], "delivered")
+        self.assertTrue(result["delivered"])
+        self.assertTrue(result["mirrored"])
+        self.assertTrue(result["autoMirrored"])
+        self.assertEqual(result["fallbackMirror"], {"attempted": False})
+
+    def test_send_message_fallback_mirrors_once_when_auto_mirror_is_missing(self):
+        args = {"target": "feishu:oc_owner", "message": "Owner-visible report"}
+        with patch("claworld_hermes_plugin.tools._call_send_message_tool", return_value={"success": True}) as send, patch(
+            "claworld_hermes_plugin.tools._fallback_mirror_send_message",
+            return_value={"attempted": True, "success": True, "method": "gateway_mirror"},
+        ) as mirror:
+            result = claworld_tools._send_message(self._cfg(), args)
+
+        send.assert_called_once_with({"target": "feishu:oc_owner", "message": "Owner-visible report", "action": "send"})
+        mirror.assert_called_once_with({"target": "feishu:oc_owner", "message": "Owner-visible report", "action": "send"})
+        self.assertEqual(result["status"], "delivered")
+        self.assertTrue(result["delivered"])
+        self.assertFalse(result["autoMirrored"])
+        self.assertTrue(result["mirrored"])
+        self.assertEqual(result["fallbackMirror"]["method"], "gateway_mirror")
+
+    def test_send_message_does_not_mirror_when_delivery_fails(self):
+        args = {"target": "feishu:oc_owner", "message": "Owner-visible report"}
+        with patch("claworld_hermes_plugin.tools._call_send_message_tool", return_value={"success": False, "error": "offline"}) as send, patch(
+            "claworld_hermes_plugin.tools._fallback_mirror_send_message"
+        ) as mirror:
+            result = claworld_tools._send_message(self._cfg(), args)
+
+        send.assert_called_once()
+        mirror.assert_not_called()
+        self.assertEqual(result["status"], "delivery_failed")
+        self.assertFalse(result["delivered"])
+        self.assertFalse(result["mirrored"])
+        self.assertEqual(result["fallbackMirror"], {"attempted": False})
 
 class SessionRouterTests(unittest.TestCase):
     def test_maps_management_and_conversation_to_stable_buckets(self):

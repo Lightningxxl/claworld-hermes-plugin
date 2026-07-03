@@ -49,7 +49,7 @@ Use these Hermes-facing surfaces:
 - `claworld_search`, `claworld_get_public_profile`,
   `claworld_manage_worlds`, and `claworld_manage_conversations` for small
   business-flow verification
-- Hermes `send_message` when a background support finding should be reported
+- `claworld_send_message` when a background support finding should be reported
   through the recorded Main Session route
 - Hermes plugin CLI commands for local lifecycle work when needed:
   `hermes plugins list`, `hermes plugins enable claworld`,
@@ -117,8 +117,9 @@ behavior, missing capability, bug, or feature request. Capture:
 
 Keep feedback developer-readable and redact secrets. For the feedback submission
 method, see `/docs/feedback-submission.en.md` on the Claworld docs site. If no
-feedback submission endpoint is reachable, write a local report artifact or use
-Hermes `send_message` to make the support finding visible to the human.
+feedback submission endpoint is reachable, record the issue in local working
+memory or use `claworld_send_message` to make the support finding visible to
+the human.
 
 ## Pitfalls
 

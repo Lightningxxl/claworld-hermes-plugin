@@ -51,20 +51,22 @@ latest human-facing Main Session. That single call has two product effects:
 The OpenClaw management skill also uses an `ANNOUNCE_READY` handshake so
 Management can tell whether Main accepted the handoff.
 
-Hermes has `send_message`, which sends to an external platform and mirrors the
-outbound text into a target session transcript when the target session can be
-resolved. The mirror is stored as an assistant message in the Main Session
-conversation history.
+Hermes has a native send-message path, which sends to an external platform and
+mirrors outbound text into a target session transcript when the target session
+can be resolved. The Claworld plugin exposes this to Management Session as
+`claworld_send_message`, adding a mirror retry when native mirror is missing.
+The mirror is stored as an assistant message in the Main Session conversation
+history.
 
 The Hermes plugin now uses Hermes' native report path:
 
 1. Management reads the recorded Main Session human route from
    `.claworld/sessions/index.json`.
 2. Management sends one self-contained human-facing report through
-   `send_message`.
+   `claworld_send_message`.
 3. Hermes delivers the report to the human chat.
-4. Hermes automatic mirror writes the same report into the resolved Main
-   Session transcript as an assistant message.
+4. Native mirror or Claworld mirror fallback writes the same report into the
+   resolved Main Session transcript as an assistant message.
 5. Management checks the tool result. `mirrored: true` means Main received the
    report as transcript context.
 
@@ -76,14 +78,14 @@ working memory and Claworld tools.
 
 Important differences from OpenClaw `sessions_send`:
 
-| Concern | OpenClaw `sessions_send` | Hermes `send_message` + mirror |
+| Concern | OpenClaw `sessions_send` | Hermes `claworld_send_message` + mirror |
 | --- | --- | --- |
-| Human-visible update | Main sends the final report | `send_message` sends the report to the recorded human chat |
-| Hidden lookup payload | Can ride in the session handoff | First-stage Hermes reports are self-contained; detailed ids live in working memory or report artifacts when useful |
-| Main context | Runtime delivers the handoff into Main | Hermes mirror writes the same report into Main transcript as an assistant message |
-| Wake/ACK | Main can respond, e.g. `ANNOUNCE_READY` | `send_message` result reports delivery and `mirrored: true` |
+| Human-visible update | Main sends the final report | `claworld_send_message` sends the report to the recorded human chat |
+| Hidden lookup payload | Can ride in the session handoff | Hermes reports are self-contained; detailed ids live in working memory when useful |
+| Main context | Runtime delivers the handoff into Main | Native mirror or Claworld mirror fallback writes the same report into Main transcript as an assistant message |
+| Wake/ACK | Main can respond, e.g. `ANNOUNCE_READY` | `claworld_send_message` result reports delivery and `mirrored: true` |
 | Waiting for Main reply | Supported by the OpenClaw sessions runtime | Management treats successful delivery plus mirror as completion |
-| Local report artifact | OpenClaw skill may create one on fallback | Management can write `reports/` or `NOW.md` when mirror is missing or details need durable indexing |
+| Local report artifact | OpenClaw skill may create one on fallback | Management uses normal working-memory upkeep; no automatic report artifact is created by the send wrapper |
 
 This gives Hermes the two critical product effects: the human sees the report
 in the current chat, and Main later has the same report in its transcript when
@@ -151,7 +153,7 @@ Conversation channel prompt mirrors the OpenClaw lightweight startup:
 credential redaction. Runtime code owns `journal/` and `sessions/index.json`.
 The agent owns the semantic upkeep of `NOW.md`, `MEMORY.md`, and `PROFILE.md`
 following the management skill. Management report delivery is handled through
-Hermes `send_message` results and local memory maintenance by the agent.
+`claworld_send_message` results and local memory maintenance by the agent.
 
 ## Conversation Delivery
 
@@ -200,14 +202,14 @@ Hermes `ctx.register_tool`. The generic Claworld HTTP escape hatch is gated by
   plugin proxy.
 - The recorded human route is refreshed when owner-facing Claworld tools run
   inside non-Claworld Hermes sessions. Management uses that route to target
-  Hermes `send_message` reports.
+  `claworld_send_message` reports.
 
 ## Development Checklist
 
 When changing this plugin, preserve these porting contracts:
 
-1. Management reports use Hermes `send_message` for human chat delivery plus
-   automatic Main transcript mirror.
+1. Management reports use `claworld_send_message` for human chat delivery plus
+   native or fallback Main transcript mirror.
 2. Main tools point at plugin-qualified skills; Management and Conversation
    session prompts are supplied through `channel_prompt`.
 3. Management prompt includes the management skill body plus a short

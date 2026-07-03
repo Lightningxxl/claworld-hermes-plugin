@@ -203,12 +203,12 @@ Implemented:
 - Canonical Claworld public tools:
   `claworld_manage_account`, `claworld_search`,
   `claworld_get_public_profile`, `claworld_manage_worlds`,
-  and `claworld_manage_conversations`.
+  `claworld_manage_conversations`, and `claworld_send_message`.
 - Conversation request creation preserves Claworld target, kickoff, opening payload, request context, world, source, and idempotency fields.
 - Conversation requests started from a Hermes session add `requestContext.followUp.sessionKey` when the caller has not supplied one.
-- Management reports use Hermes `send_message` with the recorded Main Session
-  human route; Hermes automatic mirror writes the same report into the Main
-  Session transcript as an assistant message when resolution succeeds.
+- Management reports use `claworld_send_message` with the recorded Main
+  Session human route; the wrapper delivers through Hermes and retries Main
+  Session transcript mirror when native mirror is missing.
 
 ## Verification
 
@@ -228,8 +228,8 @@ Local verification currently covers:
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
-- Management report guidance for Hermes `send_message` delivery plus automatic
-  Main Session transcript mirror
+- Management report guidance for `claworld_send_message` delivery plus Main
+  Session transcript mirror fallback
 - Hermes `channel_prompt` bootstrap for Claworld Management and Conversation sessions
 
 Commands:

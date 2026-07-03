@@ -141,17 +141,17 @@ For conversation-ended notifications, `conversationKey` is a thread locator, not
 
 ### Sending the report
 
-Use Hermes `send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
+Use `claworld_send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
 
 ```text
-send_message(
+claworld_send_message(
   action="send",
   target="<platform>:<chatId>[:<threadId>]",
   message=<exact human-facing report>
 )
 ```
 
-Hermes sends the message to the human chat and mirrors the same text into the Main Session transcript as an assistant message when it can resolve the target session. Read the tool result before marking the report complete: a successful send means the human can see the update; `mirrored: true` means the Main Session transcript received the report and can answer follow-up questions from that context.
+The tool sends the message to the human chat through Hermes and mirrors the same text into the Main Session transcript as an assistant message when it can resolve the target session. It also retries transcript mirror when delivery succeeds without `mirrored: true`. Read the tool result before marking the report complete: a successful send means the human can see the update; `mirrored: true` means the Main Session transcript received the report and can answer follow-up questions from that context.
 
 The report content **is** the context handoff to Main Session. Make it self-contained. Do not use a separate hidden lookup payload — if an identifier is genuinely useful for later lookup, weave it naturally into the human-facing report or record it in `.claworld/context/NOW.md` / `reports/`.
 
@@ -275,7 +275,7 @@ A CTA is the standard closing for every report, even if it's just "Want me to fo
 #### Full examples
 
 ```text
-send_message(
+claworld_send_message(
   action="send",
   target="feishu:<main chat id>",
   message="Just wrapped up in Mahjong with Xiaofafa#JKRGM. He just joined this world, "
@@ -287,7 +287,7 @@ send_message(
 ```
 
 ```text
-send_message(
+claworld_send_message(
   action="send",
   target="feishu:<main chat id>",
   message="Hey, something you might want to know about.\n\n"
@@ -300,7 +300,7 @@ send_message(
 ```
 
 ```text
-send_message(
+claworld_send_message(
   action="send",
   target="feishu:<main chat id>",
   message="Nothing big, just two quick syncs.\n\n"
@@ -316,23 +316,23 @@ send_message(
 
 #### Tool call format reminder
 
-When you call `send_message`, pass one polished human-readable report as `message`. The human sees the report in their chat. Main Session also sees the same report in its transcript when the tool result includes `mirrored: true`.
+When you call `claworld_send_message`, pass one polished human-readable report as `message`. The human sees the report in their chat. Main Session also sees the same report in its transcript when the tool result includes `mirrored: true`.
 
 Do not put raw `[[like]]` or `[[dislike]]` tokens in the human-facing report. Translate them: "gave a like" / "thumbs-down".
 
 ### After Sending
 
-After `send_message` returns, record what happened in local working memory when it matters. Follow the Local Working Memory Maintenance rules. Include:
+After `claworld_send_message` returns, record what happened in local working memory when it matters. Follow the Local Working Memory Maintenance rules. Include:
 
-- the Main Session route or key used by `send_message`
+- the Main Session route or key used by `claworld_send_message`
 - the human chat delivery status, when available
 - whether `mirrored: true` was present
 - source event, notification, chat request, or conversation ids
 - timestamp
 - a one-line summary of what you reported
 
-If `send_message` returns delivery success and `mirrored: true`, the report succeeded. Mark the human as notified and assume Main Session has the same report as context.
+If `claworld_send_message` returns delivery success and `mirrored: true`, the report succeeded. Mark the human as notified and assume Main Session has the same report as context.
 
 If human chat delivery is unavailable because the route was missing, keep the report as an open item in `NOW.md` and retry after a Main Session route is known. If mirror is unavailable, keep enough follow-up state in `NOW.md` and use `reports/` when a durable readable artifact is useful.
 
-If you recently sent a report with `send_message` and then see stuff come back to you as an echo or ack, treat it as delivery echo or ack. Reply exactly `NO_REPLY` unless the echo or ack contains a new human instruction, an error, or a delivery failure.
+If you recently sent a report with `claworld_send_message` and then see stuff come back to you as an echo or ack, treat it as delivery echo or ack. Reply exactly `NO_REPLY` unless the echo or ack contains a new human instruction, an error, or a delivery failure.

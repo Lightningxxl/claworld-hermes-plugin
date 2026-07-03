@@ -90,6 +90,12 @@ MANAGE_CONVERSATIONS_DESCRIPTION = (
     ".claworld memory; peer-facing opener/reply/final text belongs to the "
     "Claworld conversation runtime."
 )
+SEND_MESSAGE_DESCRIPTION = (
+    "Use from Claworld Management Session to send a human-facing message through "
+    "Hermes native send_message delivery. This wrapper preserves Hermes delivery "
+    "semantics and retries transcript mirror when delivery succeeds without "
+    "mirrored=true."
+)
 
 def register_tools(ctx) -> None:
     for name, description, schema, handler in (
@@ -122,6 +128,12 @@ def register_tools(ctx) -> None:
             MANAGE_CONVERSATIONS_DESCRIPTION,
             MANAGE_CONVERSATIONS_SCHEMA,
             manage_conversations,
+        ),
+        (
+            "claworld_send_message",
+            SEND_MESSAGE_DESCRIPTION,
+            SEND_MESSAGE_SCHEMA,
+            send_message,
         ),
     ):
         ctx.register_tool(
@@ -246,6 +258,34 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
     },
     description=MANAGE_CONVERSATIONS_DESCRIPTION,
 )
+SEND_MESSAGE_SCHEMA = {
+    "description": SEND_MESSAGE_DESCRIPTION,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "Hermes send_message action. Defaults to send.",
+            },
+            "target": {
+                "type": "string",
+                "description": "Hermes send target such as platform:chatId or platform:chatId:threadId.",
+            },
+            "message": {
+                "type": "string",
+                "description": "The exact human-facing text to send and mirror into Main Session context.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Fallback alias for message.",
+            },
+            "mirrorUserId": {"type": "string"},
+            "mirrorSessionId": {"type": "string"},
+            "mirrorThreadId": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
+}
 
 
 def manage_account(args: dict, **kwargs) -> str:
@@ -266,6 +306,10 @@ def manage_worlds(args: dict, **kwargs) -> str:
 
 def manage_conversations(args: dict, **kwargs) -> str:
     return _tool_result("claworld_manage_conversations", args, _manage_conversations)
+
+
+def send_message(args: dict, **kwargs) -> str:
+    return _tool_result("claworld_send_message", args, _send_message)
 
 
 def _tool_result(tool: str, args: dict, fn) -> str:
@@ -701,6 +745,39 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
     return _action_result("claworld_manage_conversations", action, payload)
 
 
+def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
+    payload = dict(args or {})
+    action = _text(payload.get("action"), "send")
+    target = _text(payload.get("target"))
+    message = _text(payload.get("message"), _text(payload.get("text")))
+    _require(target, "target is required for claworld_send_message")
+    _require(message, "message is required for claworld_send_message")
+
+    payload["action"] = action
+    payload["target"] = target
+    payload["message"] = message
+
+    send_result = _call_send_message_tool(payload)
+    result = dict(send_result) if isinstance(send_result, dict) else {"result": send_result}
+    delivered = _send_succeeded(result)
+
+    if action == "send":
+        auto_mirrored = bool(result.get("mirrored"))
+        fallback_mirror = {"attempted": False}
+        if delivered and not auto_mirrored:
+            fallback_mirror = _fallback_mirror_send_message(payload)
+            if fallback_mirror.get("success"):
+                result["mirrored"] = True
+        result.setdefault("mirrored", auto_mirrored)
+        result["autoMirrored"] = auto_mirrored
+        result["fallbackMirror"] = fallback_mirror
+        result["delivered"] = delivered
+        result["status"] = "delivered" if delivered else "delivery_failed"
+
+    result["success"] = delivered
+    return result
+
+
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:
     if not _env_enabled("CLAWORLD_ENABLE_GENERIC_API"):
         raise ValueError("generic Claworld API calls require CLAWORLD_ENABLE_GENERIC_API=1")
@@ -763,6 +840,118 @@ def _conversation_request_context(cfg: ClaworldConfig, args: dict) -> Any:
     if session.get("platform") and session.get("platform") != "claworld":
         record_owner_route_from_context(cfg.memory_root_path())
     return context
+
+
+def _call_send_message_tool(args: dict) -> dict:
+    try:
+        from tools.send_message_tool import send_message_tool
+    except Exception as exc:
+        return {"success": False, "error": f"Hermes send engine unavailable: {exc}"}
+    try:
+        raw = send_message_tool(args)
+    except Exception as exc:
+        return {"success": False, "error": f"Hermes send engine failed: {exc}"}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {"success": False, "error": str(parsed)}
+        except Exception:
+            return {"success": False, "error": raw}
+    return {"success": bool(raw), "result": raw}
+
+
+def _send_succeeded(send_result: Any) -> bool:
+    return isinstance(send_result, dict) and send_result.get("success") is True and not send_result.get("error")
+
+
+def _fallback_mirror_send_message(args: dict) -> dict:
+    message = _text(args.get("message"))
+    target = _parse_send_target_for_mirror(args)
+    platform = _text(target.get("platform")) or ""
+    chat_id = _text(target.get("chatId")) or ""
+    thread_id = _text(target.get("threadId"))
+    user_id = _text(target.get("userId"))
+
+    if not message:
+        return {"attempted": False, "success": False, "method": "none", "error": "message is empty"}
+
+    mirror_error = ""
+    if platform and chat_id:
+        try:
+            from gateway.mirror import mirror_to_session
+
+            if mirror_to_session(
+                platform,
+                chat_id,
+                message,
+                source_label="claworld",
+                thread_id=thread_id,
+                user_id=user_id,
+            ):
+                return {"attempted": True, "success": True, "method": "gateway_mirror"}
+        except Exception as exc:
+            mirror_error = str(exc)
+
+    session_id = _text(target.get("sessionId"))
+    if not session_id:
+        return {
+            "attempted": bool(platform or chat_id),
+            "success": False,
+            "method": "none",
+            "error": mirror_error or "No mirrorable target or Main Session sessionId was provided.",
+        }
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            message_id = db.append_message(session_id=session_id, role="assistant", content=message)
+        finally:
+            db.close()
+        return {"attempted": True, "success": True, "method": "session_db", "sessionId": session_id, "messageId": message_id}
+    except Exception as exc:
+        return {"attempted": True, "success": False, "method": "session_db", "sessionId": session_id, "error": str(exc)}
+
+
+def _parse_send_target_for_mirror(args: dict) -> dict:
+    target = _text(args.get("target")) or ""
+    platform, separator, target_ref = target.partition(":")
+    if not separator:
+        platform = ""
+        target_ref = ""
+
+    chat_id = ""
+    thread_id = _text(args.get("mirrorThreadId"), _text(args.get("threadId")))
+    user_id = _text(args.get("mirrorUserId"), _text(args.get("userId")))
+
+    if platform and target_ref:
+        try:
+            from tools.send_message_tool import _parse_target_ref
+
+            parsed_chat_id, parsed_thread_id, parsed_user_id = _parse_target_ref(platform, target_ref)
+            chat_id = _text(parsed_chat_id) or ""
+            thread_id = thread_id or _text(parsed_thread_id)
+            user_id = user_id or _text(parsed_user_id)
+        except Exception:
+            parts = [part for part in target_ref.split(":") if part]
+            if len(parts) >= 2 and parts[0] in {"chat", "channel", "group", "dm"}:
+                chat_id = parts[1]
+                thread_id = thread_id or (parts[2] if len(parts) > 2 else None)
+            elif len(parts) >= 2 and parts[0] == "user":
+                user_id = user_id or parts[1]
+            elif parts:
+                chat_id = parts[0]
+                thread_id = thread_id or (parts[1] if len(parts) > 1 else None)
+
+    return {
+        "platform": platform,
+        "chatId": chat_id,
+        "threadId": thread_id,
+        "userId": user_id,
+        "sessionId": _text(args.get("mirrorSessionId"), _text(args.get("sessionId"))),
+    }
 
 
 def _current_hermes_session_context() -> dict:
