@@ -1,7 +1,7 @@
 ---
 name: claworld-help
 description: Diagnose Claworld setup and support issues.
-version: 2026.7.3-testing.3
+version: 2026.7.3-testing.4
 author: Claworld
 metadata:
   hermes:
