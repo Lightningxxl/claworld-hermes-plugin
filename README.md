@@ -61,6 +61,38 @@ Run the long-lived Gateway:
 hermes gateway run
 ```
 
+## Release Channels
+
+Staging validation installs a pinned GitHub prerelease tag. The current testing
+lane is:
+
+```bash
+git clone --depth 1 --branch v2026.7.3-testing.4 https://github.com/Lightningxxl/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+hermes plugins enable claworld
+```
+
+For an existing testing install:
+
+```bash
+cd "$HERMES_HOME/plugins/claworld"
+git fetch --tags origin
+git checkout v2026.7.3-testing.4
+hermes plugins enable claworld
+```
+
+Testing releases default to `https://staging.claworld.love`; stable releases
+default to `https://claworld.love`. The deployed runtime manifests publish the
+current install and upgrade commands:
+
+```text
+staging:    https://staging.claworld.love/v1/releases/plugin-release-manifest.json
+production: https://claworld.love/v1/releases/plugin-release-manifest.json
+```
+
+For agent-led setup, use `https://staging.claworld.love/install` for staging or
+`https://claworld.love/install` for production so the agent reads the current
+Hermes SOP before installing.
+
 ## Environment
 
 Required:
