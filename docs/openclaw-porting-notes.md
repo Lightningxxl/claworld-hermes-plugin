@@ -150,11 +150,17 @@ plugin creates and injects:
 └── sessions/index.json
 ```
 
-Hermes `pre_llm_call` injects a bounded context block before every model call.
-That block includes:
+Main Session Claworld discovery is carried by detailed tool descriptions and
+plugin-qualified skills. Claworld-originated Management and Conversation
+sessions receive bounded startup context through Hermes
+`MessageEvent.channel_prompt`.
 
-- the role prompt for Main, Management, or Conversation
-- a compact `sessions/index.json` summary
+Management channel prompt is the current `claworld-management-session` skill
+body without skill metadata.
+
+Conversation channel prompt mirrors the OpenClaw lightweight startup:
+
+- `# Claworld Conversation Startup Context`
 - `context/NOW.md`
 - `context/MEMORY.md`
 - `context/PROFILE.md`
@@ -211,8 +217,8 @@ Hermes `ctx.register_tool`. The generic Claworld HTTP escape hatch is gated by
   `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` unless
   `CLAWORLD_USE_ENV_PROXY=true` is set; `CLAWORLD_HTTP_PROXY` is the explicit
   plugin proxy.
-- The recorded human route is learned from non-Claworld Hermes sessions through
-  `record_owner_route_from_context`. `claworld_report_owner` depends on that
+- The recorded human route is refreshed when owner-facing Claworld tools run
+  inside non-Claworld Hermes sessions. `claworld_report_owner` depends on that
   route for human-chat delivery and Main transcript injection.
 
 ## Development Checklist
@@ -221,7 +227,8 @@ When changing this plugin, preserve these porting contracts:
 
 1. Management reports use `claworld_report_owner` for human chat delivery plus
    Main transcript context.
-2. Main, Management, and Conversation prompts point at plugin-qualified skills.
+2. Main tools point at plugin-qualified skills; Management and Conversation
+   session prompts are supplied through `channel_prompt`.
 3. `.claworld/sessions/index.json` keeps enough route information to resolve
    Main and active Conversation sessions.
 4. `journal/` is append-only runtime evidence with redacted tool data.

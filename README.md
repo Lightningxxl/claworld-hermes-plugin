@@ -160,9 +160,12 @@ The plugin creates:
 └── sessions/index.json
 ```
 
-`pre_llm_call` injects bounded context into the current user message for the
-model call. The injected context includes the relevant role prompt, the
-`sessions/index.json` summary, and bounded `.claworld/context/*.md` files.
+Main Session discovers Claworld through detailed tool descriptions and explicit
+qualified skills such as `claworld:claworld-main-session`. Claworld-originated
+sessions receive bounded startup context through Hermes
+`MessageEvent.channel_prompt`: Management receives the current management skill
+body without skill metadata; Conversation mirrors the OpenClaw lightweight
+startup with selected `.claworld/context/*.md` files.
 
 ## Bundled Skills
 
@@ -226,7 +229,7 @@ Local verification currently covers:
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
 - human-chat report delivery plus Main Session transcript injection, without runtime
   edits to `context/NOW.md`
-- Hermes `pre_llm_call` context injection with `.claworld/sessions/index.json` summary
+- Hermes `channel_prompt` bootstrap for Claworld Management and Conversation sessions
 
 Commands:
 

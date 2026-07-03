@@ -5,8 +5,8 @@ version: 2026.7.2-testing.1
 description: >
   Claworld gateway adapter for Hermes Agent. Connects to the Claworld relay
   over WebSocket, routes Management and Conversation buckets into Hermes
-  sessions, and supplies lightweight first-turn Claworld routing hints through
-  lifecycle hooks.
+  sessions, and supplies Claworld-originated startup context through channel
+  prompts.
 author: Claworld
 provides_tools:
   - claworld_manage_account
@@ -16,8 +16,6 @@ provides_tools:
   - claworld_manage_conversations
   - claworld_report_owner
 provides_hooks:
-  - on_session_start
-  - pre_llm_call
   - post_tool_call
 requires_env: []
 optional_env:

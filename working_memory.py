@@ -7,6 +7,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
 CONTEXT_DIR = "context"
 JOURNAL_DIR = "journal"
 REPORTS_DIR = "reports"
@@ -17,6 +18,13 @@ FILES = {
     "now": "context/NOW.md",
     "profile": "context/PROFILE.md",
     "memory": "context/MEMORY.md",
+}
+
+MAX_BOOTSTRAP_FILE_CHARS = 12000
+MAX_BOOTSTRAP_TOTAL_CHARS = 60000
+ROLE_BOOTSTRAP_FILES = {
+    "main": ("context/MEMORY.md",),
+    "conversation": ("context/NOW.md", "context/MEMORY.md", "context/PROFILE.md"),
 }
 
 
@@ -245,7 +253,7 @@ def write_report(root: Path, text: str, metadata: dict | None = None) -> Path:
     return path
 
 
-def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_chars: int = 60000) -> str:
+def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_chars: int = MAX_BOOTSTRAP_TOTAL_CHARS) -> str:
     ensure_working_memory(root)
     role = "main"
     if platform == "claworld" and chat_id.startswith("management-"):
@@ -253,23 +261,51 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
     elif platform == "claworld":
         role = "conversation"
 
-    intro = {
-        "main": MAIN_CONTEXT,
-        "management": MANAGEMENT_CONTEXT,
-        "conversation": CONVERSATION_CONTEXT,
-    }[role]
+    if role == "management":
+        return _role_prompt(role, root)[:max_chars]
 
-    files = ["context/NOW.md", "context/MEMORY.md", "context/PROFILE.md"]
-    parts = [intro.format(root=str(root))]
-    session_context = render_session_context(read_session_index(root), role=role, platform=platform, chat_id=chat_id)
-    if session_context:
-        parts.append(session_context)
-    for relative in files:
-        path = root / relative
-        content = path.read_text(encoding="utf-8") if path.exists() else ""
-        parts.append(f"## {relative}\n\n{content.strip()}")
+    parts = [_role_prompt(role, root)]
+    if role == "main":
+        session_context = render_session_context(read_session_index(root), role=role, platform=platform, chat_id=chat_id)
+        if session_context:
+            parts.append(session_context)
+    if role == "conversation":
+        title = "# Claworld Conversation Startup Context"
+        file_sections = [_file_section(root, relative) for relative in ROLE_BOOTSTRAP_FILES[role]]
+        parts.append("\n\n".join([title, *file_sections]))
+    else:
+        for relative in ROLE_BOOTSTRAP_FILES[role]:
+            parts.append(_file_section(root, relative))
     rendered = "\n\n".join(part for part in parts if part.strip())
     return rendered[:max_chars]
+
+
+def _role_prompt(role: str, root: Path) -> str:
+    if role == "management":
+        return _skill_body("claworld-management-session")
+    if role == "conversation":
+        return ""
+    return MAIN_CONTEXT.format(root=str(root))
+
+
+def _file_section(root: Path, relative: str, max_chars: int = MAX_BOOTSTRAP_FILE_CHARS) -> str:
+    path = root / relative
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    content = content.strip()
+    if len(content) > max_chars:
+        note = "\n_(Truncated to the per-file Claworld bootstrap budget.)_"
+        content = content[: max_chars - len(note)].rstrip() + note
+    return f"## `.claworld/{relative}`\n{content}"
+
+
+def _skill_body(skill_name: str) -> str:
+    skill_path = Path(__file__).resolve().parent / "skills" / skill_name / "SKILL.md"
+    text = skill_path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        marker = text.find("\n---", 3)
+        if marker != -1:
+            text = text[marker + len("\n---") :]
+    return text.strip()
 
 
 def render_session_context(data: dict, *, role: str, platform: str = "", chat_id: str = "", max_chars: int = 12000) -> str:
@@ -312,33 +348,6 @@ Working memory root: `{root}`
 - For setup or repair, load `skill_view("claworld:claworld-help")`.
 - Use Claworld tools for current product facts.
 - Peer-facing messages belong to Claworld conversation routing; keep owner-facing reports readable and concise."""
-
-
-MANAGEMENT_CONTEXT = """# Claworld Management Session
-
-You are the private Claworld Management Session for this account.
-
-Working memory root: `{root}`
-
-- Start by loading `skill_view("claworld:claworld-management-session")` before deciding what to do.
-- Canonical Claworld guidance lives in plugin-qualified skills. Use `claworld:claworld-management-session` for this role even when local/user-authored Claworld notes also exist.
-- Handle Claworld notifications, lifecycle events, proactive work, local memory, and report handoffs.
-- Read PROFILE, MEMORY, NOW, journal, and sessions/index.json before deciding.
-- Conversation Sessions handle live peer-facing Claworld chat.
-- Ask or report to the owner through the owner report tool when the owner needs visibility or a decision."""
-
-
-CONVERSATION_CONTEXT = """# Claworld Conversation Session
-
-You are a peer-facing Claworld Conversation Session.
-
-Working memory root: `{root}`
-
-- Respond to the current Claworld peer conversation only.
-- Canonical Claworld guidance lives in plugin-qualified skills. Use `claworld:claworld-main-session` for broader product rules even when local/user-authored Claworld notes also exist.
-- Use `skill_view("claworld:claworld-main-session")` only when you need broader Claworld product rules; keep ordinary live replies short and direct.
-- Read NOW, MEMORY, and PROFILE for bounded shared context.
-- Submit observations through Claworld tools or reports; durable memory commits are handled by Management/Main."""
 
 
 def iso_now() -> str:

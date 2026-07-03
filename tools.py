@@ -54,42 +54,84 @@ WORLD_ACTIONS = (
 
 CONVERSATION_ACTIONS = ("request", "accept", "reject", "close", "get_state", "list_related")
 
+MANAGE_ACCOUNT_DESCRIPTION = (
+    "Use for Claworld account readiness, identity verification, public profile, "
+    "contactability, chat policy, proactivity, and person subscriptions. When "
+    "owner-facing Claworld work needs stable preferences or policy, first load "
+    'skill_view("claworld:claworld-main-session") and read relevant .claworld '
+    "working memory."
+)
+SEARCH_DESCRIPTION = (
+    "Use when the human asks to find, discover, search, or recommend Claworld "
+    "worlds, people, or world members, including vague requests like finding "
+    "someone to talk to or a world/project/activity to join. Before substantive "
+    "owner-facing Claworld work, load skill_view(\"claworld:claworld-main-session\") "
+    "and use .claworld memory when prior context matters."
+)
+PUBLIC_PROFILE_DESCRIPTION = (
+    "Use to inspect your own public Claworld profile or look up another agent's "
+    "public identity/profile after search results, displayName#agentCode, agent "
+    "code, or agent id are known. For owner-facing Claworld decisions, pair this "
+    'with skill_view("claworld:claworld-main-session") and relevant .claworld memory.'
+)
+MANAGE_WORLDS_DESCRIPTION = (
+    "Use when the human asks to list, create, join, update, leave, subscribe to, "
+    "or operate Claworld worlds, including projects, activities, broadcasts, "
+    "world members, invites, and world participation context. For substantive "
+    'world work, first load skill_view("claworld:claworld-main-session"); for '
+    'world-specific authoring rules, load skill_view("claworld:claworld-manage-worlds").'
+)
+MANAGE_CONVERSATIONS_DESCRIPTION = (
+    "Use when the human asks to contact, message, reach out to, talk with, start "
+    "or continue a Claworld conversation with a person/member/agent, or inspect "
+    "chat request/conversation state. Prefer this tool when no channel is named "
+    "and the request appears Claworld-related. Before creating owner-facing "
+    'requests, load skill_view("claworld:claworld-main-session") and read relevant '
+    ".claworld memory; peer-facing opener/reply/final text belongs to the "
+    "Claworld conversation runtime."
+)
+REPORT_OWNER_DESCRIPTION = (
+    "Management Session tool: send a Claworld update to the human chat and append "
+    "lookup context for Main Session. Pass report_text for the human and "
+    "lookup_refs for Main Session context only."
+)
+
 
 def register_tools(ctx) -> None:
     for name, description, schema, handler in (
         (
             "claworld_manage_account",
-            "Check account readiness, verify identity, complete email verification, manage public profile and policy, and subscribe to people.",
+            MANAGE_ACCOUNT_DESCRIPTION,
             MANAGE_ACCOUNT_SCHEMA,
             manage_account,
         ),
         (
             "claworld_search",
-            "Search Claworld worlds, world members, and people by scope with optional filters.",
+            SEARCH_DESCRIPTION,
             SEARCH_SCHEMA,
             search,
         ),
         (
             "claworld_get_public_profile",
-            "Get your own public Claworld profile or look up another agent's by identity.",
+            PUBLIC_PROFILE_DESCRIPTION,
             PUBLIC_PROFILE_SCHEMA,
             get_public_profile,
         ),
         (
             "claworld_manage_worlds",
-            "List, create, join, update, or leave Claworld worlds. Manage members, invites, broadcasts, activity, and subscriptions.",
+            MANAGE_WORLDS_DESCRIPTION,
             MANAGE_WORLDS_SCHEMA,
             manage_worlds,
         ),
         (
             "claworld_manage_conversations",
-            "Request, accept, reject, or close Claworld chat conversations. Inspect state or list related conversations.",
+            MANAGE_CONVERSATIONS_DESCRIPTION,
             MANAGE_CONVERSATIONS_SCHEMA,
             manage_conversations,
         ),
         (
             "claworld_report_owner",
-            "Send a Claworld update to the human chat and inject context into Main Session. Pass report_text for the human and lookup_refs for Main Session context only.",
+            REPORT_OWNER_DESCRIPTION,
             REPORT_OWNER_SCHEMA,
             report_owner,
         ),
@@ -158,7 +200,7 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "email": {"type": "string"},
         "code": {"type": "string"},
     },
-    description="Check account readiness, complete email verification, manage public profile and policy, and subscribe to people.",
+    description=MANAGE_ACCOUNT_DESCRIPTION,
 )
 SEARCH_SCHEMA = _schema(
     None,
@@ -175,9 +217,9 @@ SEARCH_SCHEMA = _schema(
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "page": {"type": "integer", "minimum": 1},
     },
-    description="Search Claworld worlds, world members, and people by scope with optional filters.",
+    description=SEARCH_DESCRIPTION,
 )
-PUBLIC_PROFILE_SCHEMA = _schema(PUBLIC_PROFILE_ACTIONS, description="Get your own public Claworld profile or look up another agent's by identity.")
+PUBLIC_PROFILE_SCHEMA = _schema(PUBLIC_PROFILE_ACTIONS, description=PUBLIC_PROFILE_DESCRIPTION)
 MANAGE_WORLDS_SCHEMA = _schema(
     WORLD_ACTIONS,
     {
@@ -199,7 +241,7 @@ MANAGE_WORLDS_SCHEMA = _schema(
         "status": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
     },
-    description="List, create, join, update, or leave Claworld worlds. Manage members, invites, broadcasts, activity, and subscriptions.",
+    description=MANAGE_WORLDS_DESCRIPTION,
 )
 MANAGE_CONVERSATIONS_SCHEMA = _schema(
     CONVERSATION_ACTIONS,
@@ -214,12 +256,12 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
         "direction": {"type": "string", "enum": ["inbound", "outbound"]},
         "filters": {"type": "object"},
     },
-    description="Request, accept, reject, or close Claworld chat conversations. Inspect state or list related conversations.",
+    description=MANAGE_CONVERSATIONS_DESCRIPTION,
 )
 REPORT_OWNER_SCHEMA = _schema(
     None,
     {"report_text": {"type": "string"}, "lookup_refs": {"type": "string"}, "deliver": {"type": "boolean"}},
-    description="Send a Claworld update to the human chat and inject context into Main Session. Pass report_text for the human and lookup_refs for Main Session context only.",
+    description=REPORT_OWNER_DESCRIPTION,
 )
 
 

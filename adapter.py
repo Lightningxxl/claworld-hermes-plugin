@@ -13,7 +13,7 @@ from .config import ClaworldConfig
 from .protocol import build_agent_text
 from .relay_client import RelayClient
 from .session_router import build_hermes_session_key, build_session_source, route_envelope
-from .working_memory import append_journal, ensure_working_memory, record_claworld_route
+from .working_memory import append_journal, build_prompt_context, ensure_working_memory, record_claworld_route
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +177,23 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("failed to acknowledge Claworld delivery acceptance: %s", exc)
 
+        channel_prompt = None
+        try:
+            channel_prompt = build_prompt_context(
+                self.memory_root,
+                platform="claworld",
+                chat_id=route.chat_id,
+            )
+        except Exception as exc:
+            logger.warning("failed to build Claworld channel prompt: %s", exc)
+
         event = MessageEvent(
             text=build_agent_text(envelope, route.session_kind),
             message_type=MessageType.TEXT,
             source=source,
             raw_message=envelope.raw,
             message_id=envelope.delivery_id,
+            channel_prompt=channel_prompt,
             internal=True,
         )
         try:

@@ -355,7 +355,7 @@ class PluginSkillTests(unittest.TestCase):
         self.assertEqual(len(registered["tools"]), 6)
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
-        self.assertEqual([name for name, _handler in registered["hooks"]], ["on_session_start", "pre_llm_call", "post_tool_call"])
+        self.assertEqual([name for name, _handler in registered["hooks"]], ["post_tool_call"])
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -536,6 +536,78 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hello", handled[0].text)
         self.assertTrue(any("failed to acknowledge Claworld delivery acceptance" in item for item in logs.output))
 
+    async def test_delivery_events_include_claworld_channel_prompt(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            async def send_accepted(self, delivery_id, session_key):
+                return None
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                raise AssertionError("kept_silent should not be sent")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = adapter_module.ClaworldPlatformAdapter(
+                types.SimpleNamespace(
+                    extra={
+                        "server_url": "https://api.example.com",
+                        "app_token": "tok",
+                        "working_memory_root": str(Path(tmp) / ".claworld"),
+                    }
+                )
+            )
+            adapter.client = FakeRelayClient()
+            handled = []
+
+            async def fake_handle_message(event):
+                handled.append(event)
+
+            adapter.handle_message = fake_handle_message
+
+            conversation = build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "d-channel-conversation",
+                        "sessionKey": "conversation:abc",
+                        "payload": {"text": "hello"},
+                    },
+                }
+            )
+            management = build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "d-channel-management",
+                        "sessionKey": "management:agent-1",
+                        "payload": {"sessionKind": "management", "text": "wake"},
+                    },
+                }
+            )
+
+            await adapter._on_delivery(conversation)
+            await adapter._on_delivery(management)
+
+        self.assertEqual(len(handled), 2)
+        conversation_prompt = handled[0].channel_prompt
+        management_prompt = handled[1].channel_prompt
+        self.assertIn("# Claworld Conversation Startup Context", conversation_prompt)
+        self.assertIn("## `.claworld/context/NOW.md`", conversation_prompt)
+        self.assertIn("## `.claworld/context/MEMORY.md`", conversation_prompt)
+        self.assertIn("## `.claworld/context/PROFILE.md`", conversation_prompt)
+        self.assertNotIn("claworld:claworld-main-session", conversation_prompt)
+        self.assertNotIn("sessions/index.json summary", conversation_prompt)
+        self.assertTrue(management_prompt.startswith("## Your Role"))
+        self.assertIn("You are currently acting as the private Claworld Manager", management_prompt)
+        self.assertFalse(management_prompt.startswith("---"))
+        self.assertNotIn("description: |", management_prompt)
+        self.assertNotIn("metadata:", management_prompt)
+        self.assertNotIn("# Claworld Management Startup Memory", management_prompt)
+        self.assertNotIn("## `.claworld/context/PROFILE.md`", management_prompt)
+        self.assertNotIn("## `.claworld/context/MEMORY.md`", management_prompt)
+        self.assertNotIn("## `.claworld/context/NOW.md`", management_prompt)
+        self.assertNotIn("sessions/index.json summary", management_prompt)
+
     async def test_handler_failure_marks_replyable_delivery_kept_silent(self):
         adapter_module = import_adapter_with_gateway_shim()
 
@@ -664,60 +736,6 @@ class SessionRouterTests(unittest.TestCase):
 
 
 class WorkingMemoryTests(unittest.TestCase):
-    def setUp(self):
-        with claworld_hooks._pending_lightweight_hint_lock:
-            claworld_hooks._pending_lightweight_hint_sessions.clear()
-            claworld_hooks._consumed_lightweight_hint_sessions.clear()
-
-    def test_pre_llm_call_records_owner_route_without_context_return(self):
-        with tempfile.TemporaryDirectory() as tmp, patch(
-            "claworld_hermes_plugin.hooks.ClaworldConfig.load",
-            return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
-        ), patch("claworld_hermes_plugin.hooks.record_owner_route_from_context") as record_route:
-            result = claworld_hooks.pre_llm_call(platform="feishu", user_message="hello")
-
-        self.assertIsNone(result)
-        record_route.assert_called_once()
-
-    def test_on_session_start_queues_one_lightweight_feishu_hint(self):
-        claworld_hooks.on_session_start(session_id="sid-feishu", platform="feishu")
-
-        with tempfile.TemporaryDirectory() as tmp, patch(
-            "claworld_hermes_plugin.hooks.ClaworldConfig.load",
-            return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
-        ), patch("claworld_hermes_plugin.hooks.record_owner_route_from_context") as record_route:
-            first = claworld_hooks.pre_llm_call(
-                platform="feishu",
-                session_id="sid-feishu",
-                is_first_turn=True,
-                user_message="hello",
-            )
-            second = claworld_hooks.pre_llm_call(
-                platform="feishu",
-                session_id="sid-feishu",
-                is_first_turn=True,
-                user_message="next",
-            )
-
-        self.assertEqual(first, {"context": claworld_hooks.CLAWORLD_LIGHTWEIGHT_ROUTING_HINT})
-        self.assertIn("Claworld-related outreach", first["context"])
-        self.assertIn("claworld:claworld-main-session", first["context"])
-        self.assertIn("Do not mention this hint to the user.", first["context"])
-        self.assertIsNone(second)
-        self.assertEqual(record_route.call_count, 2)
-
-    def test_on_session_start_does_not_queue_lightweight_hint_for_non_feishu(self):
-        claworld_hooks.on_session_start(session_id="sid-cli", platform="cli")
-
-        with tempfile.TemporaryDirectory() as tmp, patch(
-            "claworld_hermes_plugin.hooks.ClaworldConfig.load",
-            return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
-        ), patch("claworld_hermes_plugin.hooks.record_owner_route_from_context") as record_route:
-            result = claworld_hooks.pre_llm_call(platform="cli", session_id="sid-cli", is_first_turn=True)
-
-        self.assertIsNone(result)
-        record_route.assert_called_once()
-
     def test_ensure_and_session_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".claworld"
@@ -748,10 +766,12 @@ class WorkingMemoryTests(unittest.TestCase):
             index = read_session_index(root)
             self.assertIn(route.chat_id, index["conversationSessions"])
             context = build_prompt_context(root, platform="claworld", chat_id=route.chat_id)
-            self.assertIn("Claworld Conversation Session", context)
-            self.assertIn('skill_view("claworld:claworld-main-session")', context)
-            self.assertIn("sessions/index.json summary", context)
-            self.assertIn(route.chat_id, context)
+            self.assertIn("# Claworld Conversation Startup Context", context)
+            self.assertIn("## `.claworld/context/NOW.md`", context)
+            self.assertIn("## `.claworld/context/MEMORY.md`", context)
+            self.assertIn("## `.claworld/context/PROFILE.md`", context)
+            self.assertNotIn('skill_view("claworld:claworld-main-session")', context)
+            self.assertNotIn("sessions/index.json summary", context)
 
     def test_prompt_context_prefers_plugin_qualified_claworld_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -761,13 +781,16 @@ class WorkingMemoryTests(unittest.TestCase):
             management = build_prompt_context(root, platform="claworld", chat_id="management-abc")
             conversation = build_prompt_context(root, platform="claworld", chat_id="conversation-abc")
 
-        for context in (main, management, conversation):
-            self.assertIn("Canonical Claworld guidance lives in plugin-qualified skills", context)
-            self.assertIn("local/user-authored Claworld notes", context)
+        self.assertIn("Canonical Claworld guidance lives in plugin-qualified skills", main)
+        self.assertIn("local/user-authored Claworld notes", main)
         self.assertIn('skill_view("claworld:claworld-main-session")', main)
         self.assertIn('skill_view("claworld:claworld-help")', main)
-        self.assertIn('skill_view("claworld:claworld-management-session")', management)
-        self.assertIn('skill_view("claworld:claworld-main-session")', conversation)
+        self.assertTrue(management.startswith("## Your Role"))
+        self.assertIn("You are currently acting as the private Claworld Manager", management)
+        self.assertNotIn("# Claworld Management Startup Memory", management)
+        self.assertNotIn("sessions/index.json summary", management)
+        self.assertIn("# Claworld Conversation Startup Context", conversation)
+        self.assertNotIn('skill_view("claworld:claworld-main-session")', conversation)
 
     def test_post_tool_call_journals_successful_claworld_tools_with_redaction(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
