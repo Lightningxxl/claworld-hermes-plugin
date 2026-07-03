@@ -604,6 +604,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await adapter._on_delivery(management)
 
         self.assertEqual(len(handled), 2)
+        self.assertTrue(handled[0].source.role_authorized)
+        self.assertTrue(handled[1].source.role_authorized)
         conversation_prompt = handled[0].channel_prompt
         management_prompt = handled[1].channel_prompt
         self.assertIn("# Claworld Conversation Startup Context", conversation_prompt)
@@ -618,6 +620,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("description: |", management_prompt)
         self.assertNotIn("metadata:", management_prompt)
         self.assertNotIn("# Claworld Management Startup Memory", management_prompt)
+        self.assertIn("# Claworld Working Memory Root", management_prompt)
+        self.assertIn("Configured root:", management_prompt)
         self.assertIn("# Claworld Working Memory Startup Preview", management_prompt)
         self.assertIn("short, truncated startup index", management_prompt)
         self.assertIn("### `.claworld/context/PROFILE.md`", management_prompt)
@@ -854,6 +858,10 @@ class WorkingMemoryTests(unittest.TestCase):
         self.assertTrue(management.startswith("## Your Role"))
         self.assertIn("You are currently acting as the private Claworld Manager", management)
         self.assertNotIn("# Claworld Management Startup Memory", management)
+        self.assertIn("# Claworld Working Memory Root", management)
+        self.assertIn(f"Configured root: `{root}`", management)
+        self.assertIn(f"`{root / 'context' / 'NOW.md'}`", management)
+        self.assertIn(f"`{root / 'sessions' / 'index.json'}`", management)
         self.assertIn("# Claworld Working Memory Startup Preview", management)
         self.assertIn("### `.claworld/context/PROFILE.md`", management)
         self.assertIn("### `.claworld/context/MEMORY.md`", management)

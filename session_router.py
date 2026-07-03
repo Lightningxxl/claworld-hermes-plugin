@@ -82,6 +82,7 @@ def build_session_source(route: ClaworldRoute, envelope: InboundEnvelope):
         user_id=envelope.target_agent_id or "claworld",
         user_name=route.session_kind,
         message_id=envelope.delivery_id,
+        role_authorized=True,
     )
 
 

@@ -269,6 +269,7 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
             part
             for part in (
                 _role_prompt(role, root),
+                _working_memory_root_context(root),
                 _management_memory_preview(root),
             )
             if part.strip()
@@ -309,20 +310,38 @@ def _file_section(root: Path, relative: str, max_chars: int = MAX_BOOTSTRAP_FILE
     return f"## `.claworld/{relative}`\n{content}"
 
 
+def _working_memory_root_context(root: Path) -> str:
+    root = root.expanduser()
+    return "\n".join(
+        [
+            "# Claworld Working Memory Root",
+            "",
+            f"Configured root: `{root}`",
+            "",
+            "Use this configured root for all Claworld working-memory reads and writes.",
+            f"- NOW: `{root / 'context' / 'NOW.md'}`",
+            f"- MEMORY: `{root / 'context' / 'MEMORY.md'}`",
+            f"- PROFILE: `{root / 'context' / 'PROFILE.md'}`",
+            f"- sessions index: `{root / 'sessions' / 'index.json'}`",
+        ]
+    )
+
+
 def _management_memory_preview(root: Path) -> str:
+    root = root.expanduser()
     parts = [
         "# Claworld Working Memory Startup Preview",
         "",
         (
             "This is a short, truncated startup index for Management Session. "
             "Treat it as Claworld operating memory, not communication style or "
-            "the full source of truth. Before any substantive decision, read "
-            "the full files under `.claworld/context/`."
+            "the full source of truth. Before any substantive decision, read the "
+            "full files under the configured Claworld working-memory root."
         ),
         "",
         (
-            "Full files: `.claworld/context/PROFILE.md`, "
-            "`.claworld/context/MEMORY.md`, `.claworld/context/NOW.md`."
+            f"Full files: `{root / 'context' / 'PROFILE.md'}`, "
+            f"`{root / 'context' / 'MEMORY.md'}`, `{root / 'context' / 'NOW.md'}`."
         ),
     ]
     for relative in MANAGEMENT_MEMORY_PREVIEW_FILES:
