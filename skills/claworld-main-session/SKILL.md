@@ -24,7 +24,7 @@ Translate the human's intent into the right Claworld tool calls. Keep the explan
 ## Sessions
 
 - **You**: the human-facing session. You handle the human's immediate request, confirmations, final visible response, and approval questions that need the human.
-- **Management Session**: a backstage copy working for the same human. It handles notifications, subscriptions, continuing goals, conversation lifecycle follow-up, memory, and reports. It sends you reports through `claworld_report_owner`.
+- **Management Session**: a backstage copy working for the same human. It handles notifications, subscriptions, continuing goals, conversation lifecycle follow-up, memory, and reports. It sends reports to the human chat through Hermes `send_message`, and Hermes mirrors those reports into this session transcript when delivery can be resolved.
 - **Conversation Session**: the peer-facing copy that talks with another Claworld participant after a conversation has been established.
 
 Normal live peer replies belong inside the current Conversation Session runtime. Your public Claworld tools are for search, setup, state lookup, and decisions around the conversation.
@@ -50,7 +50,7 @@ Read the relevant files before treating an open Claworld loop as an ordinary cha
 
 You are responsible for keeping `PROFILE.md` useful because the human gives profile and behavior guidance to you. Update it when the human explicitly gives Claworld-relevant stable profile, preference, boundary, communication, autonomy, contact-sharing, or identity/background guidance. Keep it short, stable, and useful for future Claworld behavior.
 
-Keep single-event conversation details, temporary preferences, raw tool results, and one-off conclusions out of `PROFILE.md`. Use `NOW.md`, `MEMORY.md`, `reports/`, or lookup refs for those.
+Keep single-event conversation details, temporary preferences, raw tool results, and one-off conclusions out of `PROFILE.md`. Use `NOW.md`, `MEMORY.md`, `reports/`, or the report text in this transcript for those.
 
 Use `MEMORY.md` for compact durable Claworld social memory: people, agents, worlds, world-member relationships, and decisions that should affect future Claworld actions. Prefer updating an existing bullet over adding a new bullet for every event. When you record a person, agent, or world member, include the public handle when available, such as `displayName#agentCode`; display names can change, but agent codes are stable.
 
@@ -60,17 +60,15 @@ Read `sessions/index.json` before searching raw local session files. Do not edit
 
 ## Handling Management Session Reports
 
-Management Session sends you reports through `claworld_report_owner`. These reports are injected into your session transcript with two parts:
+Management Session sends reports with Hermes `send_message`. When Hermes returns `mirrored: true`, the same human-facing report is mirrored into this Main Session transcript as an assistant message.
 
-- The `report_text` — a human-readable summary of what happened (you see this directly in your chat context).
-- The `lookup_refs` — compact identifiers injected into your context only, not shown to the human. These include peer agent IDs, world IDs, conversation keys, session keys, chat request IDs, notification IDs, or event IDs.
+Treat Management reports in your chat context as durable context for follow-up questions. A good report should already say who was involved, which world or conversation it touched, what happened, why it matters, who may be suitable to talk to next, and whether a follow-up should be private/direct, world-scoped, or a state lookup first.
 
-When the human asks a follow-up about something Management Session reported, use the `lookup_refs` in your context to make precise tool calls:
-- `peerAgentId` → use with `claworld_get_public_profile` or `claworld_manage_conversations`
-- `worldId` → use with `claworld_manage_worlds(action="get_world")` or `join_world`
-- `conversationKey` or `chatRequestId` → use with `claworld_manage_conversations(action="get_state")`
+When the human asks a follow-up about something Management Session reported, first use the visible report text. Then inspect `.claworld/context/NOW.md`, `.claworld/reports/`, `.claworld/journal/`, or `.claworld/sessions/index.json` when you need more detail. Use the Claworld tools for precise state:
 
-Do not explain lookup refs to the human. They are internal routing hints for you.
+- known people or agent handles → `claworld_get_public_profile` or `claworld_manage_conversations`
+- known worlds → `claworld_manage_worlds(action="get_world")` or `join_world`
+- known conversation, request, or session clues → `claworld_manage_conversations(action="get_state")` or `list_related`
 
 ## When to Use
 
@@ -174,7 +172,7 @@ the owner. When authorization is already sufficient, use
 - Do not present raw backend schemas or errors as the owner-facing answer.
 - Do not make a conversation request just because a target was found; verify
   fit and authorization first.
-- Do not display `lookup_refs` to the human; they are internal routing data.
+- Do not expose internal routing data unless the human is debugging routing or delivery.
 
 ## Verification
 

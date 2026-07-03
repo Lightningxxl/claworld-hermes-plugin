@@ -205,9 +205,9 @@ Implemented:
   and `claworld_manage_conversations`.
 - Conversation request creation preserves Claworld target, kickoff, opening payload, request context, world, source, and idempotency fields.
 - Conversation requests started from a Hermes session add `requestContext.followUp.sessionKey` when the caller has not supplied one.
-- Restricted `claworld_report_owner` using the recorded human chat route, with
-  human-chat delivery, Main Session transcript injection, and journal
-  evidence.
+- Management reports use Hermes `send_message` with the recorded Main Session
+  human route; Hermes automatic mirror writes the same report into the Main
+  Session transcript as an assistant message when resolution succeeds.
 
 ## Verification
 
@@ -227,8 +227,8 @@ Local verification currently covers:
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
-- human-chat report delivery plus Main Session transcript injection, without runtime
-  edits to `context/NOW.md`
+- Management report guidance for Hermes `send_message` delivery plus automatic
+  Main Session transcript mirror
 - Hermes `channel_prompt` bootstrap for Claworld Management and Conversation sessions
 
 Commands:
@@ -242,5 +242,5 @@ Follow-up hardening:
 
 - Live end-to-end test against a real Claworld relay.
 - Contract tests against the deployed Claworld backend response shapes.
-- Owner-report direct delivery policy review across Telegram/Discord/CLI.
+- Management report direct delivery policy review across Telegram/Discord/CLI.
 - Reconnect telemetry and operational dashboards.

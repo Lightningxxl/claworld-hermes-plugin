@@ -320,13 +320,12 @@ class PluginSkillTests(unittest.TestCase):
             self.assertNotIn("openclaw", text)
             self.assertNotIn("sessions_send", text)
         management = (ROOT / "skills" / "claworld-management-session" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("claworld_report_owner", management)
+        self.assertNotIn("claworld_report_owner", management)
         self.assertIn("You are currently acting as the private Claworld Manager for your human.", management)
         self.assertIn("You may initiate multiple chats at once.", management)
         self.assertIn("You report every conversation_ended notification by default.", management)
-        self.assertIn("Use `claworld_report_owner` once when a report should go to the human.", management)
-        self.assertIn("`delivery` tells you whether the human chat message was sent", management)
-        self.assertIn("`mainContext.transcript` tells you whether Main Session received the context", management)
+        self.assertIn("Use Hermes `send_message` once when a report should go to the human.", management)
+        self.assertIn("`mirrored: true` means the Main Session transcript received the report", management)
         self.assertNotIn("ANNOUNCE_READY", management)
         self.assertNotIn("report artifact exists when owner reporting was needed", management)
 
@@ -352,7 +351,7 @@ class PluginSkillTests(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in registered["platforms"]], ["claworld"])
         self.assertIs(registered["platforms"][0]["setup_fn"], plugin.interactive_setup)
         self.assertIs(registered["platforms"][0]["is_connected"], plugin._validate_config)
-        self.assertEqual(len(registered["tools"]), 6)
+        self.assertEqual(len(registered["tools"]), 5)
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
         self.assertEqual([name for name, _handler in registered["hooks"]], ["post_tool_call"])
@@ -656,7 +655,6 @@ class ToolSchemaTests(unittest.TestCase):
             claworld_tools.PUBLIC_PROFILE_SCHEMA,
             claworld_tools.MANAGE_WORLDS_SCHEMA,
             claworld_tools.MANAGE_CONVERSATIONS_SCHEMA,
-            claworld_tools.REPORT_OWNER_SCHEMA,
         ]
         for schema in schemas:
             self.assertIn("description", schema)
@@ -673,7 +671,7 @@ class ToolSchemaTests(unittest.TestCase):
 
         claworld_tools.register_tools(FakeCtx())
 
-        self.assertEqual(len(registered), 6)
+        self.assertEqual(len(registered), 5)
         for entry in registered:
             self.assertIn("parameters", entry["schema"])
             self.assertIn("description", entry["schema"])
@@ -888,116 +886,6 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["body"]["requestContext"]["origin"]["type"], "manual")
         self.assertEqual(calls[0]["body"]["requestContext"]["followUp"]["sessionKey"], "agent:main:telegram:dm:owner")
         self.assertEqual(result["action"], "request")
-
-    def test_report_owner_delivers_and_records_main_context(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".claworld"
-            cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", working_memory_root=str(root))
-            route = {"platform": "feishu", "chatId": "chat-1", "sessionId": "sid-main"}
-            append_calls = []
-
-            def fake_append(route_arg, report_text):
-                append_calls.append((route_arg, report_text))
-                return {"status": "appended", "sessionId": "sid-main", "role": "assistant"}
-
-            with patch("claworld_hermes_plugin.tools.record_owner_route_from_context", return_value=route), patch(
-                "claworld_hermes_plugin.tools._send_owner_route",
-                return_value={"ok": True, "result": {"message_id": "m1"}},
-            ), patch("claworld_hermes_plugin.tools._append_main_session_context", side_effect=fake_append):
-                result = claworld_tools._report_owner(cfg, {"report_text": "Owner-visible Claworld report.", "deliver": True})
-
-            self.assertEqual(append_calls, [(route, "Owner-visible Claworld report.")])
-            self.assertEqual(result["delivery"]["ok"], True)
-            self.assertEqual(result["mainContext"]["transcript"]["status"], "appended")
-            self.assertEqual(set(result["mainContext"]), {"transcript"})
-            self.assertNotIn("reportPath", result)
-            self.assertEqual(list((root / "reports").glob("*.md")), [])
-            now_text = (root / "context" / "NOW.md").read_text(encoding="utf-8")
-            self.assertNotIn("Recent Owner Reports", now_text)
-            self.assertNotIn("Owner-visible Claworld report.", now_text)
-            journal_text = "\n".join(path.read_text(encoding="utf-8") for path in (root / "journal").glob("*.md"))
-            self.assertIn('"kind": "owner_report"', journal_text)
-            self.assertIn('"mainContext"', journal_text)
-            self.assertIn('"status": "appended"', journal_text)
-
-    def test_report_owner_splits_lookup_refs_from_human_message(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".claworld"
-            cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", working_memory_root=str(root))
-            route = {"platform": "feishu", "chatId": "chat-1", "sessionId": "sid-main"}
-            send_calls = []
-            append_calls = []
-
-            def fake_send(route_arg, message):
-                send_calls.append((route_arg, message))
-                return {"ok": True, "result": {"message_id": "m1"}}
-
-            def fake_append(route_arg, report_text):
-                append_calls.append((route_arg, report_text))
-                return {"status": "appended", "sessionId": "sid-main", "role": "assistant"}
-
-            with patch("claworld_hermes_plugin.tools.record_owner_route_from_context", return_value=route), patch(
-                "claworld_hermes_plugin.tools._send_owner_route", side_effect=fake_send
-            ), patch("claworld_hermes_plugin.tools._append_main_session_context", side_effect=fake_append):
-                claworld_tools._report_owner(cfg, {
-                    "report_text": "I talked to Builder-Bot about Mars colony stuff.",
-                    "lookup_refs": "peerAgentId=agt_xxx; worldId=wld_yyy; conversationKey=pair:agt_xxx::agt_zzz:world:wld_yyy",
-                    "deliver": True,
-                })
-
-            sent_text = send_calls[0][1]
-            appended_text = append_calls[0][1]
-            self.assertNotIn("peerAgentId", sent_text)
-            self.assertNotIn("worldId", sent_text)
-            self.assertNotIn("Lookup refs", sent_text)
-            self.assertIn("I talked to Builder-Bot", sent_text)
-            self.assertIn("peerAgentId=agt_xxx", appended_text)
-            self.assertIn("worldId=wld_yyy", appended_text)
-            self.assertIn("Lookup refs: peerAgentId=agt_xxx;", appended_text)
-            self.assertIn("I talked to Builder-Bot", appended_text)
-
-    def test_append_main_session_context_writes_to_session_db_and_dedupes(self):
-        class FakeSessionDB:
-            initial_messages = []
-            instances = []
-
-            def __init__(self):
-                self.appended = []
-                self.closed = False
-                FakeSessionDB.instances.append(self)
-
-            def get_session(self, session_id):
-                return {"id": session_id} if session_id == "sid-main" else None
-
-            def get_messages_as_conversation(self, session_id):
-                self.seen_session_id = session_id
-                return list(FakeSessionDB.initial_messages)
-
-            def append_message(self, **kwargs):
-                self.appended.append(kwargs)
-                return 41
-
-            def close(self):
-                self.closed = True
-
-        fake_module = types.SimpleNamespace(SessionDB=FakeSessionDB)
-        with patch.dict(sys.modules, {"hermes_state": fake_module}):
-            FakeSessionDB.initial_messages = []
-            appended = claworld_tools._append_main_session_context({"sessionId": "sid-main"}, "report text")
-            first = FakeSessionDB.instances[-1]
-
-            FakeSessionDB.initial_messages = [{"role": "assistant", "content": "report text"}]
-            deduped = claworld_tools._append_main_session_context({"sessionId": "sid-main"}, "report text")
-            second = FakeSessionDB.instances[-1]
-
-        self.assertEqual(appended["status"], "appended")
-        self.assertEqual(first.appended[0]["session_id"], "sid-main")
-        self.assertEqual(first.appended[0]["role"], "assistant")
-        self.assertEqual(first.appended[0]["content"], "report text")
-        self.assertTrue(first.closed)
-        self.assertEqual(deduped["status"], "already_present")
-        self.assertEqual(second.appended, [])
-        self.assertTrue(second.closed)
 
     def test_world_broadcast_uses_world_broadcast_route(self):
         calls = []
