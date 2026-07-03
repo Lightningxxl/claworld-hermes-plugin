@@ -413,6 +413,50 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(record.replied)
         self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
 
+    async def test_hermes_transient_status_does_not_consume_replyable_delivery(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+                self.silences = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d1",
+            relay_session_key="conversation:abc",
+            chat_id="conversation-abc",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        for notice in (
+            "⏳ Working — 3 min — iteration 1/90, waiting for non-streaming API response",
+            "🔄 Primary model failed — switching to fallback: gpt-5.5 via openai-codex",
+        ):
+            notice_result = await adapter.send(record.chat_id, notice)
+            self.assertTrue(notice_result.success)
+            self.assertFalse(record.replied)
+
+        self.assertEqual(adapter.client.replies, [])
+        self.assertEqual(adapter.client.silences, [])
+
+        reply_result = await adapter.send(record.chat_id, "real peer-visible reply")
+
+        self.assertTrue(reply_result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
+        self.assertEqual(adapter.client.silences, [])
+
     async def test_runtime_error_reply_is_marked_kept_silent(self):
         adapter_module = import_adapter_with_gateway_shim()
 

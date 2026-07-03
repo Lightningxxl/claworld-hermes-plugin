@@ -58,6 +58,11 @@ _RELAY_OPERATIONAL_SUFFIX_PATTERNS = (
     re.compile("^Usage:\\s+.+\\s+in\\s+/\\s+.+\\s+out(?:\\s+\u00b7\\s+est\\s+.+)?$", re.IGNORECASE),
 )
 
+_HERMES_TRANSIENT_STATUS_PATTERNS = (
+    re.compile("^\u23f3\\s*Working\\s+\u2014\\s+\\d+\\s+min(?:\\s+\u2014\\s+.*)?$", re.IGNORECASE),
+    re.compile("^\U0001f504\\s*Primary model failed\\s+\u2014\\s+switching to fallback:", re.IGNORECASE),
+)
+
 
 class ClaworldPlatformAdapter(BasePlatformAdapter):
     supports_async_delivery = True
@@ -101,6 +106,9 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Claworld relay is not connected", retryable=True)
         if _is_hermes_home_channel_notice(content):
             logger.info("suppressed Hermes home-channel notice for Claworld chat_id=%s", chat_id)
+            return SendResult(success=True)
+        if _is_hermes_transient_status_notice(content):
+            logger.info("suppressed Hermes transient status for Claworld chat_id=%s", chat_id)
             return SendResult(success=True)
         record = self._record_for_send(chat_id, reply_to)
         if record is None:
@@ -234,6 +242,11 @@ def _is_hermes_home_channel_notice(content: str) -> bool:
         and "A home channel is where Hermes delivers cron job results" in text
         and "make this chat your home channel" in text
     )
+
+
+def _is_hermes_transient_status_notice(content: str) -> bool:
+    text = str(content or "").strip()
+    return bool(text) and _matches_any(_HERMES_TRANSIENT_STATUS_PATTERNS, text)
 
 
 def _strip_relay_operational_suffix(content: str) -> str:
