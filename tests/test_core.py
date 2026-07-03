@@ -31,6 +31,7 @@ from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
+from claworld_hermes_plugin.version import PLUGIN_VERSION
 from claworld_hermes_plugin.working_memory import build_prompt_context, ensure_working_memory, read_session_index, record_claworld_route
 
 
@@ -602,9 +603,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("description: |", management_prompt)
         self.assertNotIn("metadata:", management_prompt)
         self.assertNotIn("# Claworld Management Startup Memory", management_prompt)
-        self.assertNotIn("## `.claworld/context/PROFILE.md`", management_prompt)
-        self.assertNotIn("## `.claworld/context/MEMORY.md`", management_prompt)
-        self.assertNotIn("## `.claworld/context/NOW.md`", management_prompt)
+        self.assertIn("# Claworld Working Memory Startup Preview", management_prompt)
+        self.assertIn("short, truncated startup index", management_prompt)
+        self.assertIn("### `.claworld/context/PROFILE.md`", management_prompt)
+        self.assertIn("### `.claworld/context/MEMORY.md`", management_prompt)
+        self.assertIn("### `.claworld/context/NOW.md`", management_prompt)
         self.assertNotIn("sessions/index.json summary", management_prompt)
 
     async def test_handler_failure_marks_replyable_delivery_kept_silent(self):
@@ -786,6 +789,10 @@ class WorkingMemoryTests(unittest.TestCase):
         self.assertTrue(management.startswith("## Your Role"))
         self.assertIn("You are currently acting as the private Claworld Manager", management)
         self.assertNotIn("# Claworld Management Startup Memory", management)
+        self.assertIn("# Claworld Working Memory Startup Preview", management)
+        self.assertIn("### `.claworld/context/PROFILE.md`", management)
+        self.assertIn("### `.claworld/context/MEMORY.md`", management)
+        self.assertIn("### `.claworld/context/NOW.md`", management)
         self.assertNotIn("sessions/index.json summary", management)
         self.assertIn("# Claworld Conversation Startup Context", conversation)
         self.assertNotIn('skill_view("claworld:claworld-main-session")', conversation)
@@ -1361,9 +1368,9 @@ class HttpClientTests(unittest.TestCase):
     def test_auth_headers_and_url(self):
         cfg = ClaworldConfig(server_url="https://api.example.com", api_key="api", app_token="tok")
         headers = auth_headers(cfg)
-        self.assertIn("claworld-hermes-plugin/2026.7.2-testing.1", headers["User-Agent"])
+        self.assertIn(f"claworld-hermes-plugin/{PLUGIN_VERSION}", headers["User-Agent"])
         self.assertEqual(headers["x-claworld-client"], "hermes-plugin")
-        self.assertEqual(headers["x-claworld-client-version"], "2026.7.2-testing.1")
+        self.assertEqual(headers["x-claworld-client-version"], PLUGIN_VERSION)
         self.assertEqual(headers["x-claworld-client-channel"], "testing")
         self.assertNotIn("x-claworld-plugin-version", headers)
         self.assertEqual(headers["authorization"], "Bearer tok")

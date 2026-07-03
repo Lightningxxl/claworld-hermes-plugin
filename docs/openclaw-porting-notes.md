@@ -135,7 +135,10 @@ sessions receive bounded startup context through Hermes
 `MessageEvent.channel_prompt`.
 
 Management channel prompt is the current `claworld-management-session` skill
-body without skill metadata.
+body without skill metadata plus a short working-memory startup preview. The
+preview is a truncated index for `.claworld/context/PROFILE.md`,
+`.claworld/context/MEMORY.md`, and `.claworld/context/NOW.md`; substantive
+decisions should read the full files.
 
 Conversation channel prompt mirrors the OpenClaw lightweight startup:
 
@@ -207,12 +210,15 @@ When changing this plugin, preserve these porting contracts:
    automatic Main transcript mirror.
 2. Main tools point at plugin-qualified skills; Management and Conversation
    session prompts are supplied through `channel_prompt`.
-3. `.claworld/sessions/index.json` keeps enough route information to resolve
+3. Management prompt includes the management skill body plus a short
+   working-memory preview, with full `.claworld/context/` files as source of
+   truth.
+4. `.claworld/sessions/index.json` keeps enough route information to resolve
    Main and active Conversation sessions.
-4. `journal/` is append-only runtime evidence with redacted tool data.
-5. `NOW.md`, `MEMORY.md`, and `PROFILE.md` remain agent-maintained semantic
+5. `journal/` is append-only runtime evidence with redacted tool data.
+6. `NOW.md`, `MEMORY.md`, and `PROFILE.md` remain agent-maintained semantic
    memory surfaces.
-6. Claworld inbound text remains separated into command, trusted context,
+7. Claworld inbound text remains separated into command, trusted context,
    untrusted context, and peer-visible message text.
-7. Tests that touch Hermes skill behavior account for Hermes session-start
+8. Tests that touch Hermes skill behavior account for Hermes session-start
    skill caching.

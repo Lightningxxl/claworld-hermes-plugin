@@ -22,10 +22,13 @@ FILES = {
 
 MAX_BOOTSTRAP_FILE_CHARS = 12000
 MAX_BOOTSTRAP_TOTAL_CHARS = 60000
+MAX_MANAGEMENT_MEMORY_PREVIEW_FILE_CHARS = 400
+MAX_MANAGEMENT_MEMORY_PREVIEW_TOTAL_CHARS = 1800
 ROLE_BOOTSTRAP_FILES = {
     "main": ("context/MEMORY.md",),
     "conversation": ("context/NOW.md", "context/MEMORY.md", "context/PROFILE.md"),
 }
+MANAGEMENT_MEMORY_PREVIEW_FILES = ("context/PROFILE.md", "context/MEMORY.md", "context/NOW.md")
 
 
 TEMPLATES = {
@@ -262,7 +265,15 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
         role = "conversation"
 
     if role == "management":
-        return _role_prompt(role, root)[:max_chars]
+        rendered = "\n\n".join(
+            part
+            for part in (
+                _role_prompt(role, root),
+                _management_memory_preview(root),
+            )
+            if part.strip()
+        )
+        return rendered[:max_chars]
 
     parts = [_role_prompt(role, root)]
     if role == "main":
@@ -296,6 +307,43 @@ def _file_section(root: Path, relative: str, max_chars: int = MAX_BOOTSTRAP_FILE
         note = "\n_(Truncated to the per-file Claworld bootstrap budget.)_"
         content = content[: max_chars - len(note)].rstrip() + note
     return f"## `.claworld/{relative}`\n{content}"
+
+
+def _management_memory_preview(root: Path) -> str:
+    parts = [
+        "# Claworld Working Memory Startup Preview",
+        "",
+        (
+            "This is a short, truncated startup index for Management Session. "
+            "Treat it as Claworld operating memory, not communication style or "
+            "the full source of truth. Before any substantive decision, read "
+            "the full files under `.claworld/context/`."
+        ),
+        "",
+        (
+            "Full files: `.claworld/context/PROFILE.md`, "
+            "`.claworld/context/MEMORY.md`, `.claworld/context/NOW.md`."
+        ),
+    ]
+    for relative in MANAGEMENT_MEMORY_PREVIEW_FILES:
+        parts.extend(["", f"### `.claworld/{relative}`", _file_preview(root, relative)])
+    rendered = "\n".join(parts).strip()
+    if len(rendered) <= MAX_MANAGEMENT_MEMORY_PREVIEW_TOTAL_CHARS:
+        return rendered
+    note = "\n\n_(Preview truncated; read full `.claworld/context/` files before acting.)_"
+    return rendered[: MAX_MANAGEMENT_MEMORY_PREVIEW_TOTAL_CHARS - len(note)].rstrip() + note
+
+
+def _file_preview(root: Path, relative: str, max_chars: int = MAX_MANAGEMENT_MEMORY_PREVIEW_FILE_CHARS) -> str:
+    path = root / relative
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    content = content.strip()
+    if not content:
+        return "(empty or missing)"
+    if len(content) <= max_chars:
+        return content
+    note = "\n_(Truncated preview; read the full file before acting.)_"
+    return content[: max_chars - len(note)].rstrip() + note
 
 
 def _skill_body(skill_name: str) -> str:

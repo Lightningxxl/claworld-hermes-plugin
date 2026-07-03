@@ -164,8 +164,9 @@ Main Session discovers Claworld through detailed tool descriptions and explicit
 qualified skills such as `claworld:claworld-main-session`. Claworld-originated
 sessions receive bounded startup context through Hermes
 `MessageEvent.channel_prompt`: Management receives the current management skill
-body without skill metadata; Conversation mirrors the OpenClaw lightweight
-startup with selected `.claworld/context/*.md` files.
+body without skill metadata plus a short working-memory startup preview;
+Conversation mirrors the OpenClaw lightweight startup with selected
+`.claworld/context/*.md` files.
 
 ## Bundled Skills
 
