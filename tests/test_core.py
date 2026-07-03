@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import asyncio
+import inspect
 import io
 import json
 import os
@@ -359,6 +360,16 @@ class PluginSkillTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    def test_connect_accepts_gateway_reconnect_kwarg(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        signature = inspect.signature(adapter_module.ClaworldPlatformAdapter.connect)
+        parameter = signature.parameters.get("is_reconnect")
+
+        self.assertIsNotNone(parameter)
+        self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(parameter.default, False)
+
     async def test_home_channel_notice_does_not_consume_replyable_delivery(self):
         adapter_module = import_adapter_with_gateway_shim()
 
@@ -967,6 +978,51 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["relay"]["agentId"], "agent-1")
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
         self.assertEqual(result["identityVerification"]["status"], "ready")
+
+    def test_account_view_degrades_ready_status_without_live_relay(self):
+        for relay, readiness in (
+            ({}, "relay_online_unconfirmed"),
+            ({"online": False}, "relay_online_offline"),
+        ):
+            with self.subTest(relay=relay):
+                payload = {
+                    "status": "ready",
+                    "readiness": "ready",
+                    "relay": relay,
+                    "diagnostics": {"publicIdentityReady": True},
+                }
+
+                result = claworld_tools._augment_account_binding(
+                    payload,
+                    cfg=self.cfg,
+                    account_id="acct",
+                    agent_id="agent-1",
+                )
+
+                self.assertEqual(result["status"], "degraded")
+                self.assertEqual(result["readiness"], readiness)
+                self.assertEqual(result["diagnostics"]["relayOnline"], relay.get("online"))
+                self.assertEqual(result["warnings"][-1]["code"], readiness)
+
+    def test_account_view_keeps_ready_status_with_live_relay(self):
+        payload = {
+            "status": "ready",
+            "readiness": "ready",
+            "relay": {"online": True},
+            "diagnostics": {"publicIdentityReady": True},
+        }
+
+        result = claworld_tools._augment_account_binding(
+            payload,
+            cfg=self.cfg,
+            account_id="acct",
+            agent_id="agent-1",
+        )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["readiness"], "ready")
+        self.assertTrue(result["relay"]["online"])
+        self.assertNotIn("warnings", result)
 
     def test_setup_verification_persists_claworld_env(self):
         calls = []

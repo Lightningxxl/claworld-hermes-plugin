@@ -794,10 +794,15 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
         "paired_but_identity_pending",
     }:
         public_identity_ready = False
+    relay_online = relay.get("online") if isinstance(relay.get("online"), bool) else None
+    result = dict(payload)
+    if relay_online is not True:
+        relay_status = "offline" if relay_online is False else "unconfirmed"
+        result = _with_relay_visibility_warning(result, relay_status)
     return {
-        **payload,
-        "accountId": payload.get("accountId") or account_id,
-        "bindingSource": payload.get("bindingSource") or "hermes_config",
+        **result,
+        "accountId": result.get("accountId") or account_id,
+        "bindingSource": result.get("bindingSource") or "hermes_config",
         "identityVerification": {
             **identity_verification,
             "status": identity_verification.get("status") or ("ready" if cfg.app_token else "pending"),
@@ -809,15 +814,35 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
             "bindingStatus": diagnostics.get("bindingStatus") or binding_status,
             "publicIdentityReady": public_identity_ready,
             "accountProfileReady": diagnostics.get("accountProfileReady", _nested_bool(payload.get("accountProfile"), "ready")),
+            "relayOnline": relay_online,
         },
         "relay": {
             **relay,
             "agentId": relay.get("agentId") or resolved_agent_id,
-            "online": relay.get("online"),
+            "online": relay_online,
             "resolved": relay.get("resolved", bool(resolved_agent_id) if resolved_agent_id else False),
             "bindingStatus": relay.get("bindingStatus") or binding_status,
         },
     }
+
+
+def _with_relay_visibility_warning(payload: dict, relay_status: str) -> dict:
+    result = dict(payload)
+    if _text(result.get("status"), "") in {"", "ok", "ready"}:
+        result["status"] = "degraded"
+    if _text(result.get("readiness"), "") in {"", "ready"}:
+        result["readiness"] = f"relay_online_{relay_status}"
+    warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    code = f"relay_online_{relay_status}"
+    if not any(isinstance(item, dict) and item.get("code") == code for item in warnings):
+        result["warnings"] = [
+            *warnings,
+            {
+                "code": code,
+                "message": "Claworld relay online status must be true before live delivery is considered ready.",
+            },
+        ]
+    return result
 
 
 def _verification_tool_payload(payload: dict) -> dict:
