@@ -241,6 +241,10 @@ class ProtocolTests(unittest.TestCase):
         text = build_agent_text(envelope, "management")
         self.assertIn("Payload context only.", text)
         self.assertIn("Review the top-level relay note.", text)
+        self.assertNotIn("Claworld live conversation rules", text)
+        self.assertNotIn("[[request_conversation_end]]", text)
+        self.assertNotIn("[[like]]", text)
+        self.assertNotIn("peer-facing output", text)
 
     def test_reply_message_uses_claworld_text_payload(self):
         message = reply_message("d1", "conversation:abc", "hello")
