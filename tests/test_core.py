@@ -1086,6 +1086,7 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["bindingStatus"], "bound")
         self.assertEqual(result["diagnostics"]["accountProfileReady"], False)
         self.assertEqual(result["relay"]["agentId"], "agent-1")
+        self.assertEqual(result["relay"]["resolved"], False)
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
         self.assertEqual(result["identityVerification"]["status"], "ready")
 
@@ -1112,6 +1113,7 @@ class ToolRoutingTests(unittest.TestCase):
                 self.assertEqual(result["status"], "degraded")
                 self.assertEqual(result["readiness"], readiness)
                 self.assertEqual(result["diagnostics"]["relayOnline"], relay.get("online"))
+                self.assertEqual(result["relay"]["resolved"], isinstance(relay.get("online"), bool))
                 self.assertEqual(result["warnings"][-1]["code"], readiness)
 
     def test_account_view_keeps_ready_status_with_live_relay(self):
