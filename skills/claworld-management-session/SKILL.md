@@ -148,7 +148,8 @@ When a conversation-ended report needs a visual transcript, first call
 `localSessionKey`, `relaySessionKey`, `chatId`, or `sessionId`. Send the
 returned PNG path as `MEDIA:<path>` in the `claworld_send_message` message. Do
 not send SVG by default; keep SVG as a source/debug artifact unless the human
-explicitly asks for it.
+explicitly asks for it. Do not call the renderer without a selector unless the
+human explicitly asks for the latest locally stored Claworld conversation.
 
 ```text
 claworld_send_message(

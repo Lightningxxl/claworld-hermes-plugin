@@ -1069,6 +1069,103 @@ class TranscriptReportTests(unittest.TestCase):
             spec = Path(result["bubbleSpecPath"]).read_text(encoding="utf-8")
             self.assertIn("resolved transcript", spec)
 
+    def test_render_transcript_report_requires_explicit_selector_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(Path(tmp) / ".claworld"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "explicit transcript selector is required"):
+                claworld_transcript.render_transcript_report(cfg, {})
+
+    def test_render_transcript_report_accepts_local_session_key_as_relay_key(self):
+        class FakeSessionDB:
+            def get_session(self, session_id):
+                return {"id": session_id} if session_id == "sid-real" else None
+
+            def resolve_session_id(self, session_id_or_prefix):
+                return "sid-real" if session_id_or_prefix == "agent:main:claworld:dm:conversation-1" else None
+
+            def get_messages_as_conversation(self, session_id):
+                return [{"role": "assistant", "content": "relay-key transcript", "timestamp": 1234}]
+
+            def close(self):
+                pass
+
+        fake_module = types.SimpleNamespace(SessionDB=FakeSessionDB)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False), patch.dict(
+            sys.modules, {"hermes_state": fake_module}
+        ):
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(root),
+            )
+            data = read_session_index(root)
+            data["conversationSessions"] = {
+                "conversation-1": {
+                    "relaySessionKey": "conversation:pair:agent-a::agent-b:direct",
+                    "lastActiveSessionKey": "agent:main:claworld:dm:conversation-1",
+                    "updatedAt": "2026-07-07T01:00:00Z",
+                }
+            }
+            write_session_index(root, data)
+
+            result = claworld_transcript.render_transcript_report(cfg, {"localSessionKey": "conversation:pair:agent-a::agent-b:direct"})
+
+            self.assertEqual(result["source"]["kind"], "localSessionKey")
+            self.assertEqual(result["source"]["sessionId"], "sid-real")
+            self.assertIn("relay-key transcript", Path(result["bubbleSpecPath"]).read_text(encoding="utf-8"))
+
+    def test_render_transcript_report_latest_skips_unresolved_index_entries(self):
+        class FakeSessionDB:
+            def get_session(self, session_id):
+                return {"id": session_id} if session_id == "sid-real" else None
+
+            def resolve_session_id(self, session_id_or_prefix):
+                return "sid-real" if session_id_or_prefix == "agent:main:claworld:dm:conversation-real" else None
+
+            def get_messages_as_conversation(self, session_id):
+                return [{"role": "assistant", "content": "latest resolvable transcript", "timestamp": 1234}]
+
+            def close(self):
+                pass
+
+        fake_module = types.SimpleNamespace(SessionDB=FakeSessionDB)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False), patch.dict(
+            sys.modules, {"hermes_state": fake_module}
+        ):
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(root),
+            )
+            data = read_session_index(root)
+            data["conversationSessions"] = {
+                "conversation-orphan": {
+                    "lastActiveSessionKey": "agent:main:claworld:dm:conversation-orphan",
+                    "updatedAt": "2026-07-07T02:00:00Z",
+                },
+                "conversation-real": {
+                    "lastActiveSessionKey": "agent:main:claworld:dm:conversation-real",
+                    "updatedAt": "2026-07-07T01:00:00Z",
+                },
+            }
+            write_session_index(root, data)
+
+            result = claworld_transcript.render_transcript_report(cfg, {"sourceKind": "latest_conversation"})
+
+            self.assertEqual(result["source"]["chatId"], "conversation-real")
+            self.assertEqual(result["source"]["sessionId"], "sid-real")
+            self.assertIn("latest resolvable transcript", Path(result["bubbleSpecPath"]).read_text(encoding="utf-8"))
+
 
 class ClaworldSendMessageToolTests(unittest.TestCase):
     def _cfg(self) -> ClaworldConfig:

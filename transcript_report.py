@@ -166,7 +166,14 @@ def _load_source_messages(cfg: ClaworldConfig, args: dict, root: Path) -> dict:
 
     session_id, source_summary = _resolve_source_session_id(args, root)
     if not session_id:
-        raise ValueError("sessionId, conversationKey, localSessionKey, relaySessionKey, or messages is required")
+        if source_summary.get("kind") in {"latest_conversation", "latest"}:
+            raise ValueError("no locally stored Hermes transcript was found for any indexed Claworld conversation")
+        if source_summary.get("kind") == "selector_not_found":
+            raise ValueError(f"transcript selector did not match local Claworld session index: {source_summary.get('selectors')}")
+        raise ValueError(
+            "explicit transcript selector is required: pass sessionId, conversationKey, "
+            "localSessionKey, relaySessionKey, chatId, or messages; use sourceKind=latest_conversation only intentionally"
+        )
     messages = _load_session_db_messages(session_id)
     return {
         "messages": messages,
@@ -183,12 +190,6 @@ def _resolve_source_session_id(args: dict, root: Path) -> tuple[str | None, dict
     if session_id:
         return _resolve_session_db_id(session_id) or session_id, {"kind": "sessionId", "requestedSessionId": session_id}
 
-    source_kind = _text(args.get("sourceKind"), _text(args.get("source"), "latest_conversation")) or "latest_conversation"
-    if source_kind == "current_session":
-        current = _current_session_id()
-        if current:
-            return current, {"kind": "current_session"}
-
     index = read_session_index(root)
     sessions = index.get("conversationSessions") if isinstance(index.get("conversationSessions"), dict) else {}
     matchers = {
@@ -203,8 +204,7 @@ def _resolve_source_session_id(args: dict, root: Path) -> tuple[str | None, dict
         for chat_id, entry in sessions.items():
             if not isinstance(entry, dict):
                 continue
-            actual = chat_id if field == "chatId" else _text(entry.get(field))
-            if actual == expected:
+            if expected in _entry_selector_values(chat_id, entry, field):
                 session_key = _text(entry.get("lastActiveSessionKey"), _text(entry.get("sessionKey")))
                 resolved = _resolve_session_db_id(session_key) if session_key else None
                 return resolved or session_key, {
@@ -214,13 +214,21 @@ def _resolve_source_session_id(args: dict, root: Path) -> tuple[str | None, dict
                     "relaySessionKey": entry.get("relaySessionKey"),
                     "lastActiveSessionKey": session_key,
                 }
+    provided_selectors = {key: value for key, value in matchers.items() if value}
+    if provided_selectors:
+        return None, {"kind": "selector_not_found", "selectors": provided_selectors}
+
+    source_kind = _text(args.get("sourceKind"), _text(args.get("source"))) or ""
+    if source_kind == "current_session":
+        current = _current_session_id()
+        if current:
+            return current, {"kind": "current_session"}
     if source_kind in {"latest_conversation", "latest"}:
-        latest = _latest_conversation_entry(sessions)
+        latest = _latest_resolvable_conversation_entry(sessions)
         if latest:
-            chat_id, entry = latest
+            chat_id, entry, resolved = latest
             session_key = _text(entry.get("lastActiveSessionKey"), _text(entry.get("sessionKey")))
-            resolved = _resolve_session_db_id(session_key) if session_key else None
-            return resolved or session_key, {
+            return resolved, {
                 "kind": "latest_conversation",
                 "chatId": chat_id,
                 "conversationKey": entry.get("conversationKey"),
@@ -230,12 +238,35 @@ def _resolve_source_session_id(args: dict, root: Path) -> tuple[str | None, dict
     return None, {"kind": source_kind}
 
 
+def _entry_selector_values(chat_id: str, entry: dict, field: str) -> set[str]:
+    if field == "chatId":
+        values = [chat_id]
+    elif field == "localSessionKey":
+        values = [entry.get("localSessionKey"), entry.get("relaySessionKey")]
+    elif field == "relaySessionKey":
+        values = [entry.get("relaySessionKey"), entry.get("localSessionKey")]
+    else:
+        values = [entry.get(field)]
+    return {_text(value) for value in values if _text(value)}
+
+
 def _latest_conversation_entry(sessions: dict) -> tuple[str, dict] | None:
     entries = [(chat_id, entry) for chat_id, entry in sessions.items() if isinstance(entry, dict)]
     if not entries:
         return None
     entries.sort(key=lambda item: _text(item[1].get("updatedAt"), "") or "", reverse=True)
     return entries[0]
+
+
+def _latest_resolvable_conversation_entry(sessions: dict) -> tuple[str, dict, str] | None:
+    entries = [(chat_id, entry) for chat_id, entry in sessions.items() if isinstance(entry, dict)]
+    entries.sort(key=lambda item: _text(item[1].get("updatedAt"), "") or "", reverse=True)
+    for chat_id, entry in entries:
+        session_key = _text(entry.get("lastActiveSessionKey"), _text(entry.get("sessionKey")))
+        resolved = _resolve_session_db_id(session_key) if session_key else None
+        if resolved:
+            return chat_id, entry, resolved
+    return None
 
 
 def _current_session_id() -> str | None:

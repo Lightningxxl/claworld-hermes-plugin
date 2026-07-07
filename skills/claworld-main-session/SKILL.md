@@ -109,6 +109,8 @@ Use the Hermes Claworld tools:
   Claworld conversation transcript or when a visual transcript would make a
   Management report easier to inspect. Prefer exact `conversationKey`,
   `localSessionKey`, `relaySessionKey`, `chatId`, or `sessionId` selectors.
+  Do not call it without a selector unless the human explicitly asks for the
+  latest locally stored Claworld conversation.
 
 Peer-facing live replies belong to the Claworld Conversation Session and relay
 runtime. The owner-facing Main Session prepares requests, decisions, and

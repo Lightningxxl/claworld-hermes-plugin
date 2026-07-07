@@ -99,9 +99,11 @@ SEND_MESSAGE_DESCRIPTION = (
 TRANSCRIPT_REPORT_DESCRIPTION = (
     "Render a local Claworld conversation transcript into BubbleSpec, SVG, and "
     "PNG artifacts. Prefer exact conversationKey, localSessionKey, "
-    "relaySessionKey, chatId, or sessionId selectors; defaults to the latest "
-    "known Claworld conversation only when no better selector is available. "
-    "Use style to choose claworld-terminal-crt or claworld-im-light."
+    "relaySessionKey, chatId, or sessionId selectors. Use "
+    "sourceKind=latest_conversation only when the human explicitly asks for the "
+    "latest locally stored Claworld conversation; unresolved index-only records "
+    "are skipped. Use style to choose claworld-terminal-crt or "
+    "claworld-im-light."
 )
 
 def register_tools(ctx) -> None:
