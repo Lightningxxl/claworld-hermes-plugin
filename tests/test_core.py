@@ -754,16 +754,17 @@ class ToolSchemaTests(unittest.TestCase):
         properties = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]
 
         self.assertEqual(properties["visibilityMode"]["enum"], ["public", "unlisted", "private"])
-        self.assertEqual(properties["contactMode"]["enum"], ["open", "closed"])
-        self.assertIn("chatRequestPolicy", properties)
+        self.assertEqual(properties["contactPolicy"]["enum"], ["open", "approval_required", "closed"])
         self.assertNotIn("discoverable", properties)
         self.assertNotIn("contactable", properties)
+        self.assertNotIn("contactMode", properties)
         self.assertNotIn("chatRequestApprovalPolicy", properties)
+        self.assertNotIn("chatRequestPolicy", properties)
 
         action_values = properties["action"]["enum"]
         self.assertIn("set_visibility_mode", action_values)
-        self.assertIn("set_contact_mode", action_values)
-        self.assertIn("set_chat_request_policy", action_values)
+        self.assertIn("set_contact_policy", action_values)
+        self.assertNotIn("set_chat_request_policy", action_values)
         self.assertNotIn("set_discoverability", action_values)
         self.assertNotIn("set_contactability", action_values)
         self.assertNotIn("set_chat_policy", action_values)
@@ -1125,40 +1126,28 @@ class ToolRoutingTests(unittest.TestCase):
             contact_result = claworld_tools._manage_account(
                 self.cfg,
                 {
-                    "action": "set_contact_mode",
-                    "contactMode": "closed",
-                },
-            )
-            policy_result = claworld_tools._manage_account(
-                self.cfg,
-                {
-                    "action": "set_chat_request_policy",
-                    "chatRequestPolicy": {"mode": "reject_all"},
+                    "action": "set_contact_policy",
+                    "contactPolicy": "approval_required",
                 },
             )
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0]["method"], "POST")
         self.assertEqual(calls[0]["endpoint"], "/v1/account")
         self.assertEqual(calls[0]["body"]["action"], "set_visibility_mode")
         self.assertEqual(calls[0]["body"]["visibilityMode"], "unlisted")
-        self.assertNotIn("contactMode", calls[0]["body"])
+        self.assertNotIn("contactPolicy", calls[0]["body"])
         self.assertNotIn("chatRequestPolicy", calls[0]["body"])
-        self.assertEqual(calls[1]["body"]["action"], "set_contact_mode")
-        self.assertEqual(calls[1]["body"]["contactMode"], "closed")
+        self.assertEqual(calls[1]["body"]["action"], "set_contact_policy")
+        self.assertEqual(calls[1]["body"]["contactPolicy"], "approval_required")
         self.assertNotIn("visibilityMode", calls[1]["body"])
         self.assertNotIn("chatRequestPolicy", calls[1]["body"])
-        self.assertEqual(calls[2]["body"]["action"], "set_chat_request_policy")
-        self.assertEqual(calls[2]["body"]["chatRequestPolicy"], {"mode": "reject_all"})
-        self.assertNotIn("visibilityMode", calls[2]["body"])
-        self.assertNotIn("contactMode", calls[2]["body"])
         for call in calls:
             self.assertNotIn("discoverable", call["body"])
             self.assertNotIn("contactable", call["body"])
             self.assertNotIn("chatRequestApprovalPolicy", call["body"])
         self.assertEqual(visibility_result["action"], "set_visibility_mode")
-        self.assertEqual(contact_result["action"], "set_contact_mode")
-        self.assertEqual(policy_result["action"], "set_chat_request_policy")
+        self.assertEqual(contact_result["action"], "set_contact_policy")
 
     def test_account_policy_updates_reject_mixed_or_missing_fields(self):
         with self.assertRaisesRegex(ValueError, "visibilityMode is required"):
@@ -1167,19 +1156,16 @@ class ToolRoutingTests(unittest.TestCase):
             claworld_tools._manage_account(
                 self.cfg,
                 {
-                    "action": "set_contact_mode",
+                    "action": "set_contact_policy",
                     "visibilityMode": "public",
-                    "contactMode": "closed",
+                    "contactPolicy": "approval_required",
                 },
             )
-        with self.assertRaisesRegex(ValueError, "chatRequestPolicy is required"):
-            claworld_tools._manage_account(self.cfg, {"action": "set_chat_request_policy"})
-        with self.assertRaisesRegex(ValueError, "contactMode is not supported"):
+        with self.assertRaisesRegex(ValueError, "action must be one of"):
             claworld_tools._manage_account(
                 self.cfg,
                 {
                     "action": "set_chat_request_policy",
-                    "contactMode": "closed",
                     "chatRequestPolicy": {"mode": "manual_review"},
                 },
             )
@@ -1190,13 +1176,11 @@ class ToolRoutingTests(unittest.TestCase):
             "set_visibility_mode",
         )
         self.assertEqual(
-            claworld_tools._normalize_account_action({"contactMode": "closed"}),
-            "set_contact_mode",
+            claworld_tools._normalize_account_action({"contactPolicy": "approval_required"}),
+            "set_contact_policy",
         )
-        self.assertEqual(
-            claworld_tools._normalize_account_action({"chatRequestPolicy": {"mode": "reject_all"}}),
-            "set_chat_request_policy",
-        )
+        with self.assertRaisesRegex(ValueError, "chatRequestPolicy is not supported"):
+            claworld_tools._normalize_account_action({"chatRequestPolicy": {"mode": "reject_all"}})
         with self.assertRaisesRegex(ValueError, "action must be one of"):
             claworld_tools._normalize_account_action({"action": "update_chat_request_policy"})
 

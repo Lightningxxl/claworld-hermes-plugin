@@ -21,8 +21,7 @@ ACCOUNT_ACTIONS = (
     "update_human_profile",
     "update_agent_profile",
     "set_visibility_mode",
-    "set_contact_mode",
-    "set_chat_request_policy",
+    "set_contact_policy",
     "set_proactivity",
     "subscribe_person",
     "unsubscribe_person",
@@ -56,7 +55,7 @@ CONVERSATION_ACTIONS = ("request", "accept", "reject", "close", "get_state", "li
 
 MANAGE_ACCOUNT_DESCRIPTION = (
     "Use for Claworld account readiness, identity verification, public profile, "
-    "visibility, contact mode, chat request policy, proactivity, and person subscriptions. When "
+    "visibility, contact policy, proactivity, and person subscriptions. When "
     "owner-facing Claworld work needs stable preferences or policy, first load "
     'skill_view("claworld:claworld-main-session") and read relevant .claworld '
     "working memory."
@@ -190,8 +189,7 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "humanProfile": {"type": "string"},
         "agentProfile": {"type": "string"},
         "visibilityMode": {"type": "string", "enum": ["public", "unlisted", "private"]},
-        "contactMode": {"type": "string", "enum": ["open", "closed"]},
-        "chatRequestPolicy": {"type": "object"},
+        "contactPolicy": {"type": "string", "enum": ["open", "approval_required", "closed"]},
         "proactivitySettings": {"type": "object"},
         "subscriptionId": {"type": "string"},
         "generateShareCard": {"type": "boolean"},
@@ -423,8 +421,7 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
             "humanProfile": args.get("humanProfile"),
             "agentProfile": args.get("agentProfile"),
             "visibilityMode": args.get("visibilityMode"),
-            "contactMode": args.get("contactMode"),
-            "chatRequestPolicy": args.get("chatRequestPolicy"),
+            "contactPolicy": args.get("contactPolicy"),
             "proactivitySettings": args.get("proactivitySettings"),
             "generateShareCard": args.get("generateShareCard", action == "update_display_name"),
             "shareCardVariant": args.get("shareCardVariant"),
@@ -1123,10 +1120,10 @@ def _normalize_account_action(args: dict) -> str:
         action = "update_agent_profile"
     elif "visibilityMode" in args:
         action = "set_visibility_mode"
-    elif "contactMode" in args:
-        action = "set_contact_mode"
+    elif "contactPolicy" in args:
+        action = "set_contact_policy"
     elif "chatRequestPolicy" in args:
-        action = "set_chat_request_policy"
+        raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
     elif "proactivitySettings" in args:
         action = "set_proactivity"
     else:
@@ -1136,32 +1133,21 @@ def _normalize_account_action(args: dict) -> str:
     return action
 
 
-def _non_empty_object(value: Any) -> bool:
-    return isinstance(value, dict) and bool(value)
-
-
 def _validate_account_policy_payload(action: str, args: dict) -> None:
     if action == "set_visibility_mode":
         _require(args.get("visibilityMode"), "visibilityMode is required for action=set_visibility_mode")
-        if _provided(args, "contactMode"):
-            raise ValueError("contactMode is not supported for action=set_visibility_mode")
+        if _provided(args, "contactPolicy"):
+            raise ValueError("contactPolicy is not supported for action=set_visibility_mode")
         if _provided(args, "chatRequestPolicy"):
-            raise ValueError("chatRequestPolicy is not supported for action=set_visibility_mode")
+            raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
         return
-    if action == "set_contact_mode":
-        _require(args.get("contactMode"), "contactMode is required for action=set_contact_mode")
+    if action == "set_contact_policy":
+        _require(args.get("contactPolicy"), "contactPolicy is required for action=set_contact_policy")
         if _provided(args, "visibilityMode"):
-            raise ValueError("visibilityMode is not supported for action=set_contact_mode")
+            raise ValueError("visibilityMode is not supported for action=set_contact_policy")
         if _provided(args, "chatRequestPolicy"):
-            raise ValueError("chatRequestPolicy is not supported for action=set_contact_mode")
+            raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
         return
-    if action == "set_chat_request_policy":
-        if not _non_empty_object(args.get("chatRequestPolicy")):
-            raise ValueError("chatRequestPolicy is required for action=set_chat_request_policy")
-        if _provided(args, "visibilityMode"):
-            raise ValueError("visibilityMode is not supported for action=set_chat_request_policy")
-        if _provided(args, "contactMode"):
-            raise ValueError("contactMode is not supported for action=set_chat_request_policy")
 
 
 def _normalize_world_action(args: dict) -> str:
