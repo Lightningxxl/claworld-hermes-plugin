@@ -20,9 +20,9 @@ ACCOUNT_ACTIONS = (
     "update_display_name",
     "update_human_profile",
     "update_agent_profile",
-    "set_discoverability",
-    "set_contactability",
-    "set_chat_policy",
+    "set_visibility_mode",
+    "set_contact_mode",
+    "set_chat_request_policy",
     "set_proactivity",
     "subscribe_person",
     "unsubscribe_person",
@@ -56,7 +56,7 @@ CONVERSATION_ACTIONS = ("request", "accept", "reject", "close", "get_state", "li
 
 MANAGE_ACCOUNT_DESCRIPTION = (
     "Use for Claworld account readiness, identity verification, public profile, "
-    "contactability, chat policy, proactivity, and person subscriptions. When "
+    "visibility, contact mode, chat request policy, proactivity, and person subscriptions. When "
     "owner-facing Claworld work needs stable preferences or policy, first load "
     'skill_view("claworld:claworld-main-session") and read relevant .claworld '
     "working memory."
@@ -189,9 +189,9 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "profile": {"type": "string"},
         "humanProfile": {"type": "string"},
         "agentProfile": {"type": "string"},
-        "discoverable": {"type": "boolean"},
-        "contactable": {"type": "boolean"},
-        "chatRequestApprovalPolicy": {"type": "object"},
+        "visibilityMode": {"type": "string", "enum": ["public", "unlisted", "private"]},
+        "contactMode": {"type": "string", "enum": ["open", "closed"]},
+        "chatRequestPolicy": {"type": "object"},
         "proactivitySettings": {"type": "object"},
         "subscriptionId": {"type": "string"},
         "generateShareCard": {"type": "boolean"},
@@ -421,9 +421,9 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
             "profile": args.get("profile"),
             "humanProfile": args.get("humanProfile"),
             "agentProfile": args.get("agentProfile"),
-            "discoverable": args.get("discoverable"),
-            "contactable": args.get("contactable"),
-            "chatRequestApprovalPolicy": args.get("chatRequestApprovalPolicy"),
+            "visibilityMode": args.get("visibilityMode"),
+            "contactMode": args.get("contactMode"),
+            "chatRequestPolicy": args.get("chatRequestPolicy"),
             "proactivitySettings": args.get("proactivitySettings"),
             "generateShareCard": args.get("generateShareCard", action == "update_display_name"),
             "shareCardVariant": args.get("shareCardVariant"),
@@ -1110,7 +1110,7 @@ def _normalize_account_action(args: dict) -> str:
         "update_public_identity": "update_display_name",
         "update_identity": "update_display_name",
         "update_profile": "update_agent_profile",
-        "update_chat_policy": "set_chat_policy",
+        "update_chat_request_policy": "set_chat_request_policy",
     }
     explicit = _text(args.get("action"))
     if explicit:
@@ -1121,12 +1121,12 @@ def _normalize_account_action(args: dict) -> str:
         action = "update_human_profile"
     elif "agentProfile" in args or "profile" in args:
         action = "update_agent_profile"
-    elif "discoverable" in args:
-        action = "set_discoverability"
-    elif "contactable" in args:
-        action = "set_contactability"
-    elif "chatRequestApprovalPolicy" in args:
-        action = "set_chat_policy"
+    elif "visibilityMode" in args:
+        action = "set_visibility_mode"
+    elif "contactMode" in args:
+        action = "set_contact_mode"
+    elif "chatRequestPolicy" in args:
+        action = "set_chat_request_policy"
     elif "proactivitySettings" in args:
         action = "set_proactivity"
     else:

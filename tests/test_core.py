@@ -750,6 +750,24 @@ class ToolSchemaTests(unittest.TestCase):
             self.assertNotIn("endpoint", entry["schema"]["parameters"]["properties"])
             self.assertTrue(callable(entry["check_fn"]))
 
+    def test_manage_account_schema_uses_terminal_policy_fields(self):
+        properties = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]
+
+        self.assertEqual(properties["visibilityMode"]["enum"], ["public", "unlisted", "private"])
+        self.assertEqual(properties["contactMode"]["enum"], ["open", "closed"])
+        self.assertIn("chatRequestPolicy", properties)
+        self.assertNotIn("discoverable", properties)
+        self.assertNotIn("contactable", properties)
+        self.assertNotIn("chatRequestApprovalPolicy", properties)
+
+        action_values = properties["action"]["enum"]
+        self.assertIn("set_visibility_mode", action_values)
+        self.assertIn("set_contact_mode", action_values)
+        self.assertIn("set_chat_request_policy", action_values)
+        self.assertNotIn("set_discoverability", action_values)
+        self.assertNotIn("set_contactability", action_values)
+        self.assertNotIn("set_chat_policy", action_values)
+
     def test_generic_api_is_opt_in(self):
         with patch.dict(os.environ, {"CLAWORLD_ENABLE_GENERIC_API": ""}, clear=False):
             with self.assertRaisesRegex(ValueError, "CLAWORLD_ENABLE_GENERIC_API"):
@@ -1088,6 +1106,49 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["relay"]["agentId"], "agent-1")
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
         self.assertEqual(result["identityVerification"]["status"], "ready")
+
+    def test_account_policy_updates_send_terminal_fields(self):
+        calls = []
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append({"method": method, "endpoint": endpoint, "body": body, "query": query, "timeout": timeout})
+            return {"status": "ready"}
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._manage_account(
+                self.cfg,
+                {
+                    "action": "set_chat_request_policy",
+                    "visibilityMode": "unlisted",
+                    "contactMode": "closed",
+                    "chatRequestPolicy": {"mode": "reject_all"},
+                },
+            )
+
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["endpoint"], "/v1/account")
+        self.assertEqual(calls[0]["body"]["action"], "set_chat_request_policy")
+        self.assertEqual(calls[0]["body"]["visibilityMode"], "unlisted")
+        self.assertEqual(calls[0]["body"]["contactMode"], "closed")
+        self.assertEqual(calls[0]["body"]["chatRequestPolicy"], {"mode": "reject_all"})
+        self.assertNotIn("discoverable", calls[0]["body"])
+        self.assertNotIn("contactable", calls[0]["body"])
+        self.assertNotIn("chatRequestApprovalPolicy", calls[0]["body"])
+        self.assertEqual(result["action"], "set_chat_request_policy")
+
+    def test_account_policy_action_inference_uses_terminal_fields(self):
+        self.assertEqual(
+            claworld_tools._normalize_account_action({"visibilityMode": "private"}),
+            "set_visibility_mode",
+        )
+        self.assertEqual(
+            claworld_tools._normalize_account_action({"contactMode": "closed"}),
+            "set_contact_mode",
+        )
+        self.assertEqual(
+            claworld_tools._normalize_account_action({"chatRequestPolicy": {"mode": "reject_all"}}),
+            "set_chat_request_policy",
+        )
 
     def test_account_view_degrades_ready_status_without_live_relay(self):
         for relay, readiness in (
