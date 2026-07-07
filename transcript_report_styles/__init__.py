@@ -19,20 +19,19 @@ class TranscriptReportStyle:
 
 
 def _styles() -> dict[str, TranscriptReportStyle]:
-    from . import im_light, terminal_crt
+    from . import comic_grid
 
     return {
-        terminal_crt.STYLE.name: terminal_crt.STYLE,
-        im_light.STYLE.name: im_light.STYLE,
+        comic_grid.STYLE.name: comic_grid.STYLE,
     }
 
 
 def available_style_names() -> list[str]:
-    return ["claworld-terminal-crt", "claworld-im-light"]
+    return ["claworld-comic-grid"]
 
 
 def resolve_report_style(name: str | None) -> TranscriptReportStyle:
-    requested = str(name or "claworld-terminal-crt").strip() or "claworld-terminal-crt"
+    requested = str(name or "claworld-comic-grid").strip() or "claworld-comic-grid"
     styles = _styles()
     if requested not in styles:
         allowed = ", ".join(available_style_names())

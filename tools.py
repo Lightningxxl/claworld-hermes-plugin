@@ -102,8 +102,7 @@ TRANSCRIPT_REPORT_DESCRIPTION = (
     "relaySessionKey, chatId, or sessionId selectors. Use "
     "sourceKind=latest_conversation only when the human explicitly asks for the "
     "latest locally stored Claworld conversation; unresolved index-only records "
-    "are skipped. Use style to choose claworld-terminal-crt or "
-    "claworld-im-light."
+    "are skipped. The only supported style is claworld-comic-grid."
 )
 
 def register_tools(ctx) -> None:
@@ -289,7 +288,7 @@ TRANSCRIPT_REPORT_SCHEMA = _schema(
         "subtitle": {"type": "string"},
         "peerProfile": {"type": "string"},
         "timezone": {"type": "string"},
-        "style": {"type": "string", "enum": ["claworld-terminal-crt", "claworld-im-light"]},
+        "style": {"type": "string", "enum": ["claworld-comic-grid"]},
         "width": {"type": "integer", "minimum": 520, "maximum": 1200},
         "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": 8000},
         "localAgentId": {"type": "string"},

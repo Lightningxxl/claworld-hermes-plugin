@@ -244,8 +244,8 @@ Implemented:
   Session transcript mirror when native mirror is missing.
 - Local transcript report rendering through `claworld_render_transcript_report`:
   Claworld/Hermes transcript messages are normalized into BubbleSpec by a shared
-  transcript pipeline, then rendered by a selectable style renderer
-  (`claworld-terminal-crt` or `claworld-im-light`). SVG and PNG artifacts are
+  transcript pipeline, then rendered by the `claworld-comic-grid` style renderer.
+  SVG and PNG artifacts are
   exported under Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery
   channels that support native media.
 

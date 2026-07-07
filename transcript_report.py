@@ -32,7 +32,7 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     root = cfg.memory_root_path()
     source = _load_source_messages(cfg, args or {}, root)
     header_context = _extract_transcript_header_context(source["messages"], cfg, args or {})
-    normalized = _normalize_messages(source["messages"], cfg, args or {})
+    normalized = _normalize_messages(source["messages"], cfg, args or {}, header_context)
     if not normalized:
         raise ValueError("no visible transcript messages were found for rendering")
 
@@ -182,7 +182,7 @@ def _load_source_messages(cfg: ClaworldConfig, args: dict, root: Path) -> dict:
 
 
 def _report_style_name(args: dict) -> str:
-    return _text(args.get("style"), "claworld-terminal-crt") or "claworld-terminal-crt"
+    return _text(args.get("style"), "claworld-comic-grid") or "claworld-comic-grid"
 
 
 def _resolve_source_session_id(args: dict, root: Path) -> tuple[str | None, dict]:
@@ -373,13 +373,17 @@ def _load_session_db_messages(session_id: str) -> list[dict]:
             close()
 
 
-def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict) -> list[TranscriptMessage]:
-    local_id = _text(args.get("localAgentId"), cfg.agent_id) or "local-agent"
-    peer_id = _text(args.get("peerAgentId"), _text(args.get("targetAgentId"))) or "peer-agent"
-    local_label = _text(args.get("localLabel"), local_id) or local_id
-    peer_label = _text(args.get("peerLabel"), peer_id) or peer_id
+def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, header_context: dict | None = None) -> list[TranscriptMessage]:
+    header_context = header_context or {}
+    local_identity = _text(header_context.get("localIdentity"))
+    peer_identity = _text(header_context.get("peerIdentity"), _text(header_context.get("peerId")))
+    local_id = _text(args.get("localAgentId"), _text(local_identity, cfg.agent_id)) or "local-agent"
+    peer_id = _text(args.get("peerAgentId"), _text(args.get("targetAgentId"), peer_identity)) or "peer-agent"
+    local_label = _text(args.get("localLabel"), _text(local_identity, local_id)) or local_id
+    peer_label = _text(args.get("peerLabel"), _text(peer_identity, peer_id)) or peer_id
     include_tools = _text(args.get("includeToolCalls"), "none") not in {"", "none", "false"}
     normalized: list[TranscriptMessage] = []
+    pending_episode_id = ""
     for idx, raw in enumerate(raw_messages):
         if not isinstance(raw, dict):
             continue
@@ -395,9 +399,14 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict) -> 
         text = _flatten_content(raw.get("content", raw.get("text")))
         created_at = _format_timestamp(raw.get("timestamp") or raw.get("created_at") or raw.get("createdAt"))
         message_id = _text(raw.get("message_id"), _text(raw.get("id"), f"msg-{idx + 1}")) or f"msg-{idx + 1}"
+        episode_id = _extract_claworld_episode_id(raw, text)
         if role == "user":
             extracted = _extract_claworld_peer_message(text)
             if extracted is not None:
+                episode_id = episode_id or _text(extracted.get("episodeId"), "")
+                if extracted.get("skip"):
+                    pending_episode_id = episode_id or pending_episode_id
+                    continue
                 text = extracted["text"]
                 created_at = created_at or extracted.get("createdAt", "")
             side = "left"
@@ -417,7 +426,9 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict) -> 
         cleaned_text = _redact_text(cleaned_text)
         cleaned_text = _strip_internal_markup(cleaned_text)
         if not cleaned_text and not tags:
+            pending_episode_id = episode_id or pending_episode_id
             continue
+        episode_id = episode_id or pending_episode_id
         normalized.append(
             TranscriptMessage(
                 id=message_id,
@@ -429,8 +440,10 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict) -> 
                 tags=tags,
                 source_index=idx,
                 ends_segment="request end" in tags,
+                episode_id=episode_id or "",
             )
         )
+        pending_episode_id = ""
     return normalized
 
 
@@ -477,15 +490,28 @@ def _segment_messages(messages: list[TranscriptMessage], gap_minutes: int) -> li
         return []
     segments: list[list[TranscriptMessage]] = [[]]
     previous_ts: float | None = None
-    previous_ended = False
+    current_episode_id = ""
+    ended_sides: set[str] = set()
+    episode_completed = False
     for message in messages:
         ts = _parse_timeish(message.created_at)
         gap_boundary = previous_ts is not None and ts is not None and (ts - previous_ts) > gap_minutes * 60
-        if segments[-1] and (previous_ended or gap_boundary):
+        message_episode_id = _text(getattr(message, "episode_id", ""), "") or ""
+        episode_boundary = bool(message_episode_id and current_episode_id and message_episode_id != current_episode_id)
+        episode_start_boundary = bool(message_episode_id and not current_episode_id and segments[-1])
+        completion_boundary = episode_completed and not (message_episode_id and message_episode_id == current_episode_id)
+        if segments[-1] and (episode_boundary or episode_start_boundary or completion_boundary or gap_boundary):
             segments.append([])
+            current_episode_id = ""
+            ended_sides = set()
+            episode_completed = False
         segments[-1].append(message)
+        if message_episode_id and not current_episode_id:
+            current_episode_id = message_episode_id
+        if message.ends_segment:
+            ended_sides.add(message.side)
+            episode_completed = len(ended_sides) >= 2
         previous_ts = ts or previous_ts
-        previous_ended = message.ends_segment
     return [segment for segment in segments if segment]
 
 
@@ -607,6 +633,7 @@ def _extract_transcript_header_context(raw_messages: list, cfg: ClaworldConfig, 
         for key, value in {
             "peerId": merged.get("peerId"),
             "peerIdentity": merged.get("peerIdentity"),
+            "localIdentity": merged.get("localIdentity"),
             "conversationMode": merged.get("conversationMode"),
             "worldName": merged.get("worldName"),
             "worldId": merged.get("worldId"),
@@ -730,6 +757,12 @@ def _parse_header_context_candidate(text: str, source: str) -> dict[str, str]:
     if world_id:
         parsed["worldId"] = world_id
 
+    local_section = _markdown_section(value, "You", 2)
+    if local_section:
+        identity = _extract_identity(local_section)
+        if identity:
+            parsed["localIdentity"] = identity
+
     peer_section = _markdown_section(value, "Peer", 2)
     if peer_section:
         identity = _extract_identity(peer_section)
@@ -743,6 +776,7 @@ def _parse_header_context_candidate(text: str, source: str) -> dict[str, str]:
         if world_profile:
             parsed["worldProfile"] = _squash_whitespace(world_profile)
             parsed["worldProfileSource"] = source
+    if local_section or peer_section:
         return parsed
 
     if source == "untrustedContext":
@@ -835,9 +869,12 @@ def _format_time_marker(value: Any) -> str:
 def _extract_claworld_peer_message(text: str) -> dict | None:
     if "Claworld delivery received." not in text:
         return None
+    command = _extract_fenced_block(text, "Backend-authored Claworld command:")
     extracted = _extract_fenced_block(text, "Peer-visible Claworld message:")
+    source = "peer_visible"
     if extracted is None:
         extracted = _extract_fenced_block(text, "Inbound Claworld payload content:")
+        source = "payload"
     if extracted is None:
         return None
     created_at = None
@@ -846,7 +883,63 @@ def _extract_claworld_peer_message(text: str) -> dict | None:
         if match:
             created_at = match.group(1).strip()
             break
-    return {"text": extracted.strip(), "createdAt": _format_timestamp(created_at)}
+    return {
+        "text": extracted.strip(),
+        "createdAt": _format_timestamp(created_at),
+        "episodeId": _extract_claworld_episode_id({}, text),
+        "skip": source == "peer_visible" and _same_visible_text(extracted, command) and _looks_like_backend_claworld_command(extracted),
+    }
+
+
+EPISODE_ID_KEYS = (
+    "intentId",
+    "intent_id",
+    "chatRequestId",
+    "chat_request_id",
+)
+
+
+def _extract_claworld_episode_id(raw: dict, text: str) -> str:
+    for payload in _payload_dicts(raw):
+        for key in EPISODE_ID_KEYS:
+            value = _text(payload.get(key))
+            if value:
+                return value
+
+    patterns = (
+        r"(?im)^\s*-\s*Intent ID:\s*`?([^`\n]+?)`?\s*$",
+        r"(?im)^\s*-\s*Chat Request ID:\s*`?([^`\n]+?)`?\s*$",
+        r"(?im)\b(?:intentId|intent_id|chatRequestId|chat_request_id)\b\s*[:=]\s*[\"`']?([A-Za-z0-9][A-Za-z0-9_.:-]{2,})",
+        r"(?im)[\"'](?:intentId|intent_id|chatRequestId|chat_request_id)[\"']\s*:\s*[\"']([^\"']+)[\"']",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, str(text or ""))
+        value = _text(match.group(1) if match else None)
+        if value:
+            return value
+    return ""
+
+
+def _same_visible_text(left: str | None, right: str | None) -> bool:
+    return bool(left and right and _squash_whitespace(left) == _squash_whitespace(right))
+
+
+def _looks_like_backend_claworld_command(text: str) -> bool:
+    value = str(text or "")
+    markers = (
+        "# Background",
+        "## Conversation Facts",
+        "## Request",
+        "Return only the peer-facing",
+        "Do not quote or describe this document",
+        "Do not call tools",
+        "Write one natural opener",
+        "Base it on the request brief",
+        "Session automatically reset",
+        "◆ Model:",
+        "◆ Provider:",
+    )
+    return any(marker in value for marker in markers)
 
 
 def _extract_fenced_block(text: str, heading: str) -> str | None:
@@ -858,19 +951,53 @@ def _extract_fenced_block(text: str, heading: str) -> str | None:
 CONTROL_PATTERNS = (
     (re.compile(r"\[\[?\s*request[_\s-]*(?:conversation[_\s-]*)?end\s*\]?\]?", re.IGNORECASE), "request end"),
     (re.compile(r"\[\s*requeset\s+end\s*\]", re.IGNORECASE), "request end"),
+    (re.compile(r"\[\[?\s*end\s*\]?\]?", re.IGNORECASE), "request end"),
     (re.compile(r"\[\[?\s*like\s*\]?\]?", re.IGNORECASE), "like"),
     (re.compile(r"\[\[?\s*dislike\s*\]?\]?", re.IGNORECASE), "dislike"),
 )
+GENERIC_CONTROL_PATTERN = re.compile(r"\[\[\s*([A-Za-z0-9][A-Za-z0-9 _-]{0,24})\s*\]\]")
 
 
 def _extract_control_tags(text: str) -> tuple[str, list[str]]:
-    tags: list[str] = []
     cleaned = str(text or "")
+    matches: list[tuple[int, int, str]] = []
+    claimed_spans: list[tuple[int, int]] = []
     for pattern, label in CONTROL_PATTERNS:
-        if pattern.search(cleaned) and label not in tags:
+        for match in pattern.finditer(cleaned):
+            _record_tag_match(matches, claimed_spans, match.start(), match.end(), label)
+    for match in GENERIC_CONTROL_PATTERN.finditer(cleaned):
+        label = _normalize_tag_label(match.group(1))
+        if label:
+            _record_tag_match(matches, claimed_spans, match.start(), match.end(), label)
+    tags: list[str] = []
+    for _start, _end, label in sorted(matches, key=lambda item: item[0]):
+        if label not in tags:
             tags.append(label)
-        cleaned = pattern.sub("", cleaned)
-    return _squash_whitespace(cleaned), tags
+    return _squash_whitespace(_remove_spans(cleaned, [(start, end) for start, end, _label in matches])), tags
+
+
+def _record_tag_match(matches: list[tuple[int, int, str]], claimed_spans: list[tuple[int, int]], start: int, end: int, label: str) -> None:
+    if any(start < claimed_end and end > claimed_start for claimed_start, claimed_end in claimed_spans):
+        return
+    matches.append((start, end, label))
+    claimed_spans.append((start, end))
+
+
+def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    if not spans:
+        return text
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        pieces.append(text[cursor:start])
+        cursor = max(cursor, end)
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _normalize_tag_label(value: str) -> str:
+    label = _squash_whitespace(str(value or "").replace("_", " ").replace("-", " ")).lower()
+    return label[:24].strip()
 
 
 def _redact_text(text: str) -> str:

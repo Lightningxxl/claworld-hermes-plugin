@@ -29,6 +29,7 @@ from claworld_hermes_plugin.config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldC
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import transcript_report as claworld_transcript
+from claworld_hermes_plugin import transcript_report_styles as claworld_transcript_styles
 from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
@@ -37,7 +38,16 @@ from claworld_hermes_plugin.version import PLUGIN_VERSION
 from claworld_hermes_plugin.working_memory import build_prompt_context, ensure_working_memory, read_session_index, record_claworld_route, write_session_index
 
 
-def _claworld_user_text(peer_text: str, *, delivery_id: str = "d1", conversation_key: str = "conv-1", context_text: str | None = None) -> str:
+def _claworld_user_text(
+    peer_text: str,
+    *,
+    delivery_id: str = "d1",
+    conversation_key: str = "conv-1",
+    context_text: str | None = None,
+    intent_id: str | None = None,
+    chat_request_id: str | None = None,
+    command_text: str = "Do not render this command.",
+) -> str:
     parts = [
         "Claworld delivery received.",
         "",
@@ -66,7 +76,9 @@ def _claworld_user_text(peer_text: str, *, delivery_id: str = "d1", conversation
             "Backend-authored Claworld command:",
             "",
             "```text",
-            "Do not render this command.",
+            *([f"- Intent ID: `{intent_id}`"] if intent_id else []),
+            *([f"- Chat Request ID: `{chat_request_id}`"] if chat_request_id else []),
+            command_text,
             "```",
             "",
             "Peer-visible Claworld message:",
@@ -816,8 +828,14 @@ class ToolSchemaTests(unittest.TestCase):
 
     def test_transcript_report_schema_exposes_style_selector(self):
         properties = claworld_tools.TRANSCRIPT_REPORT_SCHEMA["parameters"]["properties"]
-        self.assertEqual(properties["style"]["enum"], ["claworld-terminal-crt", "claworld-im-light"])
+        self.assertEqual(properties["style"]["enum"], ["claworld-comic-grid"])
         self.assertNotIn("theme", properties)
+
+    def test_transcript_report_style_registry_only_exposes_comic_grid(self):
+        self.assertEqual(claworld_transcript_styles.available_style_names(), ["claworld-comic-grid"])
+        self.assertEqual(claworld_transcript_styles.resolve_report_style(None).name, "claworld-comic-grid")
+        with self.assertRaisesRegex(ValueError, "unsupported transcript report style"):
+            claworld_transcript_styles.resolve_report_style("claworld-im-light")
 
     def test_generic_api_is_opt_in(self):
         with patch.dict(os.environ, {"CLAWORLD_ENABLE_GENERIC_API": ""}, clear=False):
@@ -835,9 +853,9 @@ class TranscriptReportTests(unittest.TestCase):
                 working_memory_root=str(Path(tmp) / ".claworld"),
             )
             messages = [
-                {"role": "user", "content": _claworld_user_text("old hello", delivery_id="old-1"), "timestamp": 1000},
+                {"role": "user", "content": _claworld_user_text("old hello", delivery_id="old-1", intent_id="req-old"), "timestamp": 1000},
                 {"role": "assistant", "content": "old answer [[request_conversation_end]]", "timestamp": 1001},
-                {"role": "user", "content": _claworld_user_text("new hello [like]", delivery_id="new-1"), "timestamp": 2000},
+                {"role": "user", "content": _claworld_user_text("new hello [like]", delivery_id="new-1", intent_id="req-new"), "timestamp": 2000},
                 {"role": "assistant", "content": "new answer api_key=secret-value [[request_conversation_end]]", "timestamp": 2001},
                 {"role": "tool", "content": json.dumps({"metadata": "not a public message"})},
             ]
@@ -871,6 +889,162 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertNotIn("secret-value", rendered)
             self.assertNotIn("Routing metadata", svg)
             self.assertNotIn("Peer-visible Claworld message", svg)
+            self.assertNotIn("Do not render this command.", rendered)
+
+    def test_render_transcript_report_keeps_latest_completed_episode_together(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(Path(tmp) / ".claworld"),
+            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("old episode opener", delivery_id="old-1", intent_id="req-old"),
+                    "timestamp": 1000,
+                },
+                {"role": "assistant", "content": "old local end [[request_conversation_end]]", "timestamp": 1001},
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("old peer end [[request_conversation_end]]", delivery_id="old-2"),
+                    "timestamp": 1002,
+                },
+                {
+                    "role": "user",
+                    "content": _claworld_user_text(
+                        "new episode hello",
+                        delivery_id="new-1",
+                        intent_id="req-new",
+                        command_text="Backend command should not render.",
+                    ),
+                    "timestamp": 2000,
+                },
+                {"role": "assistant", "content": "new local reply", "timestamp": 2001},
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("new peer final [[request_conversation_end]]", delivery_id="new-2"),
+                    "timestamp": 2002,
+                },
+                {"role": "assistant", "content": "new local final [[request_conversation_end]]", "timestamp": 2003},
+            ]
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "messages": messages,
+                    "peerAgentId": "agent-peer",
+                    "maxTurns": 10,
+                    "title": "Transcript",
+                },
+            )
+
+            self.assertEqual(result["messageCount"], 4)
+            self.assertEqual(result["selection"]["segmentCount"], 2)
+            self.assertEqual(result["selection"]["segmentMessages"], 4)
+            spec = json.loads(Path(result["bubbleSpecPath"]).read_text(encoding="utf-8"))
+            rendered = json.dumps(spec, ensure_ascii=False)
+            self.assertIn("new episode hello", rendered)
+            self.assertIn("new local reply", rendered)
+            self.assertIn("new peer final", rendered)
+            self.assertIn("new local final", rendered)
+            self.assertNotIn("old episode opener", rendered)
+            self.assertNotIn("Backend command should not render.", rendered)
+
+    def test_render_transcript_report_skips_command_duplicate_peer_visible_but_keeps_episode_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(Path(tmp) / ".claworld"),
+            )
+            command_doc = "\n".join(
+                [
+                    "# Background",
+                    "",
+                    "## Conversation Facts",
+                    "",
+                    "- Intent ID: `req-new`",
+                    "",
+                    "## Request",
+                    "",
+                    "- Write one natural opener to the peer now.",
+                    "- Return only the peer-facing opener as assistant text in this response.",
+                ]
+            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("old peer end [[request_conversation_end]]", delivery_id="old-1", intent_id="req-old"),
+                    "timestamp": 1000,
+                },
+                {"role": "assistant", "content": "old local end [[request_conversation_end]]", "timestamp": 1001},
+                {
+                    "role": "user",
+                    "content": _claworld_user_text(command_doc, delivery_id="new-command", command_text=command_doc),
+                    "timestamp": 2000,
+                },
+                {"role": "assistant", "content": "actual opener from local agent", "timestamp": 2001},
+                {"role": "user", "content": _claworld_user_text("actual peer reply", delivery_id="new-2"), "timestamp": 2002},
+            ]
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "messages": messages,
+                    "peerAgentId": "agent-peer",
+                    "maxTurns": 10,
+                    "title": "Transcript",
+                },
+            )
+
+            self.assertEqual(result["messageCount"], 2)
+            self.assertEqual(result["selection"]["segmentCount"], 2)
+            spec = json.loads(Path(result["bubbleSpecPath"]).read_text(encoding="utf-8"))
+            rendered = json.dumps(spec, ensure_ascii=False)
+            self.assertIn("actual opener from local agent", rendered)
+            self.assertIn("actual peer reply", rendered)
+            self.assertNotIn("Write one natural opener", rendered)
+            self.assertNotIn("old peer end", rendered)
+
+    def test_render_transcript_report_renders_unknown_dsl_tokens_as_tags(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(Path(tmp) / ".claworld"),
+            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("combined tags [like] [[end]] [[haha]]", delivery_id="d1"),
+                    "timestamp": 1000,
+                },
+            ]
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "messages": messages,
+                    "style": "claworld-comic-grid",
+                    "maxTurns": 10,
+                },
+            )
+
+            spec = json.loads(Path(result["bubbleSpecPath"]).read_text(encoding="utf-8"))
+            text_messages = [item for item in spec["messages"] if item.get("kind") == "text"]
+            self.assertEqual(text_messages[0]["tags"], ["like", "request end", "haha"])
+            self.assertEqual(text_messages[0]["text"], "combined tags")
+            rendered = json.dumps(spec, ensure_ascii=False)
+            self.assertNotIn("[[haha]]", rendered)
+            svg = Path(result["svgPath"]).read_text(encoding="utf-8")
+            self.assertIn("tag-like", svg)
+            self.assertIn("tag-request-end", svg)
+            self.assertIn("tag-fallback", svg)
+            self.assertIn(">haha</text>", svg)
 
     def test_render_transcript_report_extracts_direct_peer_global_profile(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
@@ -975,7 +1149,7 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(spec["scene"]["peerId"], "Peer World#WORLD1")
             self.assertEqual(spec["scene"]["peerProfile"], "world-specific profile from transcript")
 
-    def test_render_transcript_report_supports_light_style_and_paging(self):
+    def test_render_transcript_report_supports_comic_grid_paging(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
             cfg = ClaworldConfig(
                 server_url="https://api.example.com",
@@ -1010,22 +1184,73 @@ class TranscriptReportTests(unittest.TestCase):
                     "messages": messages,
                     "maxTurns": 24,
                     "maxPageHeight": 980,
-                    "style": "claworld-im-light",
+                    "style": "claworld-comic-grid",
                 },
             )
 
-            self.assertEqual(result["style"], "claworld-im-light")
+            self.assertEqual(result["style"], "claworld-comic-grid")
             self.assertGreaterEqual(result["pages"], 2)
             self.assertEqual(len(result["pngPaths"]), result["pages"])
             self.assertEqual(len(result["svgPaths"]), result["pages"])
             for png_path in result["pngPaths"]:
                 self.assertEqual(Path(png_path).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
             spec = json.loads(Path(result["bubbleSpecPath"]).read_text(encoding="utf-8"))
-            self.assertEqual(spec["canvas"]["style"], "claworld-im-light")
+            self.assertEqual(spec["canvas"]["style"], "claworld-comic-grid")
             self.assertNotIn("theme", spec["canvas"])
             first_svg = Path(result["svgPaths"][0]).read_text(encoding="utf-8")
-            self.assertIn('class="im-light"', first_svg)
-            self.assertIn("<circle", first_svg)
+            self.assertIn('class="comic-grid"', first_svg)
+            self.assertIn("comicGridMinor", first_svg)
+
+    def test_render_transcript_report_supports_comic_grid_style(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(Path(tmp) / ".claworld"),
+            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("I finished the interface change today.", delivery_id="d1"),
+                    "timestamp": 1700000000,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Nice. The whole flow feels cleaner now.",
+                    "timestamp": 1700000001,
+                },
+                {
+                    "role": "user",
+                    "content": _claworld_user_text("Can you keep the time in the middle as its own bubble? [like]", delivery_id="d2"),
+                    "timestamp": 1700000400,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Yes. I will keep both sides visually consistent and remove the little tails.",
+                    "timestamp": 1700000401,
+                },
+            ]
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "messages": messages,
+                    "peerLabel": "mint-super-long-agent-name",
+                    "localLabel": "you-super-long-agent-name",
+                    "peerProfile": "Independent game developer / likes pixel wind and night chats",
+                    "maxTurns": 8,
+                    "style": "claworld-comic-grid",
+                },
+            )
+
+            self.assertEqual(result["style"], "claworld-comic-grid")
+            self.assertEqual(Path(result["pngPath"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            svg = Path(result["svgPath"]).read_text(encoding="utf-8")
+            self.assertIn('class="comic-grid"', svg)
+            self.assertIn("comicGridMinor", svg)
+            self.assertIn("time-row", svg)
+            self.assertIn(">MINT-SUPER-...</text>", svg)
 
     def test_render_transcript_report_resolves_conversation_key_to_session(self):
         class FakeSessionDB:
