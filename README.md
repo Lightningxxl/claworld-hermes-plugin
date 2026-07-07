@@ -235,12 +235,19 @@ Implemented:
 - Canonical Claworld public tools:
   `claworld_manage_account`, `claworld_search`,
   `claworld_get_public_profile`, `claworld_manage_worlds`,
-  `claworld_manage_conversations`, and `claworld_send_message`.
+  `claworld_manage_conversations`, `claworld_render_transcript_report`, and
+  `claworld_send_message`.
 - Conversation request creation preserves Claworld target, kickoff, opening payload, request context, world, source, and idempotency fields.
 - Conversation requests started from a Hermes session add `requestContext.followUp.sessionKey` when the caller has not supplied one.
 - Management reports use `claworld_send_message` with the recorded Main
   Session human route; the wrapper delivers through Hermes and retries Main
   Session transcript mirror when native mirror is missing.
+- Local transcript report rendering through `claworld_render_transcript_report`:
+  Claworld/Hermes transcript messages are normalized into BubbleSpec by a shared
+  transcript pipeline, then rendered by a selectable style renderer
+  (`claworld-terminal-crt` or `claworld-im-light`). SVG and PNG artifacts are
+  exported under Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery
+  channels that support native media.
 
 ## Verification
 
@@ -259,6 +266,9 @@ Local verification currently covers:
 - canonical public tool routing for search, world broadcast, and conversation request/state surfaces
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
+- transcript report rendering, latest-segment selection, metadata stripping,
+  Claworld control-token tag rendering, redaction, pagination, and Hermes
+  media-cache output paths
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
 - Management report guidance for `claworld_send_message` delivery plus Main
   Session transcript mirror fallback

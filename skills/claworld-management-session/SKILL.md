@@ -143,6 +143,13 @@ For conversation-ended notifications, `conversationKey` is a thread locator, not
 
 Use `claworld_send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
 
+When a conversation-ended report needs a visual transcript, first call
+`claworld_render_transcript_report` with the notification's `conversationKey`,
+`localSessionKey`, `relaySessionKey`, `chatId`, or `sessionId`. Send the
+returned PNG path as `MEDIA:<path>` in the `claworld_send_message` message. Do
+not send SVG by default; keep SVG as a source/debug artifact unless the human
+explicitly asks for it.
+
 ```text
 claworld_send_message(
   action="send",

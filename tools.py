@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import ClaworldConfig
 from .http_client import public_error_payload, request_json
+from .transcript_report import render_transcript_report as render_transcript_report_artifact
 from .working_memory import record_owner_route_from_context
 
 TOOLSET = "claworld"
@@ -95,6 +96,13 @@ SEND_MESSAGE_DESCRIPTION = (
     "semantics and retries transcript mirror when delivery succeeds without "
     "mirrored=true."
 )
+TRANSCRIPT_REPORT_DESCRIPTION = (
+    "Render a local Claworld conversation transcript into BubbleSpec, SVG, and "
+    "PNG artifacts. Prefer exact conversationKey, localSessionKey, "
+    "relaySessionKey, chatId, or sessionId selectors; defaults to the latest "
+    "known Claworld conversation only when no better selector is available. "
+    "Use style to choose claworld-terminal-crt or claworld-im-light."
+)
 
 def register_tools(ctx) -> None:
     for name, description, schema, handler in (
@@ -127,6 +135,12 @@ def register_tools(ctx) -> None:
             MANAGE_CONVERSATIONS_DESCRIPTION,
             MANAGE_CONVERSATIONS_SCHEMA,
             manage_conversations,
+        ),
+        (
+            "claworld_render_transcript_report",
+            TRANSCRIPT_REPORT_DESCRIPTION,
+            TRANSCRIPT_REPORT_SCHEMA,
+            render_transcript_report,
         ),
         (
             "claworld_send_message",
@@ -256,6 +270,34 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
     },
     description=MANAGE_CONVERSATIONS_DESCRIPTION,
 )
+TRANSCRIPT_REPORT_SCHEMA = _schema(
+    None,
+    {
+        "sourceKind": {"type": "string", "enum": ["latest_conversation", "current_session", "sessionId", "messages"]},
+        "sessionId": {"type": "string"},
+        "chatId": {"type": "string"},
+        "relaySessionKey": {"type": "string"},
+        "messages": {"type": "array", "items": {"type": "object"}},
+        "segmentIndex": {"type": "integer", "minimum": 0},
+        "segmentGapMinutes": {"type": "integer", "minimum": 1},
+        "startTurn": {"type": "integer", "minimum": 1},
+        "endTurn": {"type": "integer", "minimum": 1},
+        "maxTurns": {"type": "integer", "minimum": 1, "maximum": 80},
+        "title": {"type": "string"},
+        "subtitle": {"type": "string"},
+        "peerProfile": {"type": "string"},
+        "timezone": {"type": "string"},
+        "style": {"type": "string", "enum": ["claworld-terminal-crt", "claworld-im-light"]},
+        "width": {"type": "integer", "minimum": 520, "maximum": 1200},
+        "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": 8000},
+        "localAgentId": {"type": "string"},
+        "peerAgentId": {"type": "string"},
+        "localLabel": {"type": "string"},
+        "peerLabel": {"type": "string"},
+        "includeToolCalls": {"type": "string", "enum": ["none", "summary", "full"]},
+    },
+    description=TRANSCRIPT_REPORT_DESCRIPTION,
+)
 SEND_MESSAGE_SCHEMA = {
     "description": SEND_MESSAGE_DESCRIPTION,
     "parameters": {
@@ -304,6 +346,10 @@ def manage_worlds(args: dict, **kwargs) -> str:
 
 def manage_conversations(args: dict, **kwargs) -> str:
     return _tool_result("claworld_manage_conversations", args, _manage_conversations)
+
+
+def render_transcript_report(args: dict, **kwargs) -> str:
+    return _tool_result("claworld_render_transcript_report", args, _render_transcript_report)
 
 
 def send_message(args: dict, **kwargs) -> str:
@@ -774,6 +820,10 @@ def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
 
     result["success"] = delivered
     return result
+
+
+def _render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
+    return render_transcript_report_artifact(cfg, args)
 
 
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:
