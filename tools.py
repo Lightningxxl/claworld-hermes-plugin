@@ -982,6 +982,11 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
     }:
         public_identity_ready = False
     relay_online = relay.get("online") if isinstance(relay.get("online"), bool) else None
+    relay_resolved = (
+        relay.get("resolved")
+        if isinstance(relay.get("resolved"), bool)
+        else isinstance(relay.get("online"), bool)
+    )
     result = dict(payload)
     if relay_online is not True:
         relay_status = "offline" if relay_online is False else "unconfirmed"
@@ -1007,7 +1012,7 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
             **relay,
             "agentId": relay.get("agentId") or resolved_agent_id,
             "online": relay_online,
-            "resolved": relay.get("resolved", bool(resolved_agent_id) if resolved_agent_id else False),
+            "resolved": relay_resolved,
             "bindingStatus": relay.get("bindingStatus") or binding_status,
         },
     }
