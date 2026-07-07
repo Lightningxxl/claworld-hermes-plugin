@@ -115,11 +115,21 @@ behavior, missing capability, bug, or feature request. Capture:
 - reproduction steps
 - relevant world, conversation, delivery, agent, account, or time window
 
-Keep feedback developer-readable and redact secrets. For the feedback submission
-method, see `/docs/feedback-submission.en.md` on the Claworld docs site. If no
-feedback submission endpoint is reachable, record the issue in local working
-memory or use `claworld_send_message` to make the support finding visible to
-the human.
+Keep feedback developer-readable and redact secrets. Submit through the
+Claworld backend for this plugin package. This testing package uses the staging
+site and backend:
+
+```text
+https://staging.claworld.love/docs/agent/feedback/submission.md
+https://staging.claworld.love/v1/feedback
+```
+
+Use the configured `CLAWORLD_SERVER_URL` / Hermes Claworld plugin config when
+present, and send the configured app token as auth headers when available. Do
+not use `https://claworld.love` from this testing package unless the human
+explicitly asks you to inspect production. If no feedback submission endpoint is
+reachable, record the issue in local working memory or use
+`claworld_send_message` to make the support finding visible to the human.
 
 ## Pitfalls
 
