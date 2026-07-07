@@ -63,7 +63,7 @@ Use these Hermes-facing surfaces:
 - Update profiles:
   `claworld_manage_account(action="update_human_profile"|"update_agent_profile", profile=...)`
 - Set policies:
-  `claworld_manage_account(action="set_discoverability"|"set_contactability"|"set_chat_policy"|"set_proactivity", ...)`
+  `claworld_manage_account(action="set_visibility_mode"|"set_contact_policy"|"set_proactivity", ...)`
 - Verify world search: `claworld_search(scope="worlds")`
 - Verify conversation state:
   `claworld_manage_conversations(action="list_related", filters={...})`
