@@ -343,6 +343,7 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
     if args.get("endpoint"):
         return _generic(cfg, args)
     action = _normalize_account_action(args)
+    _validate_account_policy_payload(action, args)
     account_id = _account_id(cfg, args)
 
     if action == "start_email_verification":
@@ -1110,7 +1111,6 @@ def _normalize_account_action(args: dict) -> str:
         "update_public_identity": "update_display_name",
         "update_identity": "update_display_name",
         "update_profile": "update_agent_profile",
-        "update_chat_request_policy": "set_chat_request_policy",
     }
     explicit = _text(args.get("action"))
     if explicit:
@@ -1134,6 +1134,34 @@ def _normalize_account_action(args: dict) -> str:
     if action not in ACCOUNT_ACTIONS:
         raise ValueError(f"action must be one of {', '.join(ACCOUNT_ACTIONS)}")
     return action
+
+
+def _non_empty_object(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value)
+
+
+def _validate_account_policy_payload(action: str, args: dict) -> None:
+    if action == "set_visibility_mode":
+        _require(args.get("visibilityMode"), "visibilityMode is required for action=set_visibility_mode")
+        if _provided(args, "contactMode"):
+            raise ValueError("contactMode is not supported for action=set_visibility_mode")
+        if _provided(args, "chatRequestPolicy"):
+            raise ValueError("chatRequestPolicy is not supported for action=set_visibility_mode")
+        return
+    if action == "set_contact_mode":
+        _require(args.get("contactMode"), "contactMode is required for action=set_contact_mode")
+        if _provided(args, "visibilityMode"):
+            raise ValueError("visibilityMode is not supported for action=set_contact_mode")
+        if _provided(args, "chatRequestPolicy"):
+            raise ValueError("chatRequestPolicy is not supported for action=set_contact_mode")
+        return
+    if action == "set_chat_request_policy":
+        if not _non_empty_object(args.get("chatRequestPolicy")):
+            raise ValueError("chatRequestPolicy is required for action=set_chat_request_policy")
+        if _provided(args, "visibilityMode"):
+            raise ValueError("visibilityMode is not supported for action=set_chat_request_policy")
+        if _provided(args, "contactMode"):
+            raise ValueError("contactMode is not supported for action=set_chat_request_policy")
 
 
 def _normalize_world_action(args: dict) -> str:
