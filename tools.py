@@ -984,7 +984,8 @@ def _current_hermes_session_context() -> dict:
 def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: str | None, agent_id: str | None) -> Any:
     if not isinstance(payload, dict):
         return payload
-    resolved_agent_id = _text(agent_id, _text(cfg.agent_id))
+    profile = _account_profile_envelope(payload)
+    resolved_agent_id = _text(agent_id, _text(cfg.agent_id, _payload_agent_id(payload)))
     binding_ready = bool(cfg.app_token and resolved_agent_id)
     binding_status = "bound" if binding_ready else "identity_unresolved" if cfg.app_token else "identity_unverified"
     diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
@@ -1020,7 +1021,10 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
             "bindingReady": diagnostics.get("bindingReady", binding_ready),
             "bindingStatus": diagnostics.get("bindingStatus") or binding_status,
             "publicIdentityReady": public_identity_ready,
-            "accountProfileReady": diagnostics.get("accountProfileReady", _nested_bool(payload.get("accountProfile"), "ready")),
+            "accountProfileReady": diagnostics.get(
+                "accountProfileReady",
+                _nested_bool(_account_profile_payload(payload, profile=profile), "ready"),
+            ),
             "relayOnline": relay_online,
         },
         "relay": {
@@ -1031,6 +1035,22 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
             "bindingStatus": relay.get("bindingStatus") or binding_status,
         },
     }
+
+
+def _account_profile_envelope(payload: dict) -> dict:
+    profile = payload.get("profile")
+    return profile if isinstance(profile, dict) else {}
+
+
+def _account_profile_payload(payload: dict, *, profile: dict | None = None) -> dict:
+    profile = profile if isinstance(profile, dict) else _account_profile_envelope(payload)
+    nested_account_profile = profile.get("accountProfile")
+    return nested_account_profile if isinstance(nested_account_profile, dict) else {}
+
+
+def _payload_agent_id(payload: dict) -> str | None:
+    profile = _account_profile_envelope(payload)
+    return _text(profile.get("agentId"), _text(payload.get("agentId")))
 
 
 def _with_relay_visibility_warning(payload: dict, relay_status: str) -> dict:
@@ -1222,10 +1242,8 @@ def _resolve_agent_id(cfg: ClaworldConfig) -> str:
         payload = request_json(cfg, "GET", "/v1/account", query=_drop_empty({"accountId": cfg.account_id}), timeout=15.0)
     except Exception:
         return ""
-    return _text(
-        payload.get("agentId"),
-        _text(payload.get("relay", {}).get("agentId"), _text(payload.get("profile", {}).get("agentId"))),
-    ) or ""
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    return _text(profile.get("agentId"), _text(payload.get("agentId"))) or ""
 
 
 def _account_id(cfg: ClaworldConfig, args: dict) -> str:

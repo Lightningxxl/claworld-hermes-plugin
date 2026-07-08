@@ -1117,7 +1117,7 @@ class ToolRoutingTests(unittest.TestCase):
             return {
                 "status": "pending",
                 "readiness": "account_profile_incomplete",
-                "accountProfile": {"ready": False},
+                "profile": {"accountProfile": {"ready": False}},
                 "diagnostics": {"publicIdentityReady": True},
             }
 
@@ -1134,6 +1134,81 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["relay"]["resolved"], False)
         self.assertEqual(result["relay"]["bindingStatus"], "bound")
         self.assertEqual(result["identityVerification"]["status"], "ready")
+
+    def test_account_view_reads_canonical_nested_profile(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", account_id="acct")
+        calls = []
+
+        def fake_request(cfg_arg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append({"method": method, "endpoint": endpoint, "body": body, "query": query, "timeout": timeout})
+            return {
+                "status": "ready",
+                "readiness": "ready",
+                "diagnostics": {"publicIdentityReady": True},
+                "relay": {"online": True},
+                "profile": {
+                    "agentId": "agent-from-profile",
+                    "accountProfile": {"ready": True},
+                    "shareCard": {
+                        "status": "ready",
+                        "imageUrl": "https://api.example.com/v1/share-card/card.jpg?token=abc",
+                        "downloadUrl": "https://api.example.com/v1/share-card/card.jpg?token=abc",
+                    },
+                },
+            }
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._manage_account(cfg, {"action": "view_account", "generateShareCard": True})
+
+        self.assertEqual(calls[0]["endpoint"], "/v1/account")
+        self.assertNotIn("agentId", calls[0]["query"])
+        self.assertEqual(result["relay"]["agentId"], "agent-from-profile")
+        self.assertEqual(result["diagnostics"]["accountProfileReady"], True)
+        self.assertEqual(
+            result["profile"]["shareCard"]["imageUrl"],
+            "https://api.example.com/v1/share-card/card.jpg?token=abc",
+        )
+        self.assertEqual(
+            result["profile"]["shareCard"]["downloadUrl"],
+            "https://api.example.com/v1/share-card/card.jpg?token=abc",
+        )
+
+    def test_update_display_name_requests_card_and_returns_canonical_nested_share_card(self):
+        calls = []
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append({"method": method, "endpoint": endpoint, "body": body, "query": query, "timeout": timeout})
+            return {
+                "status": "ready",
+                "readiness": "ready",
+                "diagnostics": {"publicIdentityReady": True, "accountProfileReady": True},
+                "relay": {"online": True},
+                "profile": {
+                    "agentId": "agent-1",
+                    "publicIdentity": {"displayName": "Mira", "displayIdentity": "Mira#ABC"},
+                    "shareCard": {
+                        "status": "ready",
+                        "imageUrl": "https://api.example.com/v1/share-card/card.jpg?token=abc",
+                        "downloadUrl": "https://api.example.com/v1/share-card/card.jpg?token=abc",
+                    },
+                },
+            }
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._manage_account(
+                self.cfg,
+                {"action": "update_display_name", "displayName": "Mira"},
+            )
+
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["endpoint"], "/v1/account")
+        self.assertEqual(calls[0]["body"]["action"], "update_identity")
+        self.assertEqual(calls[0]["body"]["generateShareCard"], True)
+        self.assertEqual(result["action"], "update_display_name")
+        self.assertEqual(
+            result["profile"]["shareCard"]["imageUrl"],
+            "https://api.example.com/v1/share-card/card.jpg?token=abc",
+        )
 
     def test_account_policy_updates_send_terminal_fields(self):
         calls = []
