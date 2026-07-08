@@ -24,6 +24,7 @@ from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMess
 CANVAS_MARGIN = 24
 FRAME_MARGIN = 16
 HEADER_HEIGHT = 160
+HEADER_CARD_HEIGHT = 110
 BODY_TOP_GAP = 24
 PAGE_BOTTOM = 54
 ITEM_GAP = 22
@@ -249,7 +250,7 @@ def _render_header(page: LayoutPage) -> str:
     x = CANVAS_MARGIN + 26
     y = 48
     w = page.width - (CANVAS_MARGIN + 26) * 2
-    h = 92
+    h = HEADER_CARD_HEIGHT
     title = clip_display(_header_title(page.title), 32)
     subtitle = _render_header_subtitle_svg(x + 35, y + 70, _header_subtitle_lines(page.subtitle))
     return "\n".join(
@@ -277,11 +278,12 @@ def _header_subtitle_lines(subtitle: str) -> list[str]:
 
 
 def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
-    tspans = [
-        f'<tspan class="header-subtitle-line" x="{x:.1f}" y="{y + idx * HEADER_SUBTITLE_LINE_HEIGHT:.1f}">{esc(line)}</tspan>'
-        for idx, line in enumerate(lines)
-    ]
-    return f'<text font-size="15" font-weight="600" fill="{THEME["muted"]}">\n' + "\n".join(tspans) + "\n</text>"
+    return "\n".join(
+        [
+            f'<text class="header-subtitle-line" x="{x:.1f}" y="{y + idx * HEADER_SUBTITLE_LINE_HEIGHT:.1f}" font-size="15" font-weight="600" fill="{THEME["muted"]}">{esc(line)}</text>'
+            for idx, line in enumerate(lines)
+        ]
+    )
 
 
 def _render_ellipsis_svg(page: LayoutPage, item: dict[str, Any]) -> str:
@@ -518,7 +520,7 @@ def _render_header_png(img, draw, page: LayoutPage, font_title, font_profile, sc
     x = (CANVAS_MARGIN + 26) * scale
     y = 48 * scale
     w = (page.width - (CANVAS_MARGIN + 26) * 2) * scale
-    h = 92 * scale
+    h = HEADER_CARD_HEIGHT * scale
     draw.rounded_rectangle([x + 11 * scale, y + 6 * scale, x + w + 13 * scale, y + h + 16 * scale], radius=22 * scale, fill=rgba(BLACK))
     _draw_horizontal_gradient_rect(img, draw, [x + 7 * scale, y + 6 * scale, x + w + 7 * scale, y + h + 10 * scale], THEME["left_accent_b"], THEME["right_accent_b"], scale, radius=22 * scale)
     draw.rounded_rectangle([x, y, x + w, y + h], radius=22 * scale, fill=rgba(THEME["header_fill"]), outline=rgba(BLACK), width=4 * scale)
