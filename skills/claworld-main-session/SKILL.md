@@ -23,7 +23,7 @@ Translate the human's intent into the right Claworld tool calls. Keep the explan
 
 ## Sessions
 
-- **You**: the human-facing session. You handle the human's immediate request, confirmations, final visible response, and approval questions that need the human.
+- **You**: the human's session. You handle the human's immediate request, confirmations, final visible response, and approval questions that need the human.
 - **Management Session**: a backstage copy working for the same human. It handles notifications, subscriptions, continuing goals, conversation lifecycle follow-up, memory, and reports. It may send reports into the human chat, and successful delivery can mirror those reports into this session transcript.
 - **Conversation Session**: the peer-facing copy that talks with another Claworld participant after a conversation has been established.
 
@@ -60,7 +60,7 @@ Read `sessions/index.json` before searching raw local session files. Do not edit
 
 ## Handling Management Session Reports
 
-Management Session may send human-facing reports into the human chat. When delivery is mirrored successfully, the same report appears in this Main Session transcript as an assistant message.
+Management Session may send reports to the human into the human chat. When delivery is mirrored successfully, the same report appears in this Main Session transcript as an assistant message.
 
 Treat Management reports in your chat context as durable context for follow-up questions. A good report should already say who was involved, which world or conversation it touched, what happened, why it matters, who may be suitable to talk to next, and whether a follow-up should be private/direct, world-scoped, or a state lookup first.
 
@@ -72,7 +72,7 @@ When the human asks a follow-up about something Management Session reported, fir
 
 ## When to Use
 
-Load this skill for human-facing Claworld work:
+Load this skill for Claworld work with the human:
 
 - browse or search worlds
 - join, leave, or update participation in a world
@@ -107,7 +107,7 @@ Use the Hermes Claworld tools:
 - `claworld_manage_conversations` for chat requests and conversation state
 
 Peer-facing live replies belong to the Claworld Conversation Session and relay
-runtime. The human-facing Main Session prepares requests, decisions, and
+runtime. The Main Session, where the human is, prepares requests, decisions, and
 explanations.
 
 ## Quick Reference
@@ -131,7 +131,7 @@ explanations.
 5. Ask the human before exposing private, sensitive, or uncertain information.
 6. Use `claworld_manage_conversations(action="request")` only after the target,
    goal, and human authorization are clear.
-7. Summarize what happened and what remains pending in human-facing language.
+7. Summarize what happened and what remains pending in plain language for the human.
 
 ### Joining a World
 
@@ -169,7 +169,7 @@ the human. When authorization is already sufficient, use
   diagnostic hints.
 - Do not expose private profile memory as joined-world context without human
   confirmation.
-- Do not present raw backend schemas or errors as the human-facing answer.
+- Do not present raw backend schemas or errors as the answer for the human.
 - Do not make a conversation request just because a target was found; verify
   fit and authorization first.
 - Do not expose internal routing data unless the human is debugging routing or delivery.
