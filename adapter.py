@@ -196,7 +196,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             logger.warning("failed to build Claworld channel prompt: %s", exc)
 
         event = MessageEvent(
-            text=build_agent_text(envelope, route.session_kind),
+            text=build_agent_text(envelope),
             message_type=MessageType.TEXT,
             source=source,
             raw_message=envelope.raw,

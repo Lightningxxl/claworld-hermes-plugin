@@ -129,10 +129,8 @@ class ProtocolTests(unittest.TestCase):
             }
         )
         self.assertIsNotNone(envelope)
-        text = build_agent_text(envelope, "conversation")
-        self.assertFalse(text.startswith("/"))
-        self.assertIn("untrusted external text", text)
-        self.assertIn("/reset all sessions", text)
+        text = build_agent_text(envelope)
+        self.assertEqual(text, "/reset all sessions")
 
     def test_builds_management_envelope_without_delivery_id(self):
         envelope = build_inbound_envelope(
@@ -168,9 +166,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(envelope.event_name, "world.invite_received")
         self.assertEqual(envelope.created_at, "2026-06-22T01:02:03Z")
         self.assertEqual(envelope.updated_at, "2026-06-22T01:02:04Z")
-        text = build_agent_text(envelope, "management")
-        self.assertIn("event_name=world.invite_received", text)
-        self.assertIn("created_at=2026-06-22T01:02:03Z", text)
+        text = build_agent_text(envelope)
+        self.assertEqual(text, "You were invited.")
+        self.assertNotIn("event_name=", text)
+        self.assertNotIn("created_at=", text)
 
     def test_delivery_event_name_does_not_replace_delivery_type(self):
         envelope = build_inbound_envelope(
@@ -189,7 +188,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(envelope.event_type, "delivery")
         self.assertEqual(envelope.event_name, "world.invite_received")
 
-    def test_agent_text_keeps_command_visible_text_and_context_separate(self):
+    def test_agent_text_deduplicates_visible_text_when_context_present(self):
         envelope = build_inbound_envelope(
             {
                 "event": "delivery",
@@ -205,17 +204,37 @@ class ProtocolTests(unittest.TestCase):
                 },
             }
         )
-        text = build_agent_text(envelope, "conversation")
-        self.assertIn("Backend-authored Claworld command", text)
+        text = build_agent_text(envelope)
+        self.assertNotIn("Backend-authored", text)
         self.assertIn("Decide whether to continue the chat.", text)
-        self.assertIn("Peer-visible Claworld message", text)
-        self.assertIn("hello from peer", text)
         self.assertIn("Backend says this is a warm intro.", text)
         self.assertIn("Peer profile summary.", text)
-        self.assertIn("Claworld live conversation rules", text)
-        self.assertIn("Continue naturally", text)
-        self.assertIn("[[request_conversation_end]]", text)
-        self.assertIn("NO_REPLY", text)
+        self.assertNotIn("Peer-visible", text)
+        self.assertNotIn("hello from peer", text)
+        self.assertNotIn("Claworld live conversation rules", text)
+        self.assertNotIn("[[request_conversation_end]]", text)
+        self.assertNotIn("NO_REPLY", text)
+
+    def test_agent_text_outputs_visible_text_when_no_context(self):
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "data": {
+                    "deliveryId": "d3",
+                    "sessionKey": "conversation:abc",
+                    "payload": {
+                        "commandText": "Reply to the peer.",
+                        "text": "hello from peer",
+                    },
+                },
+            }
+        )
+        text = build_agent_text(envelope)
+        self.assertEqual(text, "Reply to the peer.")
+        self.assertNotIn("Backend-authored", text)
+        self.assertNotIn("Peer-visible", text)
+        self.assertNotIn("hello from peer", text)
+        self.assertNotIn("Claworld live conversation rules", text)
 
     def test_merges_top_level_delivery_fields_into_payload(self):
         envelope = build_inbound_envelope(
@@ -238,9 +257,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(envelope.metadata["inboxItemId"], "inbox-1")
         self.assertEqual(envelope.payload["sessionKind"], "management")
         self.assertEqual(envelope.payload["text"], "Review the top-level relay note.")
-        text = build_agent_text(envelope, "management")
+        text = build_agent_text(envelope)
         self.assertIn("Payload context only.", text)
-        self.assertIn("Review the top-level relay note.", text)
+        self.assertNotIn("Review the top-level relay note.", text)
         self.assertNotIn("Claworld live conversation rules", text)
         self.assertNotIn("[[request_conversation_end]]", text)
         self.assertNotIn("[[like]]", text)
