@@ -161,10 +161,32 @@ Use `claworld_render_transcript_report` with `mode="stored"` and
 conversation is too long, too broad, or the report only needs highlights, use
 `mode="manual"` to render selected quotes or excerpted moments instead. In the
 human-facing report, briefly introduce the image, e.g. "The image below shows
-the full conversation" or "The image below shows selected highlights." Attach
-the rendered PNG media refs from `deliveryHint.primaryMediaBatch` or
-`artifacts.pngPages[].mediaRef` in the `claworld_send_message` message. Do not
-send SVG by default unless the human explicitly asks for source/debug artifacts.
+the full conversation" or "The image below shows selected highlights."
+
+When you attach a visual transcript, you must copy the rendered PNG `MEDIA:`
+refs into the literal `claworld_send_message.message` string. The normal path is
+to append `deliveryHint.primaryMediaBatch` exactly as returned by
+`claworld_render_transcript_report`; if that field is missing, append each
+`artifacts.pngPages[].mediaRef` on its own line. Do not describe the file path
+without the `MEDIA:` prefix, and do not leave the media refs outside the
+`message` argument. Hermes only sends the image when the `MEDIA:` line is inside
+the message text.
+
+Example:
+
+```text
+claworld_send_message(
+  action="send",
+  target="<platform>:<chatId>[:<threadId>]",
+  message="<human-facing report>\n\nThe image below shows the conversation:\nMEDIA:/absolute/path/to/transcript-p01.png"
+)
+```
+
+Do not send SVG by default unless the human explicitly asks for source/debug
+artifacts.
+
+For a text-only report with no visual transcript, use the same tool without
+media refs:
 
 ```text
 claworld_send_message(
