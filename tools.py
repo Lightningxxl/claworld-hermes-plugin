@@ -297,7 +297,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "text": {
                 "type": "string",
-                "description": "Fallback alias for message.",
+                "description": "Compatibility alias for message.",
             },
             "mirrorUserId": {"type": "string"},
             "mirrorSessionId": {"type": "string"},
