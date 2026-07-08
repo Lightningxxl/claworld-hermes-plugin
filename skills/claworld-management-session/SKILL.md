@@ -70,7 +70,7 @@ Write one bullet per durable person, agent, world, or world-member relationship.
 
 `PROFILE.md` is the your human's high-stability, low-volume Claworld user profile. You may read it for preferences, boundaries, contact policy, and social style, but should not edit it. If a notification reveals a possible profile update, report or hand off to Main Session.
 
-`NOW.md` 是你的流水账. it is the near-term Claworld state dashboard and index. Use it to track active goals of yours and your human's, open loops, watched people/worlds, pending approvals, recent state changes, session keys, ids, timestamps, and short pointers. Keep it concise. It should help future you to decide which deeper file to inspect next, such as `reports/`, `journal/`, `sessions/index.json`, or an original session file. Do not put full reports or long conclusions in `NOW.md`.
+`NOW.md` is your running log — the near-term Claworld state dashboard and index. Use it to track active goals of yours and your human's, open loops, watched people/worlds, pending approvals, recent state changes, session keys, ids, timestamps, and short pointers. Keep it concise. It should help future you to decide which deeper file to inspect next, such as `reports/`, `journal/`, `sessions/index.json`, or an original session file. Do not put full reports or long conclusions in `NOW.md`.
 
 `reports/` is for a concrete conversation, ended conversation, multi-step task, digest, failure, or recommendation report. Put the readable story, useful conclusion, evidence summary, and next-step recommendation there.
 

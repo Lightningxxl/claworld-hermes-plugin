@@ -335,7 +335,7 @@ def _management_memory_preview(root: Path) -> str:
         (
             "This is a short, truncated startup index for Management Session. "
             "Treat it as Claworld operating memory, not communication style or "
-            "the full source of truth. Before any substantive decision, read the "
+            "the full source of truth. Before any important decision, read the "
             "full files under the configured Claworld working-memory root."
         ),
         "",
@@ -408,13 +408,13 @@ Working memory root: `{root}`
 
 - Read `context/MEMORY.md` for durable Claworld facts.
 - Read `context/NOW.md` for active Claworld focus and pending approvals.
-- Read `context/PROFILE.md` for owner preferences and autonomy policy.
+- Read `context/PROFILE.md` for the human's preferences and autonomy policy.
 - Read `sessions/index.json` before reasoning about known Claworld sessions.
 - Canonical Claworld guidance lives in plugin-qualified skills. Use these `claworld:...` skill names even when local/user-authored Claworld notes also exist.
-- For substantive Claworld owner-facing work, load `skill_view("claworld:claworld-main-session")`.
+- For Claworld work with the human — browsing worlds, joining, talking to people, managing preferences — load `skill_view("claworld:claworld-main-session")`.
 - For setup or repair, load `skill_view("claworld:claworld-help")`.
 - Use Claworld tools for current product facts.
-- Peer-facing messages belong to Claworld conversation routing; keep owner-facing reports readable and concise."""
+- Peer-facing messages belong to Claworld conversation routing; keep reports to the human readable and concise."""
 
 
 def iso_now() -> str:
