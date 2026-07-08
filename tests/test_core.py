@@ -798,6 +798,9 @@ class ToolSchemaTests(unittest.TestCase):
         action_values = properties["action"]["enum"]
         self.assertIn("set_visibility_mode", action_values)
         self.assertIn("set_contact_policy", action_values)
+        self.assertIn("submit_feedback", action_values)
+        self.assertEqual(properties["category"]["enum"], ["experience_issue", "usage_issue", "bug_report", "feature_request"])
+        self.assertEqual(properties["impact"]["enum"], ["low", "medium", "high", "blocker"])
         self.assertNotIn("set_chat_request_policy", action_values)
         self.assertNotIn("set_discoverability", action_values)
         self.assertNotIn("set_contactability", action_values)
@@ -1314,6 +1317,71 @@ class ToolRoutingTests(unittest.TestCase):
             claworld_tools._normalize_account_action({"chatRequestPolicy": {"mode": "reject_all"}})
         with self.assertRaisesRegex(ValueError, "action must be one of"):
             claworld_tools._normalize_account_action({"action": "update_chat_request_policy"})
+
+    def test_account_submit_feedback_posts_authenticated_runtime_context(self):
+        calls = []
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append({"method": method, "endpoint": endpoint, "body": body, "query": query, "timeout": timeout})
+            return {
+                "status": "recorded",
+                "feedback": {
+                    "feedbackId": "fb_123",
+                    "category": body["category"],
+                    "impact": body["impact"],
+                    "title": body["title"],
+                    "accountId": body["accountId"],
+                    "reporter": {"agentId": body["agentId"], "publicIdentity": {"displayIdentity": "Mira#TEST"}},
+                    "context": body["context"],
+                    "runtimeContext": body["runtimeContext"],
+                    "createdAt": "2026-07-08T00:00:00.000Z",
+                },
+            }
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._manage_account(
+                self.cfg,
+                {
+                    "action": "submit_feedback",
+                    "category": "bug_report",
+                    "title": "Feedback tool should use account auth",
+                    "goal": "report a Claworld runtime issue",
+                    "actualBehavior": "agent tried to run curl",
+                    "expectedBehavior": "account tool submits it",
+                    "impact": "medium",
+                    "details": "Manual HTTP should not be needed.",
+                    "reproductionSteps": ["Ask to report feedback"],
+                    "context": {"worldId": "w1", "tags": ["feedback"]},
+                },
+            )
+
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["endpoint"], "/v1/feedback")
+        self.assertEqual(calls[0]["body"]["agentId"], "agent-1")
+        self.assertEqual(calls[0]["body"]["accountId"], "acct")
+        self.assertEqual(calls[0]["body"]["runtimeContext"]["toolName"], "claworld_manage_account")
+        self.assertEqual(calls[0]["body"]["runtimeContext"]["accountToolAction"], "submit_feedback")
+        self.assertEqual(calls[0]["body"]["source"], "hermes_account_tool")
+        self.assertEqual(result["action"], "submit_feedback")
+        self.assertEqual(result["status"], "recorded")
+        self.assertEqual(result["feedbackId"], "fb_123")
+        self.assertEqual(result["reporterAgentId"], "agent-1")
+        self.assertEqual(result["runtime"]["toolName"], "claworld_manage_account")
+
+    def test_account_submit_feedback_requires_configured_app_token(self):
+        cfg = ClaworldConfig(server_url="https://api.example.com", account_id="acct", agent_id="agent-1")
+        with self.assertRaisesRegex(ValueError, "configured Claworld app token"):
+            claworld_tools._manage_account(
+                cfg,
+                {
+                    "action": "submit_feedback",
+                    "category": "bug_report",
+                    "title": "Feedback should be authenticated",
+                    "goal": "report a Claworld runtime issue",
+                    "actualBehavior": "missing token",
+                    "expectedBehavior": "clear setup error",
+                },
+            )
 
     def test_account_view_degrades_ready_status_without_live_relay(self):
         for relay, readiness in (

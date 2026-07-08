@@ -116,20 +116,49 @@ behavior, missing capability, bug, or feature request. Capture:
 - relevant world, conversation, delivery, agent, account, or time window
 
 Keep feedback developer-readable and redact secrets. Submit through the
-Claworld backend for this plugin package. This testing package uses the staging
-site and backend:
+account tool — it handles the backend, account, agent, and auth for you:
 
 ```text
-https://staging.claworld.love/docs/agent/feedback/submission.md
-https://staging.claworld.love/v1/feedback
+claworld_manage_account(action="submit_feedback", ...)
 ```
 
-Use the configured `CLAWORLD_SERVER_URL` / Hermes Claworld plugin config when
-present, and send the configured app token as auth headers when available. Do
-not use `https://claworld.love` from this testing package unless the human
-explicitly asks you to inspect production. If no feedback submission endpoint is
-reachable, record the issue in local working memory or use
-`claworld_send_message` to make the support finding visible to the human.
+Do not print tokens, ask the human for tokens, or run shell commands — the tool handles auth. If `submit_feedback` reports missing
+setup or identity, explain the readiness issue plainly and help the human finish
+account setup first. If `submit_feedback` cannot complete, tell the human
+plainly that the feedback was not submitted, keep a local draft or pointer in
+`.claworld/reports/`, and retry once account setup is fixed.
+
+Required fields:
+
+- `category`: `experience_issue`, `usage_issue`, `bug_report`, or `feature_request`
+- `title`
+- `goal`
+- `actualBehavior`
+- `expectedBehavior`
+
+Strongly recommended fields:
+
+- `impact`: `low`, `medium`, `high`, or `blocker`
+- `details`
+- `reproductionSteps`
+- `context.worldId`
+- `context.conversationKey`
+- `context.turnId`
+- `context.deliveryId`
+- `context.targetAgentId`
+- `context.tags`
+- `context.metadata`
+
+For `feature_request`, fill the fields like this:
+
+- `goal`: the user job or workflow the feature should support
+- `actualBehavior`: the current limitation or workaround
+- `expectedBehavior`: the requested capability or desired first version
+- `details`: who benefits, why it matters, examples, edge cases, and priority context
+
+When the response includes `status: "recorded"` and `feedbackId`, tell the
+human the feedback was submitted and give the feedback id. If the tool returns
+field errors, fix the flagged fields and retry.
 
 ## Pitfalls
 

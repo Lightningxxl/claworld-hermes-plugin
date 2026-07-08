@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import ClaworldConfig
 from .http_client import public_error_payload, request_json
+from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
 from .working_memory import record_owner_route_from_context
 
 TOOLSET = "claworld"
@@ -25,6 +26,7 @@ ACCOUNT_ACTIONS = (
     "set_proactivity",
     "subscribe_person",
     "unsubscribe_person",
+    "submit_feedback",
 )
 
 SEARCH_SCOPES = ("worlds", "world_members", "people", "mixed")
@@ -53,12 +55,15 @@ WORLD_ACTIONS = (
 )
 
 CONVERSATION_ACTIONS = ("request", "accept", "reject", "close", "get_state", "list_related")
+FEEDBACK_CATEGORIES = ("experience_issue", "usage_issue", "bug_report", "feature_request")
+FEEDBACK_IMPACTS = ("low", "medium", "high", "blocker")
 
 MANAGE_ACCOUNT_DESCRIPTION = (
     "Use for Claworld account readiness, identity verification, public profile, "
     "visibility, contact policy, proactivity, notification policy, and person "
-    "subscriptions. Before changing profile, preferences, notification, "
-    "proactivity, visibility, contact, or subscription policy, load "
+    "subscriptions, and authenticated feedback submission. Before changing "
+    "profile, preferences, notification, proactivity, visibility, contact, or "
+    "subscription policy, load "
     'skill_view("claworld:claworld-main-session"). For Claworld problems or '
     'feedback, load skill_view("claworld:claworld-help").'
 )
@@ -204,6 +209,16 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "expiresInSeconds": {"type": "integer", "minimum": 1},
         "email": {"type": "string"},
         "code": {"type": "string"},
+        "category": {"type": "string", "enum": list(FEEDBACK_CATEGORIES)},
+        "title": {"type": "string"},
+        "goal": {"type": "string"},
+        "actualBehavior": {"type": "string"},
+        "expectedBehavior": {"type": "string"},
+        "impact": {"type": "string", "enum": list(FEEDBACK_IMPACTS)},
+        "details": {"type": "string"},
+        "reproductionSteps": {"type": "array", "items": {"type": "string"}},
+        "context": {"type": "object"},
+        "redactionNotes": {"type": "string"},
     },
     description=MANAGE_ACCOUNT_DESCRIPTION,
 )
@@ -374,6 +389,10 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
 
     agent_id = _agent_id(cfg, args)
 
+    if action == "submit_feedback":
+        payload = _submit_feedback(cfg, args, account_id, agent_id)
+        return _action_result("claworld_manage_account", action, payload)
+
     if action == "view_account":
         payload = request_json(
             cfg,
@@ -440,6 +459,56 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
     payload = request_json(cfg, "POST", "/v1/account", body=body)
     payload = _augment_account_binding(payload, cfg=cfg, account_id=account_id, agent_id=agent_id)
     return _action_result("claworld_manage_account", action, payload)
+
+
+def _submit_feedback(cfg: ClaworldConfig, args: dict, account_id: str, agent_id: str | None) -> dict:
+    _require(cfg.app_token, "submit_feedback requires a configured Claworld app token; run account setup first")
+    _require(agent_id, "submit_feedback requires a bound Claworld agent id; run account setup first")
+    category = _text(args.get("category"))
+    impact = _text(args.get("impact"), "medium")
+    _require(category, "category is required for action=submit_feedback")
+    if category not in FEEDBACK_CATEGORIES:
+        raise ValueError(f"category must be one of {', '.join(FEEDBACK_CATEGORIES)}")
+    if impact not in FEEDBACK_IMPACTS:
+        raise ValueError(f"impact must be one of {', '.join(FEEDBACK_IMPACTS)}")
+    for key in ("title", "goal", "actualBehavior", "expectedBehavior"):
+        _require(args.get(key), f"{key} is required for action=submit_feedback")
+
+    payload = request_json(
+        cfg,
+        "POST",
+        "/v1/feedback",
+        body=_drop_empty(
+            {
+                "agentId": agent_id,
+                "accountId": account_id,
+                "category": category,
+                "title": _text(args.get("title")),
+                "goal": _text(args.get("goal")),
+                "actualBehavior": _text(args.get("actualBehavior")),
+                "expectedBehavior": _text(args.get("expectedBehavior")),
+                "impact": impact,
+                "details": _text(args.get("details")),
+                "reproductionSteps": _feedback_steps(args.get("reproductionSteps")),
+                "context": _feedback_context(args),
+                "source": "hermes_account_tool",
+                "runtimeContext": _drop_empty(
+                    {
+                        "channelId": "claworld",
+                        "toolName": "claworld_manage_account",
+                        "accountToolAction": "submit_feedback",
+                        "pluginClient": PLUGIN_CLIENT,
+                        "pluginVersion": PLUGIN_VERSION,
+                        "clientChannel": infer_client_channel(),
+                        "accountId": account_id,
+                        "serverUrl": cfg.server_url,
+                        "relayAgentId": agent_id,
+                    }
+                ),
+            }
+        ),
+    )
+    return _project_feedback_submission(payload)
 
 
 def _search(cfg: ClaworldConfig, args: dict) -> dict:
@@ -1172,6 +1241,11 @@ def _normalize_account_action(args: dict) -> str:
         raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
     elif "proactivitySettings" in args:
         action = "set_proactivity"
+    elif any(
+        _provided(args, key)
+        for key in ("category", "title", "actualBehavior", "expectedBehavior", "reproductionSteps")
+    ):
+        action = "submit_feedback"
     else:
         action = "view_account"
     if action not in ACCOUNT_ACTIONS:
@@ -1268,6 +1342,75 @@ def _action_result(tool: str, action: str, payload: Any) -> dict:
     if not isinstance(payload, dict):
         payload = {"result": payload}
     return {**payload, "tool": tool, "action": action, "status": payload.get("status", "ok")}
+
+
+def _project_feedback_submission(payload: dict) -> dict:
+    feedback = payload.get("feedback") if isinstance(payload.get("feedback"), dict) else {}
+    reporter = feedback.get("reporter") if isinstance(feedback.get("reporter"), dict) else {}
+    public_identity = reporter.get("publicIdentity") if isinstance(reporter.get("publicIdentity"), dict) else {}
+    context = feedback.get("context") if isinstance(feedback.get("context"), dict) else {}
+    runtime_context = feedback.get("runtimeContext") if isinstance(feedback.get("runtimeContext"), dict) else {}
+    return {
+        "status": _text(payload.get("status"), "recorded"),
+        "feedbackId": _text(feedback.get("feedbackId")),
+        "category": _text(feedback.get("category")),
+        "impact": _text(feedback.get("impact"), "medium"),
+        "title": _text(feedback.get("title")),
+        "accountId": _text(feedback.get("accountId")),
+        "reporterAgentId": _text(reporter.get("agentId")),
+        "reporterIdentity": _text(public_identity.get("displayIdentity")),
+        "worldId": _text(context.get("worldId")),
+        "conversationKey": _text(context.get("conversationKey")),
+        "turnId": _text(context.get("turnId")),
+        "deliveryId": _text(context.get("deliveryId")),
+        "tags": _feedback_steps(context.get("tags")),
+        "createdAt": _text(feedback.get("createdAt")),
+        "runtime": _drop_empty(
+            {
+                "channelId": _text(runtime_context.get("channelId")),
+                "toolName": _text(runtime_context.get("toolName")),
+                "accountToolAction": _text(runtime_context.get("accountToolAction")),
+                "pluginVersion": _text(runtime_context.get("pluginVersion")),
+                "modelProvider": _text(runtime_context.get("modelProvider")),
+                "modelId": _text(runtime_context.get("modelId")),
+                "osCategory": _text(runtime_context.get("osCategory")),
+            }
+        ),
+        "nextAction": "keep_feedback_id_for_follow_up",
+    }
+
+
+def _feedback_steps(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+    result = []
+    seen = set()
+    for item in values:
+        text = _text(item)
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
+def _feedback_context(args: dict) -> dict:
+    raw_context = args.get("context") if isinstance(args.get("context"), dict) else {}
+    metadata = raw_context.get("metadata") if isinstance(raw_context.get("metadata"), dict) else {}
+    redaction_notes = _text(args.get("redactionNotes"))
+    if redaction_notes:
+        metadata = {**metadata, "redactionNotes": redaction_notes}
+    return {
+        "worldId": _text(raw_context.get("worldId"), _text(args.get("worldId"))),
+        "conversationKey": _text(raw_context.get("conversationKey"), _text(args.get("conversationKey"))),
+        "turnId": _text(raw_context.get("turnId"), _text(args.get("turnId"))),
+        "deliveryId": _text(raw_context.get("deliveryId"), _text(args.get("deliveryId"))),
+        "targetAgentId": _text(raw_context.get("targetAgentId"), _text(args.get("targetAgentId"))),
+        "tags": _feedback_steps(raw_context.get("tags")),
+        "metadata": metadata,
+    }
 
 
 def _payload(args: dict, *, drop: set[str] | None = None) -> dict:
