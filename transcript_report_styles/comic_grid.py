@@ -42,6 +42,9 @@ SMALL_FONT_SIZE = 12
 LABEL_FONT_SIZE = 15
 TITLE_FONT_SIZE = 34
 LINE_HEIGHT = 29
+HEADER_SUBTITLE_MAX_UNITS = 33.0
+HEADER_SUBTITLE_MAX_LINES = 2
+HEADER_SUBTITLE_LINE_HEIGHT = 19
 TAG_HEIGHT = 58
 TAG_ICON_SIZE = 30
 TAG_ICON_GAP = 12
@@ -248,19 +251,37 @@ def _render_header(page: LayoutPage) -> str:
     w = page.width - (CANVAS_MARGIN + 26) * 2
     h = 92
     title = clip_display(_header_title(page.title), 32)
-    subtitle = clip_display(page.subtitle, 60)
+    subtitle = _render_header_subtitle_svg(x + 35, y + 70, _header_subtitle_lines(page.subtitle))
     return "\n".join(
         [
             f'<rect x="{x + 11}" y="{y + 6}" width="{w + 2}" height="{h + 10}" rx="22" fill="{BLACK}"/>',
             f'<rect x="{x + 7}" y="{y + 6}" width="{w}" height="{h + 4}" rx="22" fill="url(#headerAccent)"/>',
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="22" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
             f'<text x="{x + 28}" y="{y + 43}" font-size="{TITLE_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(title)}</text>',
-            f'<text x="{x + 35}" y="{y + 70}" font-size="15" font-weight="600" fill="{THEME["muted"]}">{esc(subtitle)}</text>',
+            subtitle,
             _decorative_star_svg(x + w - 62, y + 34, 22, "#FFFFFF", "url(#headerAccent)"),
             f'<circle cx="{x + w - 23}" cy="{y + 55}" r="9" fill="#72E3C0" stroke="{BLACK}" stroke-width="3"/>',
             f'<circle cx="{x + w - 25}" cy="{y + 53}" r="9" fill="#72E3C0" stroke="{BLACK}" stroke-width="3"/>',
         ]
     )
+
+
+def _header_subtitle_lines(subtitle: str) -> list[str]:
+    lines = wrap_text(str(subtitle or "").strip(), HEADER_SUBTITLE_MAX_UNITS)
+    if len(lines) <= HEADER_SUBTITLE_MAX_LINES:
+        return lines
+    visible = lines[: HEADER_SUBTITLE_MAX_LINES - 1]
+    remainder = " ".join(line.strip() for line in lines[HEADER_SUBTITLE_MAX_LINES - 1 :] if line.strip())
+    visible.append(ellipsize_text(remainder, HEADER_SUBTITLE_MAX_UNITS, suffix="…"))
+    return visible
+
+
+def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
+    tspans = [
+        f'<tspan class="header-subtitle-line" x="{x:.1f}" y="{y + idx * HEADER_SUBTITLE_LINE_HEIGHT:.1f}">{esc(line)}</tspan>'
+        for idx, line in enumerate(lines)
+    ]
+    return f'<text font-size="15" font-weight="600" fill="{THEME["muted"]}">\n' + "\n".join(tspans) + "\n</text>"
 
 
 def _render_ellipsis_svg(page: LayoutPage, item: dict[str, Any]) -> str:
@@ -502,7 +523,9 @@ def _render_header_png(img, draw, page: LayoutPage, font_title, font_profile, sc
     _draw_horizontal_gradient_rect(img, draw, [x + 7 * scale, y + 6 * scale, x + w + 7 * scale, y + h + 10 * scale], THEME["left_accent_b"], THEME["right_accent_b"], scale, radius=22 * scale)
     draw.rounded_rectangle([x, y, x + w, y + h], radius=22 * scale, fill=rgba(THEME["header_fill"]), outline=rgba(BLACK), width=4 * scale)
     draw.text((x + 28 * scale, y + 8 * scale), clip_display(_header_title(page.title), 32), fill=rgba(BLACK), font=font_title)
-    draw.text((x + 35 * scale, y + 56 * scale), clip_display(page.subtitle, 60), fill=rgba(THEME["muted"]), font=font_profile)
+    for idx, line in enumerate(_header_subtitle_lines(page.subtitle)):
+        line_y = y + (56 + idx * HEADER_SUBTITLE_LINE_HEIGHT) * scale
+        draw.text((x + 35 * scale, line_y), line, fill=rgba(THEME["muted"]), font=font_profile)
     _draw_star_png(draw, x + w - 62 * scale, y + 34 * scale, 22 * scale)
     draw.ellipse([x + w - 32 * scale, y + 46 * scale, x + w - 14 * scale, y + 64 * scale], fill=rgba("#72E3C0"), outline=rgba(BLACK), width=3 * scale)
     draw.ellipse([x + w - 34 * scale, y + 44 * scale, x + w - 16 * scale, y + 62 * scale], fill=rgba("#72E3C0"), outline=rgba(BLACK), width=3 * scale)

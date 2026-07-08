@@ -169,11 +169,10 @@ def text_units(text: str) -> float:
     return sum(char_units(ch) for ch in text)
 
 
-def ellipsize_text(text: str, max_units: float) -> str:
+def ellipsize_text(text: str, max_units: float, *, suffix: str = "...") -> str:
     value = str(text or "")
     if text_units(value) <= max_units:
         return value
-    suffix = "..."
     allowed = max(0.0, max_units - text_units(suffix))
     kept = ""
     used = 0.0

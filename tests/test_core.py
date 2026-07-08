@@ -30,6 +30,7 @@ from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, 
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import transcript_report as claworld_transcript
 from claworld_hermes_plugin import transcript_report_styles as claworld_transcript_styles
+from claworld_hermes_plugin.transcript_report_styles import comic_grid as claworld_comic_grid
 from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
@@ -938,6 +939,17 @@ class ToolSchemaTests(unittest.TestCase):
 
 
 class TranscriptReportTests(unittest.TestCase):
+    def test_comic_grid_header_subtitle_clamps_to_two_lines(self):
+        self.assertEqual(claworld_comic_grid._header_subtitle_lines("Short profile"), ["Short profile"])
+
+        lines = claworld_comic_grid._header_subtitle_lines(
+            "Independent game developer who prefers pixel art interfaces, reflective pacing, "
+            "slow-burn collaboration, and unusually detailed late-night design conversations."
+        )
+
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[-1].endswith("…"))
+
     def test_render_transcript_report_manual_renders_supplied_messages_and_redacts(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
             cfg = ClaworldConfig(
