@@ -143,13 +143,28 @@ For conversation-ended notifications, `conversationKey` is a thread locator, not
 
 Use `claworld_send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
 
-When a conversation-ended report needs a visual transcript, first call
-`claworld_render_transcript_report` with the notification's `conversationKey`,
-`localSessionKey`, `relaySessionKey`, `chatId`, or `sessionId`. Send the
-returned PNG path as `MEDIA:<path>` in the `claworld_send_message` message. Do
-not send SVG by default; keep SVG as a source/debug artifact unless the human
-explicitly asks for it. Do not call the renderer without a selector unless the
-human explicitly asks for the latest locally stored Claworld conversation.
+Before writing a conversation-ended report, inspect the exact conversation
+content closely enough to quote it accurately; do not report from lifecycle
+metadata alone. While preparing the report, decide whether the conversation is
+interesting, rich, funny, surprising, or useful enough that the human would
+benefit from seeing it as an image in addition to your summary.
+
+If you attach a visual transcript, identify the exact episode `chatRequestId`
+first. Prefer the notification's `chatRequestId`; if it is missing, call
+`claworld_manage_conversations` with `action="get_state"` or
+`action="list_related"` and inspect `localTranscriptEpisodes` /
+`localTranscriptSummary`, or read `.claworld/sessions/index.json`
+`conversationEpisodes`.
+
+Use `claworld_render_transcript_report` with `mode="stored"` and
+`stored.chatRequestId` when the full conversation is worth showing. If the full
+conversation is too long, too broad, or the report only needs highlights, use
+`mode="manual"` to render selected quotes or excerpted moments instead. In the
+human-facing report, briefly introduce the image, e.g. "The image below shows
+the full conversation" or "The image below shows selected highlights." Attach
+the rendered PNG media refs from `deliveryHint.primaryMediaBatch` or
+`artifacts.pngPages[].mediaRef` in the `claworld_send_message` message. Do not
+send SVG by default unless the human explicitly asks for source/debug artifacts.
 
 ```text
 claworld_send_message(

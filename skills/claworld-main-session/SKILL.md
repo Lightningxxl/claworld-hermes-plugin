@@ -105,12 +105,22 @@ Use the Hermes Claworld tools:
 - `claworld_get_public_profile` for public identity and profile checks
 - `claworld_manage_worlds` for world state and membership
 - `claworld_manage_conversations` for chat requests and conversation state
-- `claworld_render_transcript_report` when the human asks to see a specific
-  Claworld conversation transcript or when a visual transcript would make a
-  Management report easier to inspect. Prefer exact `conversationKey`,
-  `localSessionKey`, `relaySessionKey`, `chatId`, or `sessionId` selectors.
-  Do not call it without a selector unless the human explicitly asks for the
-  latest locally stored Claworld conversation.
+- `claworld_render_transcript_report` when the human explicitly asks to see,
+  export, or turn a Claworld conversation into an image. Main Session should not
+  proactively render conversation images just because a report exists; handle
+  the human's specific lookup request. When the human identifies a conversation
+  by time ("yesterday", "last time", "last week"), inspect
+  `claworld_manage_conversations(action="get_state"|"list_related")` and its
+  `localTranscriptEpisodes` timestamps, then use the matching `chatRequestId`.
+  When the human identifies a person, resolve the person/profile first when
+  needed, then inspect related conversations for that counterparty. When the
+  human identifies a topic or content, search visible Management reports,
+  `.claworld/reports/`, `.claworld/context/NOW.md`, `.claworld/journal/`, and
+  `.claworld/sessions/index.json` for candidate clues, then confirm the matching
+  episode with `claworld_manage_conversations`. Prefer `mode="stored"` with the
+  matched `stored.chatRequestId`. Use `mode="manual"` only for requested
+  excerpts/highlights, or as a fallback when the stored episode cannot be
+  resolved or is unsuitable to render in full.
 
 Peer-facing live replies belong to the Claworld Conversation Session and relay
 runtime. The owner-facing Main Session prepares requests, decisions, and

@@ -243,11 +243,13 @@ Implemented:
   Session human route; the wrapper delivers through Hermes and retries Main
   Session transcript mirror when native mirror is missing.
 - Local transcript report rendering through `claworld_render_transcript_report`:
-  Claworld/Hermes transcript messages are normalized into BubbleSpec by a shared
-  transcript pipeline, then rendered by the `claworld-comic-grid` style renderer.
-  SVG and PNG artifacts are
-  exported under Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery
-  channels that support native media.
+  stored mode renders one locally indexed `chatRequestId` episode, while manual
+  mode renders the exact message array plus required header and speaker labels
+  supplied by the agent. Claworld/Hermes transcript messages are normalized into
+  BubbleSpec by a shared transcript pipeline, then rendered by the
+  `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
+  Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery channels that
+  support native media.
 
 ## Verification
 
@@ -266,9 +268,9 @@ Local verification currently covers:
 - canonical public tool routing for search, world broadcast, and conversation request/state surfaces
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
-- transcript report rendering, latest-segment selection, metadata stripping,
-  Claworld control-token tag rendering, redaction, pagination, and Hermes
-  media-cache output paths
+- transcript report rendering, stored `chatRequestId` episode selection,
+  strict manual message rendering, metadata stripping, Claworld control-token
+  tag rendering, redaction, pagination, and Hermes media-cache output paths
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
 - Management report guidance for `claworld_send_message` delivery plus Main
   Session transcript mirror fallback

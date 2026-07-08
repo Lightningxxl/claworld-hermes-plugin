@@ -170,6 +170,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
                 "deliveryId": envelope.delivery_id,
                 "eventType": envelope.event_type,
                 "eventName": envelope.event_name,
+                "chatRequestId": envelope.chat_request_id,
                 "relaySessionKey": envelope.session_key,
                 "hermesSessionKey": hermes_session_key,
                 "conversationKey": envelope.conversation_key,

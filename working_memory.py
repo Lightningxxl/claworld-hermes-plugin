@@ -31,6 +31,13 @@ ROLE_BOOTSTRAP_FILES = {
 MANAGEMENT_MEMORY_PREVIEW_FILES = ("context/PROFILE.md", "context/MEMORY.md", "context/NOW.md")
 
 
+def _text(value) -> str:
+    if value is None:
+        return ""
+    normalized = str(value).strip()
+    return normalized
+
+
 TEMPLATES = {
     "INDEX.md": """# Claworld Working Memory
 
@@ -152,6 +159,7 @@ def empty_session_index() -> dict:
         "main": {},
         "management": {},
         "conversationSessions": {},
+        "conversationEpisodes": {},
     }
 
 
@@ -162,7 +170,16 @@ def read_session_index(root: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         data = empty_session_index()
-    return data if isinstance(data, dict) else empty_session_index()
+    if not isinstance(data, dict):
+        data = empty_session_index()
+    data.setdefault("schema", "claworld.sessions.v1")
+    data.setdefault("createdAt", iso_now())
+    data.setdefault("updatedAt", iso_now())
+    data.setdefault("main", {})
+    data.setdefault("management", {})
+    data.setdefault("conversationSessions", {})
+    data.setdefault("conversationEpisodes", {})
+    return data
 
 
 def write_session_index(root: Path, data: dict) -> None:
@@ -173,24 +190,54 @@ def write_session_index(root: Path, data: dict) -> None:
 def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) -> None:
     data = read_session_index(root)
     now = iso_now()
+    chat_request_id = _text(getattr(envelope, "chat_request_id", None))
     if route.session_kind == "management":
         data["management"] = {
             "lastActiveSessionKey": hermes_session_key,
             "chatId": route.chat_id,
             "relaySessionKey": route.relay_session_key,
             "targetAgentId": envelope.target_agent_id,
+            **({"lastChatRequestId": chat_request_id} if chat_request_id else {}),
             "updatedAt": now,
         }
     else:
         sessions = data.setdefault("conversationSessions", {})
-        sessions[route.chat_id] = {
+        existing = sessions.get(route.chat_id) if isinstance(sessions.get(route.chat_id), dict) else {}
+        chat_request_ids = list(existing.get("chatRequestIds") or [])
+        if chat_request_id and chat_request_id not in chat_request_ids:
+            chat_request_ids.append(chat_request_id)
+        entry = {
+            **existing,
             "lastActiveSessionKey": hermes_session_key,
             "chatId": route.chat_id,
             "relaySessionKey": route.relay_session_key,
             "conversationKey": route.conversation_key,
             "targetAgentId": envelope.target_agent_id,
+            "chatRequestIds": chat_request_ids,
+            **({"lastChatRequestId": chat_request_id} if chat_request_id else {}),
             "updatedAt": now,
         }
+        sessions[route.chat_id] = entry
+        if chat_request_id:
+            episodes = data.setdefault("conversationEpisodes", {})
+            previous = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+            delivery_ids = list(previous.get("deliveryIds") or [])
+            if envelope.delivery_id and envelope.delivery_id not in delivery_ids:
+                delivery_ids.append(envelope.delivery_id)
+            episodes[chat_request_id] = {
+                **previous,
+                "chatRequestId": chat_request_id,
+                "chatId": route.chat_id,
+                "lastActiveSessionKey": hermes_session_key,
+                "relaySessionKey": route.relay_session_key,
+                "conversationKey": route.conversation_key,
+                "targetAgentId": envelope.target_agent_id,
+                "firstSeenAt": previous.get("firstSeenAt") or _text(getattr(envelope, "created_at", None)) or now,
+                "lastSeenAt": _text(getattr(envelope, "turn_created_at", None)) or _text(getattr(envelope, "updated_at", None)) or _text(getattr(envelope, "created_at", None)) or now,
+                "deliveryIds": delivery_ids,
+                "deliveryCount": len(delivery_ids),
+                "updatedAt": now,
+            }
     write_session_index(root, data)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -51,6 +52,7 @@ class InboundEnvelope:
     delivery_id: str
     session_key: str
     target_agent_id: str | None
+    chat_request_id: str | None
     conversation_key: str | None
     world_id: str | None
     created_at: str | None
@@ -137,12 +139,14 @@ def build_inbound_envelope(message: dict) -> InboundEnvelope | None:
         return None
 
     related = obj(notification.get("relatedObjects"))
+    chat_request_id = extract_chat_request_id(data, payload, metadata, notification, related)
     return InboundEnvelope(
         event_type=event_type,
         event_name=first_text(data.get("eventName"), payload.get("eventName"), None if relay_event == "delivery" else relay_event),
         delivery_id=delivery_id or stable_hash(f"{event_type}:{session_key}:{json.dumps(payload, sort_keys=True, default=str)}"),
         session_key=session_key,
         target_agent_id=first_text(data.get("targetAgentId"), payload.get("targetAgentId"), notification.get("targetAgentId"), metadata.get("targetAgentId")),
+        chat_request_id=chat_request_id,
         conversation_key=first_text(data.get("conversationKey"), payload.get("conversationKey"), related.get("conversationKey")),
         world_id=first_text(data.get("worldId"), payload.get("worldId"), related.get("worldId")),
         created_at=first_text(data.get("createdAt"), payload.get("createdAt"), data.get("availableAt"), payload.get("availableAt"), notification.get("createdAt")),
@@ -162,6 +166,56 @@ def first_text(*values: Any) -> str | None:
     return None
 
 
+CHAT_REQUEST_ID_KEYS = (
+    "chatRequestId",
+    "chat_request_id",
+    "intentId",
+    "intent_id",
+)
+
+
+def extract_chat_request_id(*payloads: dict) -> str | None:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key in CHAT_REQUEST_ID_KEYS:
+            value = text(payload.get(key))
+            if value:
+                return value
+        nested = obj(payload.get("payload"))
+        for key in CHAT_REQUEST_ID_KEYS:
+            value = text(nested.get(key))
+            if value:
+                return value
+
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key in ("commandText", "contextText", "text", "message", "body"):
+            value = text(payload.get(key))
+            if not value:
+                continue
+            parsed = _extract_chat_request_id_from_text(value)
+            if parsed:
+                return parsed
+    return None
+
+
+def _extract_chat_request_id_from_text(value: str) -> str | None:
+    patterns = (
+        r"(?im)^\s*-?\s*Chat Request ID:\s*`?([^`\n]+?)`?\s*$",
+        r"(?im)^\s*-?\s*Intent ID:\s*`?([^`\n]+?)`?\s*$",
+        r"(?im)\b(?:chatRequestId|chat_request_id|intentId|intent_id)\b\s*[:=]\s*[\"`']?([A-Za-z0-9][A-Za-z0-9_.:-]{2,})",
+        r"(?im)[\"'](?:chatRequestId|chat_request_id|intentId|intent_id)[\"']\s*:\s*[\"']([^\"']+)[\"']",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, str(value or ""))
+        parsed = text(match.group(1) if match else None)
+        if parsed:
+            return parsed
+    return None
+
+
 def build_agent_text(envelope: InboundEnvelope, session_kind: str) -> str:
     command_text = text(envelope.payload.get("commandText"))
     visible_text = text(envelope.payload.get("text"), text(envelope.payload.get("body"), text(envelope.payload.get("message"))))
@@ -176,6 +230,8 @@ def build_agent_text(envelope: InboundEnvelope, session_kind: str) -> str:
     ]
     if envelope.event_name:
         fields.append(f"event_name={envelope.event_name}")
+    if envelope.chat_request_id:
+        fields.append(f"chatRequestId={envelope.chat_request_id}")
     if envelope.conversation_key:
         fields.append(f"conversation_key={envelope.conversation_key}")
     if envelope.world_id:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -19,32 +18,41 @@ from .working_memory import append_journal, atomic_write_text, read_session_inde
 
 
 DEFAULT_WIDTH = 720
-DEFAULT_MAX_TURNS = 10
 DEFAULT_MAX_PAGE_HEIGHT = 2600
-MAX_TURNS_LIMIT = 80
 
 TIME_SPLIT_SECONDS = 5 * 60
+SEGMENT_GAP_MINUTES = 240
+
+TOP_LEVEL_RENDER_FIELDS = {"mode", "stored", "manual", "style", "maxPageHeight"}
+MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
+REQUIRED_MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
+STORED_RENDER_FIELDS = {"chatRequestId"}
+MANUAL_MESSAGE_FIELDS = {"from", "text", "createdAt"}
 
 
 def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     """Render a local Claworld transcript as BubbleSpec, SVG, and PNG files."""
 
+    request = _normalize_render_request(args or {})
+    render_args = request["renderArgs"]
     root = cfg.memory_root_path()
-    source = _load_source_messages(cfg, args or {}, root)
-    header_context = _extract_transcript_header_context(source["messages"], cfg, args or {})
-    normalized = _normalize_messages(source["messages"], cfg, args or {}, header_context)
+    source = _load_source_messages(request, root)
+    header_context = _extract_transcript_header_context(source["messages"])
+    normalized = _normalize_messages(source["messages"], cfg, render_args, header_context)
     if not normalized:
         raise ValueError("no visible transcript messages were found for rendering")
 
-    selected, selection = _select_messages(normalized, args or {})
+    selected, selection = _select_messages(normalized, request)
     if not selected:
+        if request["mode"] == "stored":
+            raise ValueError(f"chatRequestId was found in local index but no visible transcript episode matched it: {request['chatRequestId']}")
         raise ValueError("selection did not include any visible transcript messages")
 
-    width = _int(args.get("width"), DEFAULT_WIDTH, minimum=520, maximum=1200)
-    max_page_height = _int(args.get("maxPageHeight") or args.get("max_page_height"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900, maximum=8000)
-    style = resolve_report_style(_report_style_name(args or {}))
-    participants = _participants(selected, cfg, args or {})
-    title, subtitle = _header_text(args or {}, source, selection, selected, header_context)
+    width = DEFAULT_WIDTH
+    max_page_height = _int(render_args.get("maxPageHeight"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900, maximum=8000)
+    style = resolve_report_style(_report_style_name(render_args))
+    participants = _participants(selected)
+    title, subtitle = _header_text(render_args, source, selection, selected, header_context)
     bubbles = _decorate_selection(selected, selection)
     bubble_spec = {
         "version": "1",
@@ -56,7 +64,6 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
             "peerProfile": subtitle,
             "peerProfileSource": header_context.get("profileSource", "fallback"),
             "generatedAt": _iso_now(),
-            "timezone": _text(args.get("timezone"), "local") or "local",
             "source": source["summary"],
             "selection": selection,
         },
@@ -116,21 +123,25 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     }
     primary_pngs = [item["path"] for item in files if item["format"] == "png"]
     source_svgs = [item["path"] for item in files if item["format"] == "svg"]
+    png_pages = [_artifact_page(item) for item in files if item["format"] == "png"]
+    svg_pages = [_artifact_page(item) for item in files if item["format"] == "svg"]
     result = {
-        "artifactId": artifact_id,
         "status": "ok",
-        "source": source["summary"],
-        "selection": selection,
-        "files": files,
-        "pngPath": primary_pngs[0] if primary_pngs else None,
-        "pngPaths": primary_pngs,
-        "svgPath": source_svgs[0] if source_svgs else None,
-        "svgPaths": source_svgs,
-        "bubbleSpecPath": str(spec_path),
+        "mode": request["mode"],
+        **({"chatRequestId": request["chatRequestId"]} if request["mode"] == "stored" else {}),
+        "artifactId": artifact_id,
         "messageCount": len(selected),
-        "pages": len(pages),
+        "pageCount": len(pages),
         "style": style.name,
-        "stats": stats,
+        "artifacts": {
+            "bubbleSpec": {
+                "format": "bubblespec",
+                "path": str(spec_path),
+                "sha256": _sha256(spec_path),
+            },
+            "pngPages": png_pages,
+            "svgPages": svg_pages,
+        },
         "deliveryHint": {
             "primaryMedia": f"MEDIA:{primary_pngs[0]}" if primary_pngs else None,
             "primaryMediaBatch": "\n".join(f"MEDIA:{path}" for path in primary_pngs),
@@ -140,6 +151,10 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
                 "media_paths": primary_pngs,
                 "send_source_svg": False,
             },
+        },
+        "diagnostics": {
+            "source": source["summary"],
+            "stats": stats,
         },
     }
     append_journal(
@@ -156,24 +171,131 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     return result
 
 
-def _load_source_messages(cfg: ClaworldConfig, args: dict, root: Path) -> dict:
-    explicit_messages = args.get("messages")
-    if isinstance(explicit_messages, list):
+def _artifact_page(item: dict) -> dict:
+    return {
+        "page": item["page"],
+        "format": item["format"],
+        "path": item["path"],
+        "width": item["width"],
+        "height": item["height"],
+        "sha256": item["sha256"],
+        **({"mediaRef": f"MEDIA:{item['path']}"} if item["format"] == "png" else {}),
+    }
+
+
+def summarize_chat_request_transcript(cfg: ClaworldConfig, chat_request_id: str) -> dict:
+    root = cfg.memory_root_path()
+    session_id, source_summary = _resolve_chat_request_source(chat_request_id, root)
+    if not session_id:
+        return {"chatRequestId": chat_request_id, "available": False, "reason": "not_indexed"}
+    try:
+        raw_messages = _load_session_db_messages(session_id)
+        header_context = _extract_transcript_header_context(raw_messages)
+        normalized = _normalize_messages(raw_messages, cfg, {}, header_context)
+        selected, selection = _select_messages(normalized, {"mode": "stored", "chatRequestId": chat_request_id})
+    except Exception as exc:
+        return {"chatRequestId": chat_request_id, "available": False, "reason": str(exc)}
+    if not selected:
+        return {"chatRequestId": chat_request_id, "available": False, "reason": "episode_not_found", "source": source_summary}
+    return {
+        "chatRequestId": chat_request_id,
+        "available": True,
+        "renderableMessages": len(selected),
+        "peerMessages": len([message for message in selected if message.side == "left"]),
+        "localMessages": len([message for message in selected if message.side == "right"]),
+        "firstMessageAt": selected[0].created_at,
+        "lastMessageAt": selected[-1].created_at,
+        "source": source_summary,
+        "selection": selection,
+    }
+
+
+def _normalize_render_request(args: dict) -> dict:
+    if not isinstance(args, dict):
+        raise ValueError("render arguments must be an object")
+    extra = sorted(set(args) - TOP_LEVEL_RENDER_FIELDS)
+    if extra:
+        raise ValueError(f"unsupported transcript render parameter(s): {', '.join(extra)}")
+
+    mode = _text(args.get("mode"))
+    if mode not in {"stored", "manual"}:
+        raise ValueError("mode is required and must be one of stored or manual")
+
+    render_args = {
+        "mode": mode,
+        "style": _report_style_name(args),
+        "maxPageHeight": args.get("maxPageHeight"),
+    }
+
+    if mode == "stored":
+        if args.get("manual") is not None:
+            raise ValueError("manual must not be provided when mode=stored")
+        stored = args.get("stored")
+        if not isinstance(stored, dict):
+            raise ValueError("stored must be an object when mode=stored")
+        _reject_unknown_nested("stored", stored, STORED_RENDER_FIELDS)
+        chat_request_id = _text(stored.get("chatRequestId"))
+        if not chat_request_id:
+            raise ValueError("stored.chatRequestId is required when mode=stored")
         return {
-            "messages": explicit_messages,
-            "summary": {"kind": "messages", "messageCount": len(explicit_messages)},
+            "mode": mode,
+            "chatRequestId": chat_request_id,
+            "renderArgs": render_args,
         }
 
-    session_id, source_summary = _resolve_source_session_id(args, root)
+    if args.get("stored") is not None:
+        raise ValueError("stored must not be provided when mode=manual")
+    manual = args.get("manual")
+    if not isinstance(manual, dict):
+        raise ValueError("manual must be an object when mode=manual")
+    _reject_unknown_nested("manual", manual, MANUAL_RENDER_FIELDS)
+    for key in sorted(REQUIRED_MANUAL_RENDER_FIELDS - {"messages"}):
+        if not _text(manual.get(key)):
+            raise ValueError(f"manual.{key} is required when mode=manual")
+    messages = manual.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("manual.messages must be a non-empty array when mode=manual")
+    _validate_manual_messages(messages)
+    for key in ("title", "peerProfile", "localLabel", "peerLabel"):
+        render_args[key] = manual.get(key)
+    return {
+        "mode": mode,
+        "messages": messages,
+        "renderArgs": render_args,
+    }
+
+
+def _reject_unknown_nested(name: str, value: dict, allowed: set[str]) -> None:
+    extra = sorted(set(value) - allowed)
+    if extra:
+        raise ValueError(f"unsupported {name} parameter(s): {', '.join(extra)}")
+
+
+def _validate_manual_messages(messages: list) -> None:
+    for idx, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            raise ValueError(f"manual.messages[{idx}] must be an object")
+        _reject_unknown_nested(f"manual.messages[{idx}]", message, MANUAL_MESSAGE_FIELDS)
+        side = _text(message.get("from"))
+        if side not in {"peer", "local"}:
+            raise ValueError(f"manual.messages[{idx}].from must be peer or local")
+        if not _text(message.get("text")):
+            raise ValueError(f"manual.messages[{idx}].text is required")
+        if not _text(message.get("createdAt")):
+            raise ValueError(f"manual.messages[{idx}].createdAt is required")
+
+
+def _load_source_messages(request: dict, root: Path) -> dict:
+    if request["mode"] == "manual":
+        explicit_messages = request["messages"]
+        return {
+            "messages": explicit_messages,
+            "summary": {"kind": "manual", "messageCount": len(explicit_messages)},
+        }
+
+    session_id, source_summary = _resolve_chat_request_source(request["chatRequestId"], root)
     if not session_id:
-        if source_summary.get("kind") in {"latest_conversation", "latest"}:
-            raise ValueError("no locally stored Hermes transcript was found for any indexed Claworld conversation")
-        if source_summary.get("kind") == "selector_not_found":
-            raise ValueError(f"transcript selector did not match local Claworld session index: {source_summary.get('selectors')}")
-        raise ValueError(
-            "explicit transcript selector is required: pass sessionId, conversationKey, "
-            "localSessionKey, relaySessionKey, chatId, or messages; use sourceKind=latest_conversation only intentionally"
-        )
+        raise ValueError(f"chatRequestId was not found in local Claworld transcript index: {request['chatRequestId']}")
     messages = _load_session_db_messages(session_id)
     return {
         "messages": messages,
@@ -185,97 +307,26 @@ def _report_style_name(args: dict) -> str:
     return _text(args.get("style"), "claworld-comic-grid") or "claworld-comic-grid"
 
 
-def _resolve_source_session_id(args: dict, root: Path) -> tuple[str | None, dict]:
-    session_id = _text(args.get("sessionId"), _text(args.get("hermesSessionId")))
-    if session_id:
-        return _resolve_session_db_id(session_id) or session_id, {"kind": "sessionId", "requestedSessionId": session_id}
-
+def _resolve_chat_request_source(chat_request_id: str, root: Path) -> tuple[str | None, dict]:
     index = read_session_index(root)
-    sessions = index.get("conversationSessions") if isinstance(index.get("conversationSessions"), dict) else {}
-    matchers = {
-        "conversationKey": _text(args.get("conversationKey")),
-        "localSessionKey": _text(args.get("localSessionKey")),
-        "relaySessionKey": _text(args.get("relaySessionKey")),
-        "chatId": _text(args.get("chatId")),
-    }
-    for field, expected in matchers.items():
-        if not expected:
-            continue
-        for chat_id, entry in sessions.items():
-            if not isinstance(entry, dict):
-                continue
-            if expected in _entry_selector_values(chat_id, entry, field):
-                session_key = _text(entry.get("lastActiveSessionKey"), _text(entry.get("sessionKey")))
-                resolved = _resolve_session_db_id(session_key) if session_key else None
-                return resolved or session_key, {
-                    "kind": field,
-                    "chatId": chat_id,
-                    "conversationKey": entry.get("conversationKey"),
-                    "relaySessionKey": entry.get("relaySessionKey"),
-                    "lastActiveSessionKey": session_key,
-                }
-    provided_selectors = {key: value for key, value in matchers.items() if value}
-    if provided_selectors:
-        return None, {"kind": "selector_not_found", "selectors": provided_selectors}
-
-    source_kind = _text(args.get("sourceKind"), _text(args.get("source"))) or ""
-    if source_kind == "current_session":
-        current = _current_session_id()
-        if current:
-            return current, {"kind": "current_session"}
-    if source_kind in {"latest_conversation", "latest"}:
-        latest = _latest_resolvable_conversation_entry(sessions)
-        if latest:
-            chat_id, entry, resolved = latest
-            session_key = _text(entry.get("lastActiveSessionKey"), _text(entry.get("sessionKey")))
-            return resolved, {
-                "kind": "latest_conversation",
-                "chatId": chat_id,
-                "conversationKey": entry.get("conversationKey"),
-                "relaySessionKey": entry.get("relaySessionKey"),
-                "lastActiveSessionKey": session_key,
-            }
-    return None, {"kind": source_kind}
-
-
-def _entry_selector_values(chat_id: str, entry: dict, field: str) -> set[str]:
-    if field == "chatId":
-        values = [chat_id]
-    elif field == "localSessionKey":
-        values = [entry.get("localSessionKey"), entry.get("relaySessionKey")]
-    elif field == "relaySessionKey":
-        values = [entry.get("relaySessionKey"), entry.get("localSessionKey")]
-    else:
-        values = [entry.get(field)]
-    return {_text(value) for value in values if _text(value)}
-
-
-def _latest_conversation_entry(sessions: dict) -> tuple[str, dict] | None:
-    entries = [(chat_id, entry) for chat_id, entry in sessions.items() if isinstance(entry, dict)]
-    if not entries:
-        return None
-    entries.sort(key=lambda item: _text(item[1].get("updatedAt"), "") or "", reverse=True)
-    return entries[0]
-
-
-def _latest_resolvable_conversation_entry(sessions: dict) -> tuple[str, dict, str] | None:
-    entries = [(chat_id, entry) for chat_id, entry in sessions.items() if isinstance(entry, dict)]
-    entries.sort(key=lambda item: _text(item[1].get("updatedAt"), "") or "", reverse=True)
-    for chat_id, entry in entries:
-        session_key = _text(entry.get("lastActiveSessionKey"), _text(entry.get("sessionKey")))
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    episode = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else None
+    if episode:
+        session_key = _text(episode.get("lastActiveSessionKey"), _text(episode.get("sessionKey")))
         resolved = _resolve_session_db_id(session_key) if session_key else None
-        if resolved:
-            return chat_id, entry, resolved
-    return None
+        return resolved or session_key, {
+            "kind": "chatRequestId",
+            "chatRequestId": chat_request_id,
+            "chatId": episode.get("chatId"),
+            "conversationKey": episode.get("conversationKey"),
+            "relaySessionKey": episode.get("relaySessionKey"),
+            "lastActiveSessionKey": session_key,
+            "firstSeenAt": episode.get("firstSeenAt"),
+            "lastSeenAt": episode.get("lastSeenAt"),
+            "indexSource": "conversationEpisodes",
+        }
 
-
-def _current_session_id() -> str | None:
-    try:
-        from gateway.session_context import get_session_env
-
-        return _text(get_session_env("HERMES_SESSION_ID", ""))
-    except Exception:
-        return _text(os.getenv("HERMES_SESSION_ID"))
+    return None, {"kind": "chatRequestId", "chatRequestId": chat_request_id, "indexSource": "not_found"}
 
 
 def _resolve_session_db_id(session_id_or_key: str | None) -> str | None:
@@ -377,11 +428,11 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, hea
     header_context = header_context or {}
     local_identity = _text(header_context.get("localIdentity"))
     peer_identity = _text(header_context.get("peerIdentity"), _text(header_context.get("peerId")))
-    local_id = _text(args.get("localAgentId"), _text(local_identity, cfg.agent_id)) or "local-agent"
-    peer_id = _text(args.get("peerAgentId"), _text(args.get("targetAgentId"), peer_identity)) or "peer-agent"
+    local_id = _text(local_identity, cfg.agent_id) or "local-agent"
+    peer_id = peer_identity or "peer-agent"
     local_label = _text(args.get("localLabel"), _text(local_identity, local_id)) or local_id
     peer_label = _text(args.get("peerLabel"), _text(peer_identity, peer_id)) or peer_id
-    include_tools = _text(args.get("includeToolCalls"), "none") not in {"", "none", "false"}
+    include_tools = False
     normalized: list[TranscriptMessage] = []
     pending_episode_id = ""
     for idx, raw in enumerate(raw_messages):
@@ -418,6 +469,14 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, hea
             side = "right"
             participant_id = local_id
             participant_label = local_label
+        elif role in {"peer", "left"}:
+            side = "left"
+            participant_id = peer_id
+            participant_label = peer_label
+        elif role in {"local", "me", "right"}:
+            side = "right"
+            participant_id = local_id
+            participant_label = local_label
         else:
             side = "left" if role not in {"assistant", "local"} else "right"
             participant_id = _text(raw.get("participant_id"), peer_id if side == "left" else local_id) or peer_id
@@ -447,42 +506,35 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, hea
     return normalized
 
 
-def _select_messages(messages: list[TranscriptMessage], args: dict) -> tuple[list[TranscriptMessage], dict]:
-    segments = _segment_messages(messages, _int(args.get("segmentGapMinutes"), 240, minimum=1, maximum=10080))
-    segment_index_arg = args.get("segmentIndex")
-    if segment_index_arg is not None:
-        segment_index = max(0, min(_int(segment_index_arg, len(segments) - 1), len(segments) - 1))
-    else:
-        segment_index = len(segments) - 1
-    segment = list(segments[segment_index]) if segments else []
-    total = len(segment)
-    max_turns = _int(args.get("maxTurns") or args.get("max_turns"), DEFAULT_MAX_TURNS, minimum=1, maximum=MAX_TURNS_LIMIT)
-    start_arg = args.get("startTurn") or args.get("start_turn")
-    end_arg = args.get("endTurn") or args.get("end_turn")
-    if start_arg is not None:
-        start = max(0, _int(start_arg, 1) - 1)
-    elif total > max_turns:
-        start = max(0, total - max_turns)
-    else:
-        start = 0
-    if end_arg is not None:
-        end = min(total, _int(end_arg, total))
-    else:
-        end = min(total, start + max_turns)
-    if end - start > max_turns:
-        end = start + max_turns
-    selected = segment[start:end]
-    selection = {
-        "segmentIndex": segment_index,
-        "segmentCount": len(segments),
-        "segmentMessages": total,
-        "startTurn": start + 1 if selected else 0,
-        "endTurn": end if selected else 0,
-        "maxTurns": max_turns,
-        "omittedBefore": start,
-        "omittedAfter": max(0, total - end),
+def _select_messages(messages: list[TranscriptMessage], request: dict) -> tuple[list[TranscriptMessage], dict]:
+    if request["mode"] == "manual":
+        total = len(messages)
+        return messages, {
+            "mode": "manual",
+            "messageCount": total,
+            "omittedBefore": 0,
+            "omittedAfter": 0,
+        }
+
+    chat_request_id = request["chatRequestId"]
+    segments = _segment_messages(messages, SEGMENT_GAP_MINUTES)
+    for segment in segments:
+        episode_ids = {message.episode_id for message in segment if message.episode_id}
+        if chat_request_id in episode_ids:
+            total = len(segment)
+            return list(segment), {
+                "mode": "stored",
+                "chatRequestId": chat_request_id,
+                "messageCount": total,
+                "omittedBefore": 0,
+                "omittedAfter": 0,
+            }
+    return [], {
+        "mode": "stored",
+        "chatRequestId": chat_request_id,
+        "omittedBefore": 0,
+        "omittedAfter": 0,
     }
-    return selected, selection
 
 
 def _segment_messages(messages: list[TranscriptMessage], gap_minutes: int) -> list[list[TranscriptMessage]]:
@@ -533,7 +585,7 @@ def _decorate_selection(messages: list[TranscriptMessage], selection: dict) -> l
     return items
 
 
-def _participants(messages: list[TranscriptMessage], cfg: ClaworldConfig, args: dict) -> list[dict[str, str]]:
+def _participants(messages: list[TranscriptMessage]) -> list[dict[str, str]]:
     seen: dict[str, TranscriptMessage] = {}
     for message in messages:
         seen.setdefault(message.participant_id, message)
@@ -570,48 +622,41 @@ def _bubble_message_payload(item: dict[str, Any]) -> dict:
     }
 
 
-def _subtitle(args: dict, source: dict, selection: dict) -> str:
-    explicit = _text(args.get("subtitle"))
-    if explicit:
-        return explicit
+def _subtitle(source: dict, selection: dict) -> str:
     pieces = []
+    chat_request_id = source["summary"].get("chatRequestId") or selection.get("chatRequestId")
+    if chat_request_id:
+        pieces.append(f"chatRequestId {chat_request_id}")
     conversation_key = source["summary"].get("conversationKey")
     if conversation_key:
         pieces.append(f"conversation {conversation_key}")
     chat_id = source["summary"].get("chatId")
     if chat_id:
         pieces.append(str(chat_id))
-    if selection.get("segmentCount", 0) > 1:
-        pieces.append(f"segment {selection['segmentIndex'] + 1}/{selection['segmentCount']}")
-    turn_range = f"turns {selection.get('startTurn', 0)}-{selection.get('endTurn', 0)}"
-    pieces.append(turn_range)
+    if selection.get("messageCount"):
+        pieces.append(f"{selection['messageCount']} messages")
     return " · ".join(pieces)
 
 
 def _header_text(args: dict, source: dict, selection: dict, messages: list[TranscriptMessage], header_context: dict | None = None) -> tuple[str, str]:
     header_context = header_context or {}
-    peer_id = _text(
-        header_context.get("peerIdentity"),
-        _text(header_context.get("peerId"), _text(args.get("peerAgentId"), _text(args.get("targetAgentId"), _text(args.get("peerId"))))),
-    )
+    explicit_title = _text(args.get("title"))
+    peer_id = _text(explicit_title, _text(header_context.get("peerIdentity"), _text(header_context.get("peerId"))))
     if not peer_id:
         for message in messages:
             if message.side == "left":
                 peer_id = message.participant_id or message.participant_label
                 break
-    peer_id = peer_id or _text(args.get("title"), "peer-agent") or "peer-agent"
+    peer_id = peer_id or "peer-agent"
     profile = (
-        _text(header_context.get("peerProfile"))
-        or _text(args.get("peerProfile"))
-        or _text(args.get("peerProfileSummary"))
-        or _text(args.get("profile"))
-        or _text(args.get("subtitle"))
-        or _subtitle(args, source, selection)
+        _text(args.get("peerProfile"))
+        or _text(header_context.get("peerProfile"))
+        or _subtitle(source, selection)
     )
     return peer_id, profile or "profile: unavailable"
 
 
-def _extract_transcript_header_context(raw_messages: list, cfg: ClaworldConfig, args: dict) -> dict:
+def _extract_transcript_header_context(raw_messages: list) -> dict:
     merged: dict[str, str] = {}
     for raw in raw_messages:
         if not isinstance(raw, dict):
@@ -907,8 +952,8 @@ def _extract_claworld_episode_id(raw: dict, text: str) -> str:
                 return value
 
     patterns = (
-        r"(?im)^\s*-\s*Intent ID:\s*`?([^`\n]+?)`?\s*$",
-        r"(?im)^\s*-\s*Chat Request ID:\s*`?([^`\n]+?)`?\s*$",
+        r"(?im)^\s*-?\s*Intent ID:\s*`?([^`\n]+?)`?\s*$",
+        r"(?im)^\s*-?\s*Chat Request ID:\s*`?([^`\n]+?)`?\s*$",
         r"(?im)\b(?:intentId|intent_id|chatRequestId|chat_request_id)\b\s*[:=]\s*[\"`']?([A-Za-z0-9][A-Za-z0-9_.:-]{2,})",
         r"(?im)[\"'](?:intentId|intent_id|chatRequestId|chat_request_id)[\"']\s*:\s*[\"']([^\"']+)[\"']",
     )
