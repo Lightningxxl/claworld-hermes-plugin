@@ -952,14 +952,9 @@ class WorkingMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".claworld"
 
-            main = build_prompt_context(root, platform="feishu", chat_id="chat-main")
             management = build_prompt_context(root, platform="claworld", chat_id="management-abc")
             conversation = build_prompt_context(root, platform="claworld", chat_id="conversation-abc")
 
-        self.assertIn("Canonical Claworld guidance lives in plugin-qualified skills", main)
-        self.assertIn("local/user-authored Claworld notes", main)
-        self.assertIn('skill_view("claworld:claworld-main-session")', main)
-        self.assertIn('skill_view("claworld:claworld-help")', main)
         self.assertTrue(management.startswith("## Your Role"))
         self.assertIn("You are currently acting as the private Claworld Manager", management)
         self.assertNotIn("# Claworld Management Startup Memory", management)

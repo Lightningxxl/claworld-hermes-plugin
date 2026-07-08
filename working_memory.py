@@ -25,7 +25,6 @@ MAX_BOOTSTRAP_TOTAL_CHARS = 60000
 MAX_MANAGEMENT_MEMORY_PREVIEW_FILE_CHARS = 400
 MAX_MANAGEMENT_MEMORY_PREVIEW_TOTAL_CHARS = 1800
 ROLE_BOOTSTRAP_FILES = {
-    "main": ("context/MEMORY.md",),
     "conversation": ("context/NOW.md", "context/MEMORY.md", "context/PROFILE.md"),
 }
 MANAGEMENT_MEMORY_PREVIEW_FILES = ("context/PROFILE.md", "context/MEMORY.md", "context/NOW.md")
@@ -276,28 +275,19 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
         )
         return rendered[:max_chars]
 
-    parts = [_role_prompt(role, root)]
-    if role == "main":
-        session_context = render_session_context(read_session_index(root), role=role, platform=platform, chat_id=chat_id)
-        if session_context:
-            parts.append(session_context)
     if role == "conversation":
         title = "# Claworld Conversation Startup Context"
         file_sections = [_file_section(root, relative) for relative in ROLE_BOOTSTRAP_FILES[role]]
-        parts.append("\n\n".join([title, *file_sections]))
-    else:
-        for relative in ROLE_BOOTSTRAP_FILES[role]:
-            parts.append(_file_section(root, relative))
-    rendered = "\n\n".join(part for part in parts if part.strip())
-    return rendered[:max_chars]
+        rendered = "\n\n".join([title, *file_sections])
+        return rendered[:max_chars]
+
+    return ""
 
 
 def _role_prompt(role: str, root: Path) -> str:
     if role == "management":
         return _skill_body("claworld-management-session")
-    if role == "conversation":
-        return ""
-    return MAIN_CONTEXT.format(root=str(root))
+    return ""
 
 
 def _file_section(root: Path, relative: str, max_chars: int = MAX_BOOTSTRAP_FILE_CHARS) -> str:
@@ -373,48 +363,6 @@ def _skill_body(skill_name: str) -> str:
         if marker != -1:
             text = text[marker + len("\n---") :]
     return text.strip()
-
-
-def render_session_context(data: dict, *, role: str, platform: str = "", chat_id: str = "", max_chars: int = 12000) -> str:
-    if not isinstance(data, dict):
-        return ""
-    sessions = data.get("conversationSessions") if isinstance(data.get("conversationSessions"), dict) else {}
-    recent_sessions = sorted(
-        sessions.values(),
-        key=lambda item: item.get("updatedAt", "") if isinstance(item, dict) else "",
-        reverse=True,
-    )[:12]
-    current_conversation = sessions.get(chat_id) if chat_id else None
-    summary = {
-        "schema": data.get("schema"),
-        "updatedAt": data.get("updatedAt"),
-        "currentHermesContext": {"role": role, "platform": platform or None, "chatId": chat_id or None},
-        "main": data.get("main") or {},
-        "management": data.get("management") or {},
-        "currentConversation": current_conversation or {},
-        "recentConversationSessions": recent_sessions,
-    }
-    payload = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True, default=str)
-    if len(payload) > max_chars:
-        payload = payload[: max_chars - 32] + "\n... truncated ..."
-    return "\n".join(["## sessions/index.json summary", "", "```json", payload, "```"])
-
-
-MAIN_CONTEXT = """# About Claworld
-
-Claworld is a social app connected to this Hermes agent. Use `.claworld/` as private working memory.
-
-Working memory root: `{root}`
-
-- Read `context/MEMORY.md` for durable Claworld facts.
-- Read `context/NOW.md` for active Claworld focus and pending approvals.
-- Read `context/PROFILE.md` for the human's preferences and autonomy policy.
-- Read `sessions/index.json` before reasoning about known Claworld sessions.
-- Canonical Claworld guidance lives in plugin-qualified skills. Use these `claworld:...` skill names even when local/user-authored Claworld notes also exist.
-- For Claworld work with the human — browsing worlds, joining, talking to people, managing preferences — load `skill_view("claworld:claworld-main-session")`.
-- For setup or repair, load `skill_view("claworld:claworld-help")`.
-- Use Claworld tools for current product facts.
-- Peer-facing messages belong to Claworld conversation routing; keep reports to the human readable and concise."""
 
 
 def iso_now() -> str:
