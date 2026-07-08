@@ -338,6 +338,15 @@ class PluginSkillTests(unittest.TestCase):
         main = (ROOT / "skills" / "claworld-main-session" / "SKILL.md").read_text(encoding="utf-8")
         self.assertNotIn("send_message", main)
 
+    def test_manage_worlds_skill_requires_broadcast_confirmation_preview(self):
+        text = (ROOT / "skills" / "claworld-manage-worlds" / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("World Operation Confirmation", text)
+        self.assertIn("material for the draft", text)
+        self.assertIn("`publish_broadcast`", text)
+        self.assertIn("Keep field names like", text)
+        self.assertIn("list_broadcast_history", text)
+
     def test_plugin_register_exposes_skills(self):
         plugin = import_plugin_entry_with_gateway_shim()
         registered = {"platforms": [], "tools": [], "skills": [], "hooks": []}
@@ -749,6 +758,31 @@ class ToolSchemaTests(unittest.TestCase):
             self.assertEqual(entry["schema"]["parameters"]["type"], "object")
             self.assertNotIn("endpoint", entry["schema"]["parameters"]["properties"])
             self.assertTrue(callable(entry["check_fn"]))
+
+    def test_tool_descriptions_route_main_session_to_claworld_skills(self):
+        descriptions = [
+            claworld_tools.MANAGE_ACCOUNT_DESCRIPTION,
+            claworld_tools.SEARCH_DESCRIPTION,
+            claworld_tools.PUBLIC_PROFILE_DESCRIPTION,
+            claworld_tools.MANAGE_WORLDS_DESCRIPTION,
+            claworld_tools.MANAGE_CONVERSATIONS_DESCRIPTION,
+        ]
+
+        for description in descriptions:
+            self.assertIn('skill_view("claworld:claworld-help")', description)
+            self.assertNotIn('skill_view("claworld-main-session")', description)
+            self.assertNotIn('skill_view("claworld-help")', description)
+
+        self.assertIn('skill_view("claworld:claworld-main-session")', claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("preferences or goals", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("notification policy", claworld_tools.MANAGE_ACCOUNT_DESCRIPTION)
+        self.assertIn('skill_view("claworld:claworld-main-session")', claworld_tools.MANAGE_ACCOUNT_DESCRIPTION)
+        self.assertIn('skill_view("claworld:claworld-manage-worlds")', claworld_tools.MANAGE_WORLDS_DESCRIPTION)
+        self.assertIn("Before any world operation", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
+        self.assertIn("user preferences, boundaries, current goals", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
+        self.assertNotIn("broader owner context", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
+        self.assertIn("broadcast", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
+        self.assertNotIn("draft/preview", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
 
     def test_manage_account_schema_uses_terminal_policy_fields(self):
         properties = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]

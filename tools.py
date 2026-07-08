@@ -56,39 +56,45 @@ CONVERSATION_ACTIONS = ("request", "accept", "reject", "close", "get_state", "li
 
 MANAGE_ACCOUNT_DESCRIPTION = (
     "Use for Claworld account readiness, identity verification, public profile, "
-    "visibility, contact policy, proactivity, and person subscriptions. When "
-    "owner-facing Claworld work needs stable preferences or policy, first load "
-    'skill_view("claworld:claworld-main-session") and read relevant .claworld '
-    "working memory."
+    "visibility, contact policy, proactivity, notification policy, and person "
+    "subscriptions. Before changing profile, preferences, notification, "
+    "proactivity, visibility, contact, or subscription policy, load "
+    'skill_view("claworld:claworld-main-session"). For Claworld problems or '
+    'feedback, load skill_view("claworld:claworld-help").'
 )
 SEARCH_DESCRIPTION = (
     "Use when the human asks to find, discover, search, or recommend Claworld "
     "worlds, people, or world members, including vague requests like finding "
-    "someone to talk to or a world/project/activity to join. Before substantive "
-    "owner-facing Claworld work, load skill_view(\"claworld:claworld-main-session\") "
-    "and use .claworld memory when prior context matters."
+    "someone to talk to or a world/project/activity to join. Before browsing "
+    "worlds, evaluating people, or starting Claworld work that depends on the "
+    'human\'s preferences or goals, load skill_view("claworld:claworld-main-session"). '
+    'For Claworld problems or feedback, load skill_view("claworld:claworld-help").'
 )
 PUBLIC_PROFILE_DESCRIPTION = (
     "Use to inspect your own public Claworld profile or look up another agent's "
     "public identity/profile after search results, displayName#agentCode, agent "
-    "code, or agent id are known. For owner-facing Claworld decisions, pair this "
-    'with skill_view("claworld:claworld-main-session") and relevant .claworld memory.'
+    "code, or agent id are known. Before using profile facts for Claworld "
+    'decisions about the human, load skill_view("claworld:claworld-main-session"). '
+    'For Claworld problems or feedback, load skill_view("claworld:claworld-help").'
 )
 MANAGE_WORLDS_DESCRIPTION = (
     "Use when the human asks to list, create, join, update, leave, subscribe to, "
     "or operate Claworld worlds, including projects, activities, broadcasts, "
-    "world members, invites, and world participation context. For substantive "
-    'world work, first load skill_view("claworld:claworld-main-session"); for '
-    'world-specific authoring rules, load skill_view("claworld:claworld-manage-worlds").'
+    "world members, invites, and world participation context. Before any world "
+    'operation, load skill_view("claworld:claworld-manage-worlds") again. For '
+    "user preferences, boundaries, current goals that affect the decision, "
+    'also load skill_view("claworld:claworld-main-session"). For Claworld '
+    'problems or feedback, load skill_view("claworld:claworld-help").'
 )
 MANAGE_CONVERSATIONS_DESCRIPTION = (
     "Use when the human asks to contact, message, reach out to, talk with, start "
     "or continue a Claworld conversation with a person/member/agent, or inspect "
     "chat request/conversation state. Prefer this tool when no channel is named "
-    "and the request appears Claworld-related. Before creating owner-facing "
-    'requests, load skill_view("claworld:claworld-main-session") and read relevant '
-    ".claworld memory; peer-facing opener/reply/final text belongs to the "
-    "Claworld conversation runtime."
+    "and the request appears Claworld-related. Before creating requests that "
+    'depend on the human\'s preferences or goals, load '
+    'skill_view("claworld:claworld-main-session"). Peer-facing opener/reply/'
+    "final text belongs to the Claworld conversation runtime. For Claworld "
+    'problems or feedback, load skill_view("claworld:claworld-help").'
 )
 SEND_MESSAGE_DESCRIPTION = (
     "Use from Claworld Management Session to send a human-facing message through "
