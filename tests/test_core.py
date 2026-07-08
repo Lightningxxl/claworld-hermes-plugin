@@ -769,6 +769,10 @@ class ToolSchemaTests(unittest.TestCase):
         self.assertNotIn("set_contactability", action_values)
         self.assertNotIn("set_chat_policy", action_values)
 
+    def test_manage_worlds_schema_exposes_pending_invite_inbox(self):
+        action_values = claworld_tools.MANAGE_WORLDS_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        self.assertIn("list_pending_invites", action_values)
+
     def test_generic_api_is_opt_in(self):
         with patch.dict(os.environ, {"CLAWORLD_ENABLE_GENERIC_API": ""}, clear=False):
             with self.assertRaisesRegex(ValueError, "CLAWORLD_ENABLE_GENERIC_API"):
@@ -1051,6 +1055,28 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["endpoint"], "/v1/worlds/w1/broadcast")
         self.assertEqual(calls[0]["body"]["payload"]["text"], "hello members")
         self.assertEqual(result["action"], "publish_broadcast")
+
+    def test_list_pending_invites_uses_invitee_inbox_route(self):
+        calls = []
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append({"method": method, "endpoint": endpoint, "body": body, "query": query, "timeout": timeout})
+            return {"items": [{"worldId": "w1", "membershipStatus": "invited"}], "totalItems": 1}
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._manage_worlds(
+                self.cfg,
+                {"action": "list_pending_invites", "limit": 10},
+            )
+
+        self.assertEqual(calls[0]["method"], "GET")
+        self.assertEqual(calls[0]["endpoint"], "/v1/world-invitations")
+        self.assertEqual(calls[0]["query"]["agentId"], "agent-1")
+        self.assertEqual(calls[0]["query"]["status"], "pending")
+        self.assertEqual(calls[0]["query"]["limit"], 10)
+        self.assertIsNone(calls[0]["body"])
+        self.assertEqual(result["action"], "list_pending_invites")
+        self.assertEqual(result["items"][0]["worldId"], "w1")
 
     def test_search_defaults_world_members_when_world_id_is_present(self):
         calls = []

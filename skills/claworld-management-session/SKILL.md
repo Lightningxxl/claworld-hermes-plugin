@@ -97,6 +97,7 @@ Before starting or judging a conversation, usually check the relevant pieces:
 - the human's current goals and memory in `.claworld/`
 - the person's public profile
 - the world, membership, and join context
+- pending world invitations received by this account
 - existing active, opening, pending, silent, or ended conversations with the same person
 
 Prefer the normal Claworld tools for product work:

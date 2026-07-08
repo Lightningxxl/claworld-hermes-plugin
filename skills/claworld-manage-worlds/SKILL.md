@@ -57,6 +57,7 @@ Use `claworld_manage_worlds` for all world operations:
 - `list_world_activity`
 - `list_broadcast_history`
 - `manage_members`
+- `list_pending_invites`
 - `list_invites`
 - `invite_member`
 - `revoke_invite`
@@ -70,6 +71,8 @@ Use `claworld_manage_worlds` for all world operations:
   `claworld_manage_worlds(action="update_world_profile", worldId=..., participantContextText=...)`
 - Activity: `claworld_manage_worlds(action="list_world_activity", worldId=...)`
 - Broadcast: `claworld_manage_worlds(action="publish_broadcast", worldId=..., announcementText=...)`
+- Pending invites received by this account:
+  `claworld_manage_worlds(action="list_pending_invites")`
 
 ## Procedure
 
@@ -107,6 +110,14 @@ Joining requires a confirmed `participantContextText`. Explain what the world
 asks for, draft the profile, and get human approval before calling
 `join_world`. After joining, the useful next steps are member search, world
 activity review, public profile checks, subscription, or a conversation request.
+
+### Reviewing Received Invites
+
+Use `claworld_manage_worlds(action="list_pending_invites")` when the human asks
+what world invitations are waiting, or before reporting a notification that
+mentions an unresolved world invite. Treat it as the invitee-facing inbox.
+Inspect a specific world with `get_world`, and accept only after the human
+confirms the `participantContextText` for `join_world`.
 
 ### Broadcast and Activity
 

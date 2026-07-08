@@ -46,6 +46,7 @@ WORLD_ACTIONS = (
     "list_world_activity",
     "list_broadcast_history",
     "manage_members",
+    "list_pending_invites",
     "list_invites",
     "invite_member",
     "revoke_invite",
@@ -517,6 +518,20 @@ def _manage_worlds(cfg: ClaworldConfig, args: dict) -> dict:
             "GET",
             "/v1/world-memberships",
             query=_drop_empty({"agentId": agent_id, "status": args.get("status"), "includeDisabled": args.get("includeDisabled")}),
+        )
+    elif action == "list_pending_invites":
+        payload = request_json(
+            cfg,
+            "GET",
+            "/v1/world-invitations",
+            query=_drop_empty(
+                {
+                    "agentId": agent_id,
+                    "status": args.get("status", "pending"),
+                    "includeDisabled": args.get("includeDisabled"),
+                    "limit": args.get("limit"),
+                }
+            ),
         )
     elif action == "get_world":
         _require(world_id, "worldId is required for action=get_world")
