@@ -23,8 +23,10 @@ from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMess
 
 CANVAS_MARGIN = 24
 FRAME_MARGIN = 16
-HEADER_HEIGHT = 160
-HEADER_CARD_HEIGHT = 110
+HEADER_Y = 48
+HEADER_CARD_HEIGHT_ONE_LINE = 92
+HEADER_CARD_HEIGHT_TWO_LINES = 110
+HEADER_BOTTOM_PAD = 20
 BODY_TOP_GAP = 24
 PAGE_BOTTOM = 54
 ITEM_GAP = 22
@@ -113,7 +115,8 @@ def measure_item(item: dict[str, Any], width: int) -> MeasuredBubble:
 
 def paginate(items: list[MeasuredBubble], width: int, max_height: int, title: str, subtitle: str) -> list[LayoutPage]:
     pages: list[list[MeasuredBubble]] = [[]]
-    used = HEADER_HEIGHT + BODY_TOP_GAP + PAGE_BOTTOM
+    header_height = _header_height(subtitle)
+    used = header_height + BODY_TOP_GAP + PAGE_BOTTOM
     for idx, item in enumerate(items):
         item_h = item.height + ITEM_GAP
         needed_h = item_h
@@ -121,14 +124,14 @@ def paginate(items: list[MeasuredBubble], width: int, max_height: int, title: st
             needed_h += items[idx + 1].height + ITEM_GAP
         if pages[-1] and used + needed_h > max_height:
             pages.append([])
-            used = HEADER_HEIGHT + BODY_TOP_GAP + PAGE_BOTTOM
+            used = header_height + BODY_TOP_GAP + PAGE_BOTTOM
         pages[-1].append(item)
         used += item_h
 
     rendered: list[LayoutPage] = []
     total = len(pages)
     for page_no, page_items in enumerate(pages, start=1):
-        y = HEADER_HEIGHT + BODY_TOP_GAP
+        y = header_height + BODY_TOP_GAP
         layout_items = []
         for item in page_items:
             if item.kind == "ellipsis":
@@ -248,9 +251,9 @@ def _positions(width: int, bubble_w: int, label: str, side: str) -> tuple[int, i
 
 def _render_header(page: LayoutPage) -> str:
     x = CANVAS_MARGIN + 26
-    y = 48
+    y = HEADER_Y
     w = page.width - (CANVAS_MARGIN + 26) * 2
-    h = HEADER_CARD_HEIGHT
+    h = _header_card_height(page.subtitle)
     title = clip_display(_header_title(page.title), 32)
     subtitle = _render_header_subtitle_svg(x + 35, y + 70, _header_subtitle_lines(page.subtitle))
     return "\n".join(
@@ -275,6 +278,14 @@ def _header_subtitle_lines(subtitle: str) -> list[str]:
     remainder = " ".join(line.strip() for line in lines[HEADER_SUBTITLE_MAX_LINES - 1 :] if line.strip())
     visible.append(ellipsize_text(remainder, HEADER_SUBTITLE_MAX_UNITS, suffix="…"))
     return visible
+
+
+def _header_card_height(subtitle: str) -> int:
+    return HEADER_CARD_HEIGHT_TWO_LINES if len(_header_subtitle_lines(subtitle)) > 1 else HEADER_CARD_HEIGHT_ONE_LINE
+
+
+def _header_height(subtitle: str) -> int:
+    return HEADER_Y + _header_card_height(subtitle) + HEADER_BOTTOM_PAD
 
 
 def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
@@ -518,9 +529,9 @@ def _draw_grid_png(draw, width: int, height: int, scale: int) -> None:
 
 def _render_header_png(img, draw, page: LayoutPage, font_title, font_profile, scale: int) -> None:
     x = (CANVAS_MARGIN + 26) * scale
-    y = 48 * scale
+    y = HEADER_Y * scale
     w = (page.width - (CANVAS_MARGIN + 26) * 2) * scale
-    h = HEADER_CARD_HEIGHT * scale
+    h = _header_card_height(page.subtitle) * scale
     draw.rounded_rectangle([x + 11 * scale, y + 6 * scale, x + w + 13 * scale, y + h + 16 * scale], radius=22 * scale, fill=rgba(BLACK))
     _draw_horizontal_gradient_rect(img, draw, [x + 7 * scale, y + 6 * scale, x + w + 7 * scale, y + h + 10 * scale], THEME["left_accent_b"], THEME["right_accent_b"], scale, radius=22 * scale)
     draw.rounded_rectangle([x, y, x + w, y + h], radius=22 * scale, fill=rgba(THEME["header_fill"]), outline=rgba(BLACK), width=4 * scale)

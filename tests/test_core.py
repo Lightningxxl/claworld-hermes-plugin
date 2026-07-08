@@ -950,6 +950,25 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertTrue(lines[-1].endswith("…"))
 
+    def test_comic_grid_two_line_header_moves_body_down(self):
+        time_row = claworld_comic_grid.measure_item({"kind": "time", "label": "07-08 13:38"}, 720)
+        short_page = claworld_comic_grid.paginate([time_row], 720, 2600, "Peer", "Short profile")[0]
+        long_page = claworld_comic_grid.paginate(
+            [time_row],
+            720,
+            2600,
+            "Peer",
+            "Independent game developer who prefers pixel art interfaces, reflective pacing, "
+            "slow-burn collaboration, and unusually detailed late-night design conversations.",
+        )[0]
+
+        self.assertEqual(short_page.items[0]["y"], claworld_comic_grid._header_height("Short profile") + claworld_comic_grid.BODY_TOP_GAP)
+        self.assertEqual(
+            long_page.items[0]["y"],
+            claworld_comic_grid._header_height(long_page.subtitle) + claworld_comic_grid.BODY_TOP_GAP,
+        )
+        self.assertGreater(long_page.items[0]["y"], short_page.items[0]["y"])
+
     def test_render_transcript_report_manual_renders_supplied_messages_and_redacts(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": str(Path(tmp) / "hermes")}, clear=False):
             cfg = ClaworldConfig(
