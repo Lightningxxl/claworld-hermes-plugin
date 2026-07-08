@@ -489,7 +489,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
         self.assertEqual(adapter.client.silences, [])
 
-    async def test_runtime_error_reply_is_marked_kept_silent(self):
+    async def test_runtime_error_reply_defers_kept_silent(self):
         adapter_module = import_adapter_with_gateway_shim()
 
         class FakeRelayClient:
@@ -518,11 +518,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         result = await adapter.send(record.chat_id, "LLM request failed: provider unavailable")
 
         self.assertTrue(result.success)
-        self.assertTrue(record.replied)
+        self.assertFalse(record.replied)
+        self.assertTrue(record.saw_operational_notice)
         self.assertEqual(adapter.client.replies, [])
-        self.assertEqual(adapter.client.silences, [("d1", "conversation:abc", "runtime_failed_before_reply")])
+        self.assertEqual(adapter.client.silences, [])
 
-    async def test_operational_notice_reply_is_marked_kept_silent(self):
+    async def test_operational_notice_reply_defers_kept_silent(self):
         adapter_module = import_adapter_with_gateway_shim()
 
         class FakeRelayClient:
@@ -551,9 +552,102 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         result = await adapter.send(record.chat_id, "Sent the Claworld reply.\nUsage: 1 in / 2 out")
 
         self.assertTrue(result.success)
-        self.assertTrue(record.replied)
+        self.assertFalse(record.replied)
+        self.assertTrue(record.saw_operational_notice)
         self.assertEqual(adapter.client.replies, [])
-        self.assertEqual(adapter.client.silences, [("d2", "conversation:def", "operational_notice_only")])
+        self.assertEqual(adapter.client.silences, [])
+
+    async def test_operational_notice_then_real_reply_sends_real_reply(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+                self.silences = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d1",
+            relay_session_key="conversation:abc",
+            chat_id="conversation-abc",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        notice_result = await adapter.send(record.chat_id, "\U0001f9f9 Auto-compaction complete (count 1).")
+        self.assertTrue(notice_result.success)
+        self.assertFalse(record.replied)
+        self.assertTrue(record.saw_operational_notice)
+
+        reply_result = await adapter.send(record.chat_id, "real peer-visible reply")
+        self.assertTrue(reply_result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
+        self.assertEqual(adapter.client.silences, [])
+
+    async def test_kickoff_delivery_retries_on_operational_notice_only(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+                self.silences = []
+
+            async def send_accepted(self, delivery_id, session_key):
+                pass
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+            async def send_kept_silent(self, delivery_id, session_key, reason):
+                self.silences.append((delivery_id, session_key, reason))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        handled_count = 0
+
+        async def fake_handle_message(event):
+            nonlocal handled_count
+            handled_count += 1
+            if handled_count == 1:
+                await adapter.send(event.source.chat_id, "\U0001f9f9 Auto-compaction complete (count 1).")
+
+        adapter.handle_message = fake_handle_message
+
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "data": {
+                    "deliveryId": "d1",
+                    "sessionKey": "conversation:abc",
+                    "payload": {"text": "kickoff body"},
+                    "metadata": {"deliveryType": "kickoff"},
+                },
+            }
+        )
+
+        await adapter._on_delivery(envelope)
+        self.assertEqual(handled_count, 1)
+        self.assertTrue(adapter._deliveries_by_id["d1"].saw_operational_notice)
+        self.assertFalse(adapter._deliveries_by_id["d1"].replied)
+
+        await adapter.on_processing_complete(
+            types.SimpleNamespace(message_id="d1"),
+            adapter_module.ProcessingOutcome.SUCCESS,
+        )
+        self.assertEqual(handled_count, 2)
+        self.assertTrue(adapter._deliveries_by_id["d1"].retried)
 
     async def test_reply_strips_operational_usage_suffix(self):
         adapter_module = import_adapter_with_gateway_shim()
@@ -1820,9 +1914,17 @@ class AdapterCompletionTests(unittest.TestCase):
             chat_id="conversation-2",
             replyable=False,
         )
+        notice_record = adapter.DeliveryRecord(
+            delivery_id="d3",
+            relay_session_key="conversation:ghi",
+            chat_id="conversation-3",
+            replyable=True,
+            saw_operational_notice=True,
+        )
 
         self.assertEqual(adapter._completion_silence_reason(adapter.ProcessingOutcome.SUCCESS, record), "no_renderable_reply")
         self.assertEqual(adapter._completion_silence_reason(adapter.ProcessingOutcome.SUCCESS, non_replyable), "non_replyable_delivery")
+        self.assertEqual(adapter._completion_silence_reason(adapter.ProcessingOutcome.SUCCESS, notice_record), "operational_notice_only")
         self.assertEqual(adapter._completion_silence_reason(adapter.ProcessingOutcome.FAILURE, record), "runtime_failed_before_reply")
 
     def test_delivery_metadata_controls_reply_and_acceptance(self):

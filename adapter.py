@@ -26,6 +26,9 @@ class DeliveryRecord:
     event_type: str = "delivery"
     replyable: bool = True
     replied: bool = False
+    delivery_type: str | None = None
+    retried: bool = False
+    saw_operational_notice: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         self.client: RelayClient | None = None
         self._deliveries_by_id: dict[str, DeliveryRecord] = {}
         self._latest_by_chat: dict[str, str] = {}
+        self._kickoff_retry_context: dict[str, dict] = {}
 
     @property
     def name(self) -> str:
@@ -122,7 +126,11 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=record.delivery_id)
             classification = _classify_reply_content(content)
             if classification.silence_reason:
-                await self._mark_record_kept_silent(record, classification.silence_reason)
+                record.saw_operational_notice = True
+                logger.info(
+                    "deferring operational notice for delivery_id=%s reason=%s",
+                    record.delivery_id, classification.silence_reason,
+                )
             else:
                 await self.client.send_reply(record.delivery_id, record.relay_session_key, classification.text)
                 record.replied = True
@@ -134,13 +142,49 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         record = self._deliveries_by_id.get(str(event.message_id or ""))
         if record is None or record.replied or self.client is None:
             return
-        if record.event_type == "delivery" and record.replyable:
-            try:
-                await self._mark_record_kept_silent(record, _completion_silence_reason(outcome, record))
-            except Exception as exc:
-                logger.warning("failed to mark Claworld delivery kept_silent: %s", exc)
-        elif record.event_type == "delivery":
+        if record.event_type != "delivery":
             record.replied = True
+            return
+        if not record.replyable:
+            record.replied = True
+            return
+
+        if (
+            record.delivery_type == "kickoff"
+            and not record.retried
+            and record.saw_operational_notice
+            and outcome == ProcessingOutcome.SUCCESS
+        ):
+            retry_context = self._kickoff_retry_context.pop(record.delivery_id, None)
+            if retry_context is not None:
+                record.retried = True
+                record.saw_operational_notice = False
+                logger.info(
+                    "retrying kickoff delivery_id=%s — first attempt produced only operational notices",
+                    record.delivery_id,
+                )
+                retry_event = MessageEvent(
+                    text=build_agent_text(retry_context["envelope"]),
+                    message_type=MessageType.TEXT,
+                    source=retry_context["source"],
+                    raw_message=retry_context["envelope"].raw,
+                    message_id=record.delivery_id,
+                    channel_prompt=retry_context["channel_prompt"],
+                    internal=True,
+                )
+                try:
+                    await self.handle_message(retry_event)
+                except Exception:
+                    try:
+                        await self._mark_record_kept_silent(record, "runtime_failed_before_reply")
+                    except Exception as exc:
+                        logger.warning("failed to mark retried kickoff delivery kept_silent: %s", exc)
+                return
+
+        try:
+            await self._mark_record_kept_silent(record, _completion_silence_reason(outcome, record))
+        except Exception as exc:
+            logger.warning("failed to mark Claworld delivery kept_silent: %s", exc)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         chat_id_text = str(chat_id)
@@ -156,6 +200,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             chat_id=route.chat_id,
             event_type=envelope.event_type,
             replyable=_is_replyable_delivery(envelope),
+            delivery_type=envelope.metadata.get("deliveryType"),
         )
         self._deliveries_by_id[record.delivery_id] = record
         self._latest_by_chat[route.chat_id] = record.delivery_id
@@ -204,6 +249,14 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             channel_prompt=channel_prompt,
             internal=True,
         )
+
+        if record.delivery_type == "kickoff" and record.replyable:
+            self._kickoff_retry_context[record.delivery_id] = {
+                "envelope": envelope,
+                "source": source,
+                "channel_prompt": channel_prompt,
+            }
+
         try:
             await self.handle_message(event)
         except Exception:
@@ -285,6 +338,8 @@ def _completion_silence_reason(outcome: ProcessingOutcome, record: DeliveryRecor
         return "runtime_failed_before_reply"
     if not record.replyable:
         return "non_replyable_delivery"
+    if record.saw_operational_notice:
+        return "operational_notice_only"
     return "no_renderable_reply"
 
 
