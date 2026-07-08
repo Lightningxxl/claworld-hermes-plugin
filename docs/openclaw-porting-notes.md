@@ -163,8 +163,8 @@ session tools and provenance markers.
 Hermes receives Claworld relay deliveries as Gateway messages. The adapter:
 
 - normalizes Claworld delivery and notification envelopes
-- separates backend `commandText`, trusted `contextText`, untrusted peer
-  context, and peer-visible text
+- assembles Hermes inbound text from trusted `contextText`, untrusted peer
+  context, and the OpenClaw-aligned incoming-text selection
 - maps management and conversation events to stable Hermes session keys
 - sends `accepted`, `reply`, and `kept_silent` bridge messages back to the
   Claworld relay
@@ -220,7 +220,8 @@ When changing this plugin, preserve these porting contracts:
 5. `journal/` is append-only runtime evidence with redacted tool data.
 6. `NOW.md`, `MEMORY.md`, and `PROFILE.md` remain agent-maintained semantic
    memory surfaces.
-7. Claworld inbound text remains separated into command, trusted context,
-   untrusted context, and peer-visible message text.
+7. Claworld inbound text follows the OpenClaw-aligned assembly contract:
+   trusted context, untrusted context, and selected incoming text are delivered
+   as one Hermes message body.
 8. Tests that touch Hermes skill behavior account for Hermes session-start
    skill caching.

@@ -215,7 +215,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("[[request_conversation_end]]", text)
         self.assertNotIn("NO_REPLY", text)
 
-    def test_agent_text_outputs_visible_text_when_no_context(self):
+    def test_agent_text_prefers_command_text_when_no_context(self):
         envelope = build_inbound_envelope(
             {
                 "event": "delivery",
