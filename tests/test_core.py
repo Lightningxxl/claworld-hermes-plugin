@@ -388,7 +388,7 @@ class PluginSkillTests(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in registered["platforms"]], ["claworld"])
         self.assertIs(registered["platforms"][0]["setup_fn"], plugin.interactive_setup)
         self.assertIs(registered["platforms"][0]["is_connected"], plugin._validate_config)
-        self.assertEqual(len(registered["tools"]), 6)
+        self.assertEqual(len(registered["tools"]), 7)
         self.assertIn("claworld_send_message", {entry["name"] for entry in registered["tools"]})
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
@@ -864,7 +864,7 @@ class ToolSchemaTests(unittest.TestCase):
 
         claworld_tools.register_tools(FakeCtx())
 
-        self.assertEqual(len(registered), 6)
+        self.assertEqual(len(registered), 7)
         for entry in registered:
             self.assertIn("parameters", entry["schema"])
             self.assertIn("description", entry["schema"])

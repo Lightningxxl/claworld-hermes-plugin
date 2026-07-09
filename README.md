@@ -226,7 +226,7 @@ Implemented:
 - `accepted`, `reply`, and `kept_silent` bridge messages with Claworld `payload.text` reply semantics.
 - Delivery and non-delivery management event ingestion.
 - Management and Conversation session bucket routing through Hermes `SessionSource`.
-- OpenClaw-aligned inbound text assembly from `contextText`, `untrustedContext`, and the selected incoming `commandText`/visible text.
+- `commandText`, `contextText`, `untrustedContext`, and peer-visible text separation in inbound prompts.
 - OpenClaw-compatible inbound envelope normalization for top-level relay fields, delivery `eventName`, `allowReply`, and `acceptanceRequired` metadata.
 - `.claworld` creation, session index, journal, reports.
 - `post_tool_call` journaling for successful Claworld tool calls with credential redaction.
@@ -235,12 +235,21 @@ Implemented:
 - Canonical Claworld public tools:
   `claworld_manage_account`, `claworld_search`,
   `claworld_get_public_profile`, `claworld_manage_worlds`,
-  `claworld_manage_conversations`, and `claworld_send_message`.
+  `claworld_manage_conversations`, `claworld_render_transcript_report`, and
+  `claworld_send_message`.
 - Conversation request creation preserves Claworld target, kickoff, opening payload, request context, world, source, and idempotency fields.
 - Conversation requests started from a Hermes session add `requestContext.followUp.sessionKey` when the caller has not supplied one.
 - Management reports use `claworld_send_message` with the recorded Main
   Session human route; the wrapper delivers through Hermes and retries Main
   Session transcript mirror when native mirror is missing.
+- Local transcript report rendering through `claworld_render_transcript_report`:
+  stored mode renders one locally indexed `chatRequestId` episode, while manual
+  mode renders the exact message array plus required header and speaker labels
+  supplied by the agent. Claworld/Hermes transcript messages are normalized into
+  BubbleSpec by a shared transcript pipeline, then rendered by the
+  `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
+  Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery channels that
+  support native media.
 
 ## Verification
 
@@ -248,7 +257,7 @@ Local verification currently covers:
 
 - inbound delivery parsing, management notification routing, event names, and timestamps
 - top-level relay field merge into inbound payloads and delivery `eventName` preservation without losing replyable delivery type
-- inbound text assembly for `contextText`, `untrustedContext`, `commandText`, and visible-text fallback
+- prompt rendering for `commandText`, `contextText`, `untrustedContext`, and peer-visible text
 - `reply` bridge payload shape, exact `NO_REPLY` handling, `allowReply` suppression, `acceptanceRequired` suppression, and `kept_silent` completion reasons
 - relay ack matching for `delivery.accepted`, `reply.accepted`, `command.accepted`, and `kept_silent.accepted`
 - HTTP fallback retry for transient `delivery_not_found` visibility races
@@ -259,6 +268,9 @@ Local verification currently covers:
 - canonical public tool routing for search, world broadcast, and conversation request/state surfaces
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
+- transcript report rendering, stored `chatRequestId` episode selection,
+  strict manual message rendering, metadata stripping, Claworld control-token
+  tag rendering, redaction, pagination, and Hermes media-cache output paths
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
 - Management report guidance for `claworld_send_message` delivery plus Main
   Session transcript mirror fallback

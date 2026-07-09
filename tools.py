@@ -9,8 +9,9 @@ from typing import Any
 
 from .config import ClaworldConfig
 from .http_client import public_error_payload, request_json
+from .transcript_report import render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
-from .working_memory import record_owner_route_from_context
+from .working_memory import read_session_index, record_owner_route_from_context
 
 TOOLSET = "claworld"
 
@@ -108,6 +109,16 @@ SEND_MESSAGE_DESCRIPTION = (
     "mirrored=true."
 )
 
+TRANSCRIPT_REPORT_DESCRIPTION = (
+    "Render a Claworld conversation transcript into BubbleSpec, SVG, and "
+    "user-friendly PNG artifacts. When you need to show the user the concrete "
+    "content of a Claworld A2A chat, prefer this tool instead of sending raw "
+    "transcript text. To render the full text of one complete chat, use "
+    "mode=stored and provide that chat's chatRequestId. To render selected "
+    "excerpts, highlights, or a fallback transcript, use mode=manual and "
+    "construct the full chat content to display."
+)
+
 def register_tools(ctx) -> None:
     for name, description, schema, handler in (
         (
@@ -139,6 +150,12 @@ def register_tools(ctx) -> None:
             MANAGE_CONVERSATIONS_DESCRIPTION,
             MANAGE_CONVERSATIONS_SCHEMA,
             manage_conversations,
+        ),
+        (
+            "claworld_render_transcript_report",
+            TRANSCRIPT_REPORT_DESCRIPTION,
+            TRANSCRIPT_REPORT_SCHEMA,
+            render_transcript_report,
         ),
         (
             "claworld_send_message",
@@ -308,6 +325,63 @@ SEND_MESSAGE_SCHEMA = {
 }
 
 
+TRANSCRIPT_REPORT_SCHEMA = {
+    "description": TRANSCRIPT_REPORT_DESCRIPTION,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["stored", "manual"],
+                "description": "Required. Use stored to render one indexed local Claworld episode by chatRequestId. Use manual to render exactly the messages supplied in manual.messages.",
+            },
+            "stored": {
+                "type": "object",
+                "description": "Stored transcript selector. Provide only when mode=stored.",
+                "properties": {
+                    "chatRequestId": {
+                        "type": "string",
+                        "description": "Required for mode=stored. The Claworld chat request / episode id.",
+                    }
+                },
+                "required": ["chatRequestId"],
+                "additionalProperties": False,
+            },
+            "manual": {
+                "type": "object",
+                "description": "Manual transcript content. Provide only when mode=manual.",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "description": "Required for mode=manual. Ordered visible transcript rows.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": {"type": "string", "enum": ["peer", "local"], "description": "peer=left; local=right."},
+                                "text": {"type": "string", "description": "Visible message text."},
+                                "createdAt": {"type": "string", "description": "Message timestamp, preferably ISO 8601."},
+                            },
+                            "required": ["from", "text", "createdAt"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "title": {"type": "string", "description": "Report header title."},
+                    "peerProfile": {"type": "string", "description": "Report header subtitle/profile."},
+                    "localLabel": {"type": "string", "description": "Speaker label for local/right-side messages."},
+                    "peerLabel": {"type": "string", "description": "Speaker label for peer/left-side messages."},
+                },
+                "required": ["messages", "title", "peerProfile", "localLabel", "peerLabel"],
+                "additionalProperties": False,
+            },
+            "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},
+            "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": 8000, "description": "Optional. Max page height in pixels. Defaults to 2600."},
+        },
+        "required": ["mode"],
+        "additionalProperties": False,
+    },
+}
+
+
 def manage_account(args: dict, **kwargs) -> str:
     return _tool_result("claworld_manage_account", args, _manage_account)
 
@@ -330,6 +404,10 @@ def manage_conversations(args: dict, **kwargs) -> str:
 
 def send_message(args: dict, **kwargs) -> str:
     return _tool_result("claworld_send_message", args, _send_message)
+
+
+def render_transcript_report(args: dict, **kwargs) -> str:
+    return _tool_result("claworld_render_transcript_report", args, _render_transcript_report)
 
 
 def _tool_result(tool: str, args: dict, fn) -> str:
@@ -804,6 +882,7 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
             "/v1/chat-requests",
             query=_drop_empty({"agentId": agent_id, **_conversation_filters(args, action)}),
         )
+        payload = _augment_conversation_payload_with_local_index(cfg, payload, args)
     elif action in {"accept", "reject"}:
         chat_request_id = _text(args.get("chatRequestId"))
         _require(chat_request_id, f"chatRequestId is required for action={action}")
@@ -831,6 +910,108 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
     else:
         raise ValueError(f"unsupported conversation action: {action}")
     return _action_result("claworld_manage_conversations", action, payload)
+
+
+def _augment_conversation_payload_with_local_index(cfg: ClaworldConfig, payload: dict, args: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    index = read_session_index(cfg.memory_root_path())
+    local_episodes = _local_episode_summaries(cfg, index)
+    filters = _conversation_filters(args, _text(args.get("action"), "list_related") or "list_related")
+    matching = _filter_local_episodes(local_episodes, filters)
+    result = dict(payload)
+    if matching:
+        result["localTranscriptEpisodes"] = matching
+        result["localTranscriptSummary"] = {
+            "episodeCount": len(matching),
+            "chatRequestIds": [item["chatRequestId"] for item in matching if item.get("chatRequestId")],
+        }
+    if isinstance(result.get("items"), list):
+        result["items"] = [_augment_conversation_item_with_local_index(item, local_episodes) for item in result["items"]]
+    return result
+
+
+def _local_episode_summaries(cfg: ClaworldConfig, index: dict) -> list[dict]:
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    summaries = []
+    for chat_request_id, entry in episodes.items():
+        if not isinstance(entry, dict):
+            continue
+        deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
+        renderable = [d for d in deliveries if isinstance(d, dict) and _text(d.get("commandText")) and _text(d.get("deliveryType")) != "kickoff"]
+        peer_count = sum(1 for d in renderable if _text(d.get("fromAgentId")) != cfg.agent_id)
+        summary = _drop_empty(
+            {
+                "chatRequestId": entry.get("chatRequestId") or chat_request_id,
+                "chatId": entry.get("chatId"),
+                "conversationKey": entry.get("conversationKey"),
+                "relaySessionKey": entry.get("relaySessionKey"),
+                "lastActiveSessionKey": entry.get("lastActiveSessionKey"),
+                "targetAgentId": entry.get("targetAgentId"),
+                "fromAgentCode": entry.get("fromAgentCode"),
+                "fromDisplayIdentity": entry.get("fromDisplayIdentity"),
+                "firstSeenAt": entry.get("firstSeenAt"),
+                "lastSeenAt": entry.get("lastSeenAt"),
+                "deliveryCount": entry.get("deliveryCount"),
+                "renderableMessages": len(renderable),
+                "peerMessages": peer_count,
+                "localMessages": len(renderable) - peer_count,
+            }
+        )
+        summaries.append(summary)
+    summaries.sort(key=lambda item: _text(item.get("lastSeenAt"), _text(item.get("firstSeenAt"), "")) or "", reverse=True)
+    return summaries
+
+
+def _filter_local_episodes(episodes: list[dict], filters: dict) -> list[dict]:
+    if not filters:
+        return episodes[:25]
+    result = []
+    for episode in episodes:
+        if _matches_local_episode_filters(episode, filters):
+            result.append(episode)
+    return result[:25]
+
+
+def _matches_local_episode_filters(episode: dict, filters: dict) -> bool:
+    checks = {
+        "chatRequestId": "chatRequestId",
+        "conversationKey": "conversationKey",
+        "localSessionKey": "relaySessionKey",
+        "counterpartyAgentId": "targetAgentId",
+    }
+    for filter_key, episode_key in checks.items():
+        expected = _text(filters.get(filter_key))
+        if expected and _text(episode.get(episode_key)) != expected:
+            return False
+    return True
+
+
+def _augment_conversation_item_with_local_index(item: Any, episodes: list[dict]) -> Any:
+    if not isinstance(item, dict):
+        return item
+    filters = _conversation_item_filters(item)
+    if not filters:
+        return item
+    matches = _filter_local_episodes(episodes, filters)
+    if not matches:
+        return item
+    return {**item, "localTranscriptEpisodes": matches, "localTranscriptSummary": {"episodeCount": len(matches), "chatRequestIds": [match["chatRequestId"] for match in matches if match.get("chatRequestId")]}}
+
+
+def _conversation_item_filters(item: dict) -> dict:
+    filters = {}
+    for key in ("chatRequestId", "conversationKey", "localSessionKey", "counterpartyAgentId"):
+        value = _text(item.get(key))
+        if value:
+            filters[key] = value
+    if not filters:
+        related = item.get("relatedObjects") if isinstance(item.get("relatedObjects"), dict) else {}
+        for key in ("chatRequestId", "conversationKey", "localSessionKey", "counterpartyAgentId"):
+            value = _text(related.get(key))
+            if value:
+                filters[key] = value
+    return filters
 
 
 def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
@@ -864,6 +1045,10 @@ def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
 
     result["success"] = delivered
     return result
+
+
+def _render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
+    return render_transcript_report_artifact(cfg, args)
 
 
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:

@@ -30,6 +30,33 @@ ROLE_BOOTSTRAP_FILES = {
 MANAGEMENT_MEMORY_PREVIEW_FILES = ("context/PROFILE.md", "context/MEMORY.md", "context/NOW.md")
 
 
+def _text(value) -> str:
+    if value is None:
+        return ""
+    normalized = str(value).strip()
+    return normalized
+
+
+def _build_delivery_entry(envelope) -> dict | None:
+    delivery_id = _text(getattr(envelope, "delivery_id", None))
+    if not delivery_id:
+        return None
+    payload = getattr(envelope, "payload", {}) or {}
+    metadata = getattr(envelope, "metadata", {}) or {}
+    entry = {
+        "deliveryId": delivery_id,
+        "fromAgentId": _text(metadata.get("fromAgentId")) or None,
+        "fromAgentCode": _text(metadata.get("fromAgentCode")) or None,
+        "fromDisplayIdentity": _text(metadata.get("fromDisplayIdentity")) or None,
+        "deliveryType": _text(metadata.get("deliveryType")) or None,
+        "commandText": _text(payload.get("commandText")) or None,
+        "contextText": _text(payload.get("contextText")) or None,
+        "createdAt": _text(getattr(envelope, "created_at", None)) or None,
+        "turnCreatedAt": _text(getattr(envelope, "turn_created_at", None)) or None,
+    }
+    return {k: v for k, v in entry.items() if v is not None}
+
+
 TEMPLATES = {
     "INDEX.md": """# Claworld Working Memory
 
@@ -151,6 +178,7 @@ def empty_session_index() -> dict:
         "main": {},
         "management": {},
         "conversationSessions": {},
+        "conversationEpisodes": {},
     }
 
 
@@ -161,7 +189,16 @@ def read_session_index(root: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         data = empty_session_index()
-    return data if isinstance(data, dict) else empty_session_index()
+    if not isinstance(data, dict):
+        data = empty_session_index()
+    data.setdefault("schema", "claworld.sessions.v1")
+    data.setdefault("createdAt", iso_now())
+    data.setdefault("updatedAt", iso_now())
+    data.setdefault("main", {})
+    data.setdefault("management", {})
+    data.setdefault("conversationSessions", {})
+    data.setdefault("conversationEpisodes", {})
+    return data
 
 
 def write_session_index(root: Path, data: dict) -> None:
@@ -172,24 +209,62 @@ def write_session_index(root: Path, data: dict) -> None:
 def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) -> None:
     data = read_session_index(root)
     now = iso_now()
+    chat_request_id = _text(getattr(envelope, "chat_request_id", None))
     if route.session_kind == "management":
         data["management"] = {
             "lastActiveSessionKey": hermes_session_key,
             "chatId": route.chat_id,
             "relaySessionKey": route.relay_session_key,
             "targetAgentId": envelope.target_agent_id,
+            **({"lastChatRequestId": chat_request_id} if chat_request_id else {}),
             "updatedAt": now,
         }
     else:
         sessions = data.setdefault("conversationSessions", {})
+        existing = sessions.get(route.chat_id) if isinstance(sessions.get(route.chat_id), dict) else {}
+        chat_request_ids = list(existing.get("chatRequestIds") or [])
+        if chat_request_id and chat_request_id not in chat_request_ids:
+            chat_request_ids.append(chat_request_id)
         sessions[route.chat_id] = {
+            **existing,
             "lastActiveSessionKey": hermes_session_key,
             "chatId": route.chat_id,
             "relaySessionKey": route.relay_session_key,
             "conversationKey": route.conversation_key,
             "targetAgentId": envelope.target_agent_id,
+            "chatRequestIds": chat_request_ids,
+            **({"lastChatRequestId": chat_request_id} if chat_request_id else {}),
             "updatedAt": now,
         }
+        if chat_request_id:
+            episodes = data.setdefault("conversationEpisodes", {})
+            previous = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+            delivery_ids = list(previous.get("deliveryIds") or [])
+            if envelope.delivery_id and envelope.delivery_id not in delivery_ids:
+                delivery_ids.append(envelope.delivery_id)
+            deliveries = list(previous.get("deliveries") or [])
+            delivery_entry = _build_delivery_entry(envelope)
+            if delivery_entry and not any(d.get("deliveryId") == envelope.delivery_id for d in deliveries):
+                deliveries.append(delivery_entry)
+            from_agent_code = _text(envelope.metadata.get("fromAgentCode"))
+            from_display_identity = _text(envelope.metadata.get("fromDisplayIdentity"))
+            episodes[chat_request_id] = {
+                **previous,
+                "chatRequestId": chat_request_id,
+                "chatId": route.chat_id,
+                "lastActiveSessionKey": hermes_session_key,
+                "relaySessionKey": route.relay_session_key,
+                "conversationKey": route.conversation_key,
+                "targetAgentId": envelope.target_agent_id,
+                **({"fromAgentCode": from_agent_code} if from_agent_code else {}),
+                **({"fromDisplayIdentity": from_display_identity} if from_display_identity else {}),
+                "firstSeenAt": previous.get("firstSeenAt") or _text(getattr(envelope, "created_at", None)) or now,
+                "lastSeenAt": _text(getattr(envelope, "turn_created_at", None)) or _text(getattr(envelope, "updated_at", None)) or _text(getattr(envelope, "created_at", None)) or now,
+                "deliveryIds": delivery_ids,
+                "deliveryCount": len(delivery_ids),
+                "deliveries": deliveries,
+                "updatedAt": now,
+            }
     write_session_index(root, data)
 
 

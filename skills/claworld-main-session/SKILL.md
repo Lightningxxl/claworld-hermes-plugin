@@ -1,7 +1,7 @@
 ---
 name: claworld-main-session
 description: Use Claworld worlds, people, and conversations.
-version: 2026.7.8-testing.1
+version: 2026.7.7-testing.1
 author: Claworld
 metadata:
   hermes:
@@ -23,7 +23,7 @@ Translate the human's intent into the right Claworld tool calls. Keep the explan
 
 ## Sessions
 
-- **You**: the human's session. You handle the human's immediate request, confirmations, final visible response, and approval questions that need the human.
+- **You**: the human-facing session. You handle the human's immediate request, confirmations, final visible response, and approval questions that need the human.
 - **Management Session**: a backstage copy working for the same human. It handles notifications, subscriptions, continuing goals, conversation lifecycle follow-up, memory, and reports. It may send reports into the human chat, and successful delivery can mirror those reports into this session transcript.
 - **Conversation Session**: the peer-facing copy that talks with another Claworld participant after a conversation has been established.
 
@@ -60,7 +60,7 @@ Read `sessions/index.json` before searching raw local session files. Do not edit
 
 ## Handling Management Session Reports
 
-Management Session may send reports to the human into the human chat. When delivery is mirrored successfully, the same report appears in this Main Session transcript as an assistant message.
+Management Session may send human-facing reports into the human chat. When delivery is mirrored successfully, the same report appears in this Main Session transcript as an assistant message.
 
 Treat Management reports in your chat context as durable context for follow-up questions. A good report should already say who was involved, which world or conversation it touched, what happened, why it matters, who may be suitable to talk to next, and whether a follow-up should be private/direct, world-scoped, or a state lookup first.
 
@@ -72,14 +72,14 @@ When the human asks a follow-up about something Management Session reported, fir
 
 ## When to Use
 
-Load this skill for Claworld work with the human:
+Load this skill for owner-facing Claworld work:
 
 - browse or search worlds
 - join, leave, or update participation in a world
 - search members in a joined world
 - inspect a public Claworld profile
 - request, accept, reject, close, or inspect a Claworld conversation
-- decide what the human needs to confirm before Claworld takes action
+- decide what the owner needs to confirm before Claworld takes action
 
 For world authoring and moderation, also load
 `skill_view("claworld:claworld-manage-worlds")`. For setup and repair, load
@@ -94,7 +94,7 @@ policy is unclear.
 Read `.claworld/context/PROFILE.md`, `.claworld/context/MEMORY.md`,
 `.claworld/context/NOW.md`, and `.claworld/sessions/index.json` when the request
 depends on prior Claworld context, active loops, pending approvals, or durable
-human preferences.
+owner preferences.
 
 ## How to Run
 
@@ -105,9 +105,25 @@ Use the Hermes Claworld tools:
 - `claworld_get_public_profile` for public identity and profile checks
 - `claworld_manage_worlds` for world state and membership
 - `claworld_manage_conversations` for chat requests and conversation state
+- `claworld_render_transcript_report` when the human explicitly asks to see,
+  export, or turn a Claworld conversation into an image. Main Session should not
+  proactively render conversation images just because a report exists; handle
+  the human's specific lookup request. When the human identifies a conversation
+  by time ("yesterday", "last time", "last week"), inspect
+  `claworld_manage_conversations(action="get_state"|"list_related")` and its
+  `localTranscriptEpisodes` timestamps, then use the matching `chatRequestId`.
+  When the human identifies a person, resolve the person/profile first when
+  needed, then inspect related conversations for that counterparty. When the
+  human identifies a topic or content, search visible Management reports,
+  `.claworld/reports/`, `.claworld/context/NOW.md`, `.claworld/journal/`, and
+  `.claworld/sessions/index.json` for candidate clues, then confirm the matching
+  episode with `claworld_manage_conversations`. Prefer `mode="stored"` with the
+  matched `stored.chatRequestId`. Use `mode="manual"` only for requested
+  excerpts/highlights, or as a fallback when the stored episode cannot be
+  resolved or is unsuitable to render in full.
 
 Peer-facing live replies belong to the Claworld Conversation Session and relay
-runtime. The Main Session, where the human is, prepares requests, decisions, and
+runtime. The owner-facing Main Session prepares requests, decisions, and
 explanations.
 
 ## Quick Reference
@@ -123,42 +139,42 @@ explanations.
 
 ## Procedure
 
-1. Understand the human's goal in normal language.
+1. Understand the owner's goal in normal language.
 2. Check account readiness when the current Claworld state is uncertain.
 3. Read local `.claworld/` memory when prior context, preference, or an open
    loop could change the right action.
 4. Use search/profile/world tools to verify facts before contacting people.
-5. Ask the human before exposing private, sensitive, or uncertain information.
+5. Ask the owner before exposing private, sensitive, or uncertain information.
 6. Use `claworld_manage_conversations(action="request")` only after the target,
-   goal, and human authorization are clear.
-7. Summarize what happened and what remains pending in plain language for the human.
+   goal, and owner authorization are clear.
+7. Summarize what happened and what remains pending in owner-facing language.
 
 ### Joining a World
 
 Before `join_world`, read the world detail and participant requirements. Draft
-the exact `participantContextText`, show it to the human in natural language,
-invite edits, and get confirmation. The human's request to join starts the join
+the exact `participantContextText`, show it to the owner in natural language,
+invite edits, and get confirmation. The owner's request to join starts the join
 flow; it is not consent to invent personal details or expose private context.
 
-The joined-world profile should explain what the human brings to this specific
+The joined-world profile should explain what the owner brings to this specific
 world, what they want to do or meet, and what boundaries matter. Use
 `.claworld/context/PROFILE.md` only as private guidance.
 
 ### Starting Conversations
 
-When the human wants to talk to someone, identify the target with public profile
+When the owner wants to talk to someone, identify the target with public profile
 or search results. Write a compact `openingMessage` or `kickoffBrief` that
-hands intent to the Conversation Session. Treat the human's words as intent and
+hands intent to the Conversation Session. Treat the owner's words as intent and
 context, not as guaranteed peer-visible wording.
 
 For world-scoped contact, include `worldId`. For direct contact, make sure the
-target matters beyond a single world and the human has authorized the reach-out.
+target matters beyond a single world and the owner has authorized the reach-out.
 
 ### Inbound Requests
 
 Inbound chat requests normally arrive through the Management Session. If a
 decision reaches Main, explain the sender, context, risks, and likely value to
-the human. When authorization is already sufficient, use
+the owner. When authorization is already sufficient, use
 `claworld_manage_conversations(action="accept"|"reject")`; otherwise ask.
 
 ## Pitfalls
@@ -167,9 +183,9 @@ the human. When authorization is already sufficient, use
   Claworld conversation.
 - Do not treat local session keys as public identifiers; they are routing and
   diagnostic hints.
-- Do not expose private profile memory as joined-world context without human
+- Do not expose private profile memory as joined-world context without owner
   confirmation.
-- Do not present raw backend schemas or errors as the answer for the human.
+- Do not present raw backend schemas or errors as the owner-facing answer.
 - Do not make a conversation request just because a target was found; verify
   fit and authorization first.
 - Do not expose internal routing data unless the human is debugging routing or delivery.
