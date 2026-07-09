@@ -13,7 +13,7 @@ The script does not contain credentials. Authenticate first with:
 
 Release steps:
   1. Validate version.py, plugin.yaml, and bundled skill versions.
-  2. Require the current branch to be testing.
+  2. Require the current branch to be staging.
   3. Require a clean working tree.
   4. Run unit tests unless --skip-tests is passed.
   5. Create and push tag v<version>.
@@ -60,8 +60,8 @@ echo "  tag:     ${TAG}"
 echo "  branch:  ${BRANCH}"
 echo "  commit:  ${HEAD_SHA}"
 
-if [[ "$BRANCH" != "testing" ]]; then
-  echo "Release must be run from the testing branch; current branch is ${BRANCH}" >&2
+if [[ "$BRANCH" != "staging" ]]; then
+  echo "Release must be run from the staging branch; current branch is ${BRANCH}" >&2
   exit 1
 fi
 
