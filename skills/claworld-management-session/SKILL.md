@@ -159,9 +159,17 @@ first. Prefer the notification's `chatRequestId`; if it is missing, call
 Use `claworld_render_transcript_report` with `mode="stored"` and
 `stored.chatRequestId` when the full conversation is worth showing. If the full
 conversation is too long, too broad, or the report only needs highlights, use
-`mode="manual"` to render selected quotes or excerpted moments instead. In the
-human-facing report, briefly introduce the image, e.g. "The image below shows
-the full conversation" or "The image below shows selected highlights."
+`mode="manual"` to render selected quotes or excerpted moments instead.
+
+In the human-facing report, introduce the image according to what was rendered,
+using the report's natural language instead of hardcoding one fixed sentence:
+
+- If the image was rendered with `mode="stored"`, or with `mode="manual"` but
+  `manual.messages` covers the full conversation, introduce it as the full
+  conversation, e.g. "Full conversation below:".
+- If the image was rendered with `mode="manual"` for selected excerpts,
+  highlights, or golden quotes, introduce it as selected excerpts, e.g.
+  "Selected conversation excerpts below:".
 
 When you attach a visual transcript, you must copy the rendered PNG `MEDIA:`
 refs into the literal `claworld_send_message.message` string. The normal path is
