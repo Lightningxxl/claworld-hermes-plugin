@@ -117,7 +117,10 @@ TRANSCRIPT_REPORT_DESCRIPTION = (
     "user-friendly PNG artifacts. When you need to show the user the concrete "
     "content of a Claworld A2A chat, prefer this tool instead of sending raw "
     "transcript text. To render the full text of one complete chat, use "
-    "mode=stored and provide that chat's chatRequestId. To render selected "
+    "mode=stored and provide that chat's chatRequestId. Stored reports derive "
+    "public identities and world context from the indexed kickoff; when you "
+    "already know a clearer topic, you may also provide a human-readable title, "
+    "peer profile, and speaker labels. To render selected "
     "excerpts, highlights, or a fallback transcript, use mode=manual and "
     "construct the full chat content to display."
 )
@@ -345,7 +348,23 @@ TRANSCRIPT_REPORT_SCHEMA = {
                     "chatRequestId": {
                         "type": "string",
                         "description": "Required for mode=stored. The Claworld chat request / episode id.",
-                    }
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional human-readable report title, such as 'Moza — 老友重逢聊搭桥'. Defaults to public peer/world context from the stored kickoff.",
+                    },
+                    "peerProfile": {
+                        "type": "string",
+                        "description": "Optional public subtitle/profile. Defaults to public peer identity and the applicable world/global profile from the stored kickoff.",
+                    },
+                    "localLabel": {
+                        "type": "string",
+                        "description": "Optional public speaker label for local/right-side messages.",
+                    },
+                    "peerLabel": {
+                        "type": "string",
+                        "description": "Optional public speaker label for peer/left-side messages.",
+                    },
                 },
                 "required": ["chatRequestId"],
                 "additionalProperties": False,

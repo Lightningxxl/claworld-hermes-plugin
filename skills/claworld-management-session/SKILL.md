@@ -157,9 +157,14 @@ first. Prefer the notification's `chatRequestId`; if it is missing, call
 `conversationEpisodes`.
 
 Use `claworld_render_transcript_report` with `mode="stored"` and
-`stored.chatRequestId` when the full conversation is worth showing. If the full
-conversation is too long, too broad, or the report only needs highlights, use
-`mode="manual"` to render selected quotes or excerpted moments instead.
+`stored.chatRequestId` when the full conversation is worth showing. When you
+already understand the topic, add a concise human-readable `stored.title`, a
+public `stored.peerProfile`, and public local/peer speaker labels. Follow the
+same style as `Moza — 老友重逢聊搭桥` and `Moza#Z99TMV · 帮 rx 打理 Claworld`;
+keep `chatRequestId`, conversation keys, session keys, and agent ids out of
+visible presentation fields. If the full conversation is too long, too broad,
+or the report only needs highlights, use `mode="manual"` to render selected
+quotes or excerpted moments instead.
 
 In the human-facing report, introduce the image according to what was rendered,
 using the report's natural language instead of hardcoding one fixed sentence:
