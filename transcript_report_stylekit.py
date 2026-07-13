@@ -3,35 +3,224 @@
 from __future__ import annotations
 
 import html
-import shutil
-import subprocess
-import sys
+import os
+import struct
+import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .transcript_report_types import LayoutPage, TranscriptMessage
+
+RESVG_REQUIREMENT = "resvg_py>=0.3.3,<0.5"
+
+# One ordered system-font policy is shared by the SVG source and every PNG
+# render. Families with dependable semibold/bold faces come first. Missing
+# families are skipped by resvg's system-font database, so this same list works
+# on macOS, Windows, and common Linux distributions without bundling fonts.
+SYSTEM_UI_FONT_FAMILIES = (
+    # macOS and Windows CJK UI fonts; PingFang keeps the preferred macOS look.
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    # Linux CJK families commonly shipped by Fedora, Ubuntu, and derivatives.
+    "Noto Sans CJK SC",
+    "Noto Sans SC",
+    "Source Han Sans SC",
+    "Hiragino Sans GB",
+    # Japanese, Korean, and Traditional Chinese system fallbacks.
+    "Yu Gothic UI",
+    "Yu Gothic",
+    "Meiryo",
+    "Hiragino Kaku Gothic ProN",
+    "Apple SD Gothic Neo",
+    "Malgun Gothic",
+    "Noto Sans CJK JP",
+    "Noto Sans CJK KR",
+    "Noto Sans CJK TC",
+    "Noto Sans CJK HK",
+    # Broad Latin, Greek, and Cyrillic UI coverage.
+    "Noto Sans",
+    "Segoe UI",
+    "SF Pro Text",
+    "Arial",
+    # Script-specific Noto families are used when the broad fonts lack glyphs.
+    "Noto Sans Arabic",
+    "Noto Sans Hebrew",
+    "Noto Sans Devanagari",
+    "Noto Sans Bengali",
+    "Noto Sans Gurmukhi",
+    "Noto Sans Gujarati",
+    "Noto Sans Tamil",
+    "Noto Sans Telugu",
+    "Noto Sans Kannada",
+    "Noto Sans Malayalam",
+    "Noto Sans Thai",
+    "Noto Sans Lao",
+    "Noto Sans Khmer",
+    "Noto Sans Myanmar",
+    "Noto Sans Ethiopic",
+    # Keep emoji last so it only supplies glyphs unavailable above.
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Noto Color Emoji",
+)
+
+SYSTEM_MONO_FONT_FAMILIES = (
+    "SF Mono",
+    "Cascadia Mono",
+    "JetBrains Mono",
+    "Fira Code",
+    "Menlo",
+    "Monaco",
+    "Noto Sans Mono CJK SC",
+    "Sarasa Mono SC",
+    "Microsoft YaHei UI",
+    "PingFang SC",
+)
+
+SCRIPT_FONT_FAMILIES = {
+    "arabic": (
+        "Noto Sans Arabic",
+        "Geeza Pro",
+        "Segoe UI",
+        "Tahoma",
+        "Arial",
+    ),
+    "hebrew": (
+        "Noto Sans Hebrew",
+        "Arial Hebrew",
+        "Segoe UI",
+        "Arial",
+    ),
+    "devanagari": (
+        "Noto Sans Devanagari",
+        "Kohinoor Devanagari",
+        "Nirmala UI",
+        "Mangal",
+    ),
+    "bengali": ("Noto Sans Bengali", "Kohinoor Bangla", "Nirmala UI", "Vrinda"),
+    "gurmukhi": ("Noto Sans Gurmukhi", "Kohinoor Gurmukhi", "Nirmala UI", "Raavi"),
+    "gujarati": ("Noto Sans Gujarati", "Nirmala UI", "Shruti"),
+    "tamil": ("Noto Sans Tamil", "Tamil Sangam MN", "Nirmala UI", "Latha"),
+    "telugu": ("Noto Sans Telugu", "Kohinoor Telugu", "Nirmala UI", "Gautami"),
+    "kannada": ("Noto Sans Kannada", "Nirmala UI", "Tunga"),
+    "malayalam": ("Noto Sans Malayalam", "Nirmala UI", "Kartika"),
+    "thai": ("Noto Sans Thai", "Thonburi", "Leelawadee UI", "Tahoma"),
+    "lao": ("Noto Sans Lao", "Lao Sangam MN", "Leelawadee UI", "DokChampa"),
+    "khmer": ("Noto Sans Khmer", "Khmer Sangam MN", "Leelawadee UI", "DaunPenh"),
+    "myanmar": ("Noto Sans Myanmar", "Myanmar Sangam MN", "Myanmar Text"),
+    "ethiopic": ("Noto Sans Ethiopic", "Kefa", "Nyala"),
+    "japanese": (
+        "Hiragino Kaku Gothic ProN",
+        "Yu Gothic UI",
+        "Yu Gothic",
+        "Meiryo",
+        "Noto Sans CJK JP",
+    ),
+    "korean": (
+        "Apple SD Gothic Neo",
+        "Malgun Gothic",
+        "Noto Sans CJK KR",
+    ),
+    "cjk": (
+        "PingFang SC",
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "Source Han Sans SC",
+        "Hiragino Sans GB",
+    ),
+}
 
 
 def esc(value: Any) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
+def _css_font_family(families: tuple[str, ...], generic: str) -> str:
+    return ", ".join(f"'{family}'" for family in families) + f", {generic}"
+
+
 def font_family() -> str:
-    return (
-        "'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Zen Hei', "
-        "'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', 'IPA P Gothic', "
-        "'AR PL UMing CN', 'Arial Unicode MS', -apple-system, BlinkMacSystemFont, "
-        "'Segoe UI', Arial, sans-serif"
+    return _css_font_family(SYSTEM_UI_FONT_FAMILIES, "sans-serif")
+
+
+def font_family_for_text(text: str) -> str:
+    """Return a bold-capable system-font stack for the text's main script."""
+
+    return font_family_for_script(_text_script(text))
+
+
+def font_family_for_script(script: str) -> str:
+    preferred = SCRIPT_FONT_FAMILIES.get(script, ())
+    families = tuple(dict.fromkeys((*preferred, *SYSTEM_UI_FONT_FAMILIES)))
+    return _css_font_family(families, "sans-serif")
+
+
+def font_class_for_text(text: str) -> str:
+    return f"font-{_text_script(text)}"
+
+
+def font_css_rules(texts: list[str]) -> str:
+    scripts = tuple(dict.fromkeys(_text_script(text) for text in texts))
+    return " ".join(
+        f".font-{script} {{ font-family: {font_family_for_script(script)}; }}"
+        for script in scripts
     )
 
 
 def terminal_font_family() -> str:
-    return (
-        "'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Fira Code', 'JetBrains Mono', "
-        "'Noto Sans Mono CJK SC', 'Sarasa Mono SC', 'WenQuanYi Zen Hei Mono', "
-        "'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', monospace"
+    return _css_font_family(SYSTEM_MONO_FONT_FAMILIES, "monospace")
+
+
+def _text_script(text: str) -> str:
+    codepoints = [ord(ch) for ch in str(text or "")]
+    checks = (
+        ("devanagari", ((0x0900, 0x097F), (0xA8E0, 0xA8FF))),
+        ("bengali", ((0x0980, 0x09FF),)),
+        ("gurmukhi", ((0x0A00, 0x0A7F),)),
+        ("gujarati", ((0x0A80, 0x0AFF),)),
+        ("tamil", ((0x0B80, 0x0BFF),)),
+        ("telugu", ((0x0C00, 0x0C7F),)),
+        ("kannada", ((0x0C80, 0x0CFF),)),
+        ("malayalam", ((0x0D00, 0x0D7F),)),
+        ("thai", ((0x0E00, 0x0E7F),)),
+        ("lao", ((0x0E80, 0x0EFF),)),
+        ("myanmar", ((0x1000, 0x109F), (0xAA60, 0xAA7F), (0xA9E0, 0xA9FF))),
+        ("ethiopic", ((0x1200, 0x137F), (0x1380, 0x139F), (0x2D80, 0x2DDF))),
+        ("khmer", ((0x1780, 0x17FF), (0x19E0, 0x19FF))),
+        ("hebrew", ((0x0590, 0x05FF),)),
+        (
+            "arabic",
+            (
+                (0x0600, 0x06FF),
+                (0x0750, 0x077F),
+                (0x08A0, 0x08FF),
+                (0xFB50, 0xFDFF),
+                (0xFE70, 0xFEFF),
+            ),
+        ),
+        ("japanese", ((0x3040, 0x30FF), (0x31F0, 0x31FF))),
+        ("korean", ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF))),
+        ("cjk", ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))),
     )
+    counts = {
+        script: sum(
+            1
+            for code in codepoints
+            if any(start <= code <= end for start, end in ranges)
+        )
+        for script, ranges in checks
+    }
+    # Kana and Hangul establish the correct regional Han glyph style even when
+    # the same line contains more ideographs than kana/syllables.
+    if counts["japanese"]:
+        return "japanese"
+    if counts["korean"]:
+        return "korean"
+    script, count = max(counts.items(), key=lambda item: item[1])
+    return script if count else "default"
 
 
 def wrap_text(text: str, max_units: float) -> list[str]:
@@ -128,7 +317,7 @@ def display_cols(text: str) -> int:
 
 
 def char_cols(ch: str) -> int:
-    if ch == "\n":
+    if ch == "\n" or _is_nonspacing(ch):
         return 0
     return 2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1
 
@@ -156,13 +345,21 @@ def pad_display(text: str, cols: int) -> str:
 
 
 def char_units(ch: str) -> float:
-    if ch == "\n":
+    if ch == "\n" or _is_nonspacing(ch):
         return 0.0
     if ch.isspace():
         return 0.35
     if unicodedata.east_asian_width(ch) in {"W", "F"}:
         return 1.0
     return 0.55
+
+
+def _is_nonspacing(ch: str) -> bool:
+    return ch in {"\u200c", "\u200d", "\ufe0e", "\ufe0f"} or unicodedata.category(ch) in {
+        "Mn",
+        "Mc",
+        "Me",
+    }
 
 
 def text_units(text: str) -> float:
@@ -185,160 +382,61 @@ def ellipsize_text(text: str, max_units: float, *, suffix: str = "...") -> str:
     return kept.rstrip() + suffix
 
 
-def write_png_with_fallback(svg_path: Path, png_path: Path, page: LayoutPage, pillow_renderer: Callable[[LayoutPage, Path], None]) -> dict:
+def write_png_from_svg(svg_path: Path, png_path: Path, *, width: int, height: int) -> dict:
+    """Rasterize the canonical SVG with resvg and no visual fallback."""
+
+    try:
+        import resvg_py  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "PNG export requires the resvg renderer. Install it in the Hermes "
+            f"Python environment with: python -m pip install '{RESVG_REQUIREMENT}'"
+        ) from exc
+
     png_path.parent.mkdir(parents=True, exist_ok=True)
-    errors: list[str] = []
-    if page_contains_cjk(page):
-        if sys.platform == "darwin" and shutil.which("sips"):
-            try:
-                subprocess.run(["sips", "-s", "format", "png", str(svg_path), "--out", str(png_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                return {"renderer": "sips-cjk"}
-            except Exception as exc:
-                errors.append(f"sips: {exc}")
-        try:
-            pillow_renderer(page, png_path)
-            return {"renderer": "pillow-layout-cjk"}
-        except Exception as exc:
-            errors.append(f"pillow-cjk: {exc}")
-
     try:
-        import cairosvg  # type: ignore
-
-        cairosvg.svg2png(url=str(svg_path), write_to=str(png_path))
-        return {"renderer": "cairosvg"}
+        png_bytes = resvg_py.svg_to_bytes(
+            svg_path=str(svg_path),
+            width=width,
+            height=height,
+            resources_dir=str(svg_path.parent),
+            skip_system_fonts=False,
+            shape_rendering="geometric_precision",
+            text_rendering="optimize_legibility",
+            image_rendering="optimize_quality",
+        )
     except Exception as exc:
-        errors.append(f"cairosvg: {exc}")
+        raise ValueError(f"resvg PNG export failed for {svg_path.name}: {exc}") from exc
 
-    for command, renderer in (
-        (["rsvg-convert", str(svg_path), "-o", str(png_path)], "rsvg-convert"),
-        (["resvg", str(svg_path), str(png_path)], "resvg"),
-    ):
-        if not shutil.which(command[0]):
-            continue
-        try:
-            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return {"renderer": renderer}
-        except Exception as exc:
-            errors.append(f"{renderer}: {exc}")
+    _validate_png(png_bytes, width=width, height=height)
+    _atomic_write_bytes(png_path, png_bytes)
+    return {
+        "renderer": "resvg",
+        "binding": "resvg_py",
+        "bindingVersion": str(getattr(resvg_py, "__version__", "unknown")),
+        "engineVersion": str(getattr(resvg_py, "__resvg_version__", "unknown")),
+        "fontPolicy": "system-font-priority",
+        "fontStrategy": "unicode-script-aware",
+    }
 
-    if sys.platform == "darwin" and shutil.which("sips"):
-        try:
-            subprocess.run(["sips", "-s", "format", "png", str(svg_path), "--out", str(png_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return {"renderer": "sips"}
-        except Exception as exc:
-            errors.append(f"sips: {exc}")
 
+def _validate_png(payload: bytes, *, width: int, height: int) -> None:
+    if len(payload) < 24 or payload[:8] != b"\x89PNG\r\n\x1a\n" or payload[12:16] != b"IHDR":
+        raise ValueError("resvg returned invalid PNG data")
+    actual_width, actual_height = struct.unpack(">II", payload[16:24])
+    if (actual_width, actual_height) != (width, height):
+        raise ValueError(
+            "resvg returned unexpected PNG dimensions: "
+            f"{actual_width}x{actual_height}; expected {width}x{height}"
+        )
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
-        pillow_renderer(page, png_path)
-        return {"renderer": "pillow-layout-fallback"}
-    except Exception as exc:
-        errors.append(f"pillow: {exc}")
-    raise ValueError("PNG export failed: " + "; ".join(errors))
-
-
-def page_contains_cjk(page: LayoutPage) -> bool:
-    chunks = [page.title, page.subtitle, page.footer]
-    for item in page.items:
-        if item.get("kind") == "ellipsis":
-            chunks.append(str(item.get("label") or ""))
-            continue
-        message = item.get("message")
-        if isinstance(message, TranscriptMessage):
-            chunks.extend([message.participant_label, message.text, *message.tags])
-        chunks.extend(str(line) for line in item.get("lines") or [])
-    return any(has_cjk(text) for text in chunks)
-
-
-def has_cjk(text: str) -> bool:
-    for ch in str(text or ""):
-        code = ord(ch)
-        if (
-            0x3400 <= code <= 0x4DBF
-            or 0x4E00 <= code <= 0x9FFF
-            or 0xF900 <= code <= 0xFAFF
-            or 0x20000 <= code <= 0x2A6DF
-            or 0x2A700 <= code <= 0x2B73F
-            or 0x2B740 <= code <= 0x2B81F
-            or 0x2B820 <= code <= 0x2CEAF
-            or 0x3000 <= code <= 0x303F
-            or 0xFF00 <= code <= 0xFFEF
-        ):
-            return True
-    return False
-
-
-def rgba(color: str, alpha: int = 255) -> tuple[int, int, int, int]:
-    r, g, b = hex_to_rgb(color)
-    return (r, g, b, alpha)
-
-
-def hex_to_rgb(color: str) -> tuple[int, int, int]:
-    value = str(color or "#000000").strip().lstrip("#")
-    if len(value) == 3:
-        value = "".join(ch * 2 for ch in value)
-    if len(value) != 6:
-        value = "000000"
-    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
-
-
-def draw_vertical_gradient(img: Any, top: str, bottom: str) -> None:
-    from PIL import ImageDraw
-
-    draw = ImageDraw.Draw(img)
-    width, height = img.size
-    top_rgb = hex_to_rgb(top)
-    bottom_rgb = hex_to_rgb(bottom)
-    for y in range(height):
-        t = y / max(1, height - 1)
-        color = tuple(int(top_rgb[idx] + (bottom_rgb[idx] - top_rgb[idx]) * t) for idx in range(3))
-        draw.line([(0, y), (width, y)], fill=(*color, 255))
-
-
-def pil_terminal_font(size: int):
-    from PIL import ImageFont
-
-    for candidate in (
-        "/System/Library/Fonts/Menlo.ttc",
-        "/System/Library/Fonts/Monaco.ttf",
-        "/Library/Fonts/SF-Mono-Regular.otf",
-        "/usr/share/fonts/truetype/noto/NotoSansMonoCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
-    ):
-        try:
-            if Path(candidate).exists():
-                return ImageFont.truetype(candidate, size=size)
-        except Exception:
-            continue
-    return pil_font(size)
-
-
-def pil_font(size: int):
-    from PIL import ImageFont
-
-    for candidate in (
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
-        "/usr/share/fonts/opentype/adobe-source-han-sans/SourceHanSansSC-Regular.otf",
-        "/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf",
-        "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
-        "/usr/share/fonts/truetype/arphic/uming.ttc",
-        "/usr/share/fonts/truetype/unifont/unifont.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ):
-        try:
-            if Path(candidate).exists():
-                return ImageFont.truetype(candidate, size=size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)

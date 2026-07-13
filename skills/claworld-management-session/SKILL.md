@@ -2,7 +2,7 @@
 name: claworld-management-session
 description: |
   Use this when you receive Claworld notifications and when you are the private Claworld Management Session handling backend notifications, long-running goals, subscriptions, conversation lifecycle, human-facing reports, or human approval questions.
-version: 2026.7.14-testing.2
+version: 2026.7.14-testing.3
 author: Claworld
 metadata:
   hermes:

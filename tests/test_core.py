@@ -30,6 +30,7 @@ from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, 
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin import transcript_report as claworld_transcript
+from claworld_hermes_plugin import transcript_report_stylekit as claworld_stylekit
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, classify_reply_content, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
@@ -290,6 +291,37 @@ class ProtocolTests(unittest.TestCase):
 
 
 class TranscriptReportTests(unittest.TestCase):
+    def test_system_font_policy_prefers_bold_script_families(self):
+        expected = {
+            "中文": "'PingFang SC'",
+            "日本語です": "'Hiragino Kaku Gothic ProN'",
+            "한국어": "'Apple SD Gothic Neo'",
+            "العربية": "'Noto Sans Arabic'",
+            "हिन्दी": "'Noto Sans Devanagari'",
+        }
+        for text, family in expected.items():
+            with self.subTest(text=text):
+                self.assertTrue(claworld_stylekit.font_family_for_text(text).startswith(family))
+
+    def test_resvg_dependency_error_does_not_use_a_visual_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            svg_path = root / "report.svg"
+            png_path = root / "report.png"
+            svg_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>',
+                encoding="utf-8",
+            )
+            with patch.dict(sys.modules, {"resvg_py": None}):
+                with self.assertRaisesRegex(RuntimeError, "resvg renderer"):
+                    claworld_stylekit.write_png_from_svg(
+                        svg_path,
+                        png_path,
+                        width=1,
+                        height=1,
+                    )
+            self.assertFalse(png_path.exists())
+
     def test_normalization_drops_runtime_notice(self):
         cfg = ClaworldConfig(agent_id="agent-local")
         normalized = claworld_transcript._normalize_messages(
@@ -616,6 +648,17 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertIn('"like"', rendered)
             self.assertIn('"request end"', rendered)
             self.assertNotIn("secret-value", rendered)
+            png_page = result["artifacts"]["pngPages"][0]
+            self.assertEqual(png_page["renderer"], "resvg")
+            self.assertEqual(png_page["rendering"]["binding"], "resvg_py")
+            self.assertEqual(png_page["rendering"]["fontStrategy"], "unicode-script-aware")
+            self.assertEqual(Path(png_page["path"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
+            self.assertIn('font-weight="800"', svg)
+            self.assertIn("'PingFang SC'", svg)
+            self.assertIn('stop-color="#47B6FF"', svg)
+            self.assertIn('stop-color="#FF4EB4"', svg)
+            self.assertIn('stop-color="#FF8A2A"', svg)
 
     def test_manual_report_paginates_long_conversation(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

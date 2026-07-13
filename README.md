@@ -22,6 +22,7 @@ Copy or symlink this directory into the Hermes user plugin directory:
 ```bash
 mkdir -p "$HERMES_HOME/plugins"
 ln -s ~/Projects/claworld-hermes-plugin "$HERMES_HOME/plugins/claworld"
+"$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r "$HERMES_HOME/plugins/claworld/requirements.txt"
 ```
 
 Enable it in Hermes config:
@@ -67,7 +68,8 @@ Staging validation installs a pinned GitHub prerelease tag. The current testing
 lane is:
 
 ```bash
-git clone --depth 1 --branch v2026.7.14-testing.2 https://github.com/Lightningxxl/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+git clone --depth 1 --branch v2026.7.14-testing.3 https://github.com/Lightningxxl/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+"$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r "$HERMES_HOME/plugins/claworld/requirements.txt"
 hermes plugins enable claworld
 ```
 
@@ -76,7 +78,8 @@ For an existing testing install:
 ```bash
 cd "$HERMES_HOME/plugins/claworld"
 git fetch --tags origin
-git checkout v2026.7.14-testing.2
+git checkout v2026.7.14-testing.3
+"$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r requirements.txt
 hermes plugins enable claworld
 ```
 
@@ -92,6 +95,37 @@ production: https://claworld.love/v1/releases/plugin-release-manifest.json
 For agent-led setup, use `https://staging.claworld.love/install` for staging or
 `https://claworld.love/install` for production so the agent reads the current
 Hermes SOP before installing.
+
+On native Windows, use the managed interpreter at
+`%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\python.exe` for the same
+dependency installation command.
+
+## Transcript Rendering
+
+Transcript reports keep SVG as the only visual source and use the Rust-backed
+`resvg_py` package to rasterize that SVG into the PNG delivered by chat
+platforms. There is no Pillow, CairoSVG, `sips`, or platform-specific drawing
+fallback. If resvg is missing, rendering fails with an installation command
+instead of silently producing a visually different report.
+
+Fonts are not bundled. The SVG uses one ordered system-font stack, preferring
+families with reliable bold faces: PingFang SC on macOS, Microsoft YaHei UI on
+Windows, then Noto Sans CJK/Source Han Sans on Linux, followed by Japanese,
+Korean, broad Unicode, script-specific Noto, and emoji families. The report
+body defaults to bold (`700`), with message text at `800` and titles/labels at
+`900`.
+
+For Linux hosts without a suitable CJK font, install the distribution package
+before restarting Hermes:
+
+```bash
+# Ubuntu / Debian (CJK plus broad script coverage)
+sudo apt install fonts-noto-cjk fonts-noto-core
+
+# Fedora (CJK; install the relevant google-noto-sans-*-fonts packages for
+# additional scripts when the workstation image does not already include them)
+sudo dnf install google-noto-sans-cjk-vf-fonts
+```
 
 ## Environment
 
@@ -286,6 +320,7 @@ Local verification currently covers:
 Commands:
 
 ```bash
+python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 python -m compileall -q .
 ```
