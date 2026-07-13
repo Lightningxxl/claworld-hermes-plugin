@@ -1206,6 +1206,72 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ToolSchemaTests(unittest.TestCase):
+    def test_manage_account_delivers_ready_share_card_to_current_hermes_chat(self):
+        cfg = ClaworldConfig(server_url="https://staging.claworld.love", agent_id="agt_moza")
+        share_card = {
+            "status": "ready",
+            "imageUrl": "https://staging.claworld.love/v1/share-card/moza.jpg?token=card-token",
+            "downloadUrl": "https://staging.claworld.love/v1/share-card/moza.jpg?token=card-token",
+            "variant": "zh",
+        }
+        downloaded = Path("/tmp/claworld-share-card-moza.jpg")
+
+        with patch(
+            "claworld_hermes_plugin.tools.request_json",
+            return_value={"status": "ready", "profile": {"status": "ready", "shareCard": share_card}},
+        ), patch(
+            "claworld_hermes_plugin.tools._augment_account_binding",
+            side_effect=lambda payload, **_: payload,
+        ), patch(
+            "claworld_hermes_plugin.tools._current_hermes_session_context",
+            return_value={"platform": "feishu", "chatId": "oc_test", "threadId": "thread-1"},
+        ), patch(
+            "claworld_hermes_plugin.tools.download_share_card",
+            return_value=downloaded,
+        ) as download, patch(
+            "claworld_hermes_plugin.tools._call_send_message_tool",
+            return_value={"success": True, "message_id": "om_image_1", "mirrored": True},
+        ) as send:
+            result = claworld_tools._manage_account(
+                cfg,
+                {"action": "view_account", "generateShareCard": True, "shareCardVariant": "zh"},
+            )
+
+        download.assert_called_once_with(
+            cfg,
+            share_card["imageUrl"],
+            claworld_tools.hermes_home_path() / "cache" / "images" / "claworld_share_cards",
+        )
+        send.assert_called_once_with(
+            {
+                "action": "send",
+                "target": "feishu:oc_test:thread-1",
+                "message": f"MEDIA:{downloaded}",
+            }
+        )
+        delivered_card = result["profile"]["shareCard"]
+        self.assertEqual(delivered_card["delivery"]["status"], "delivered")
+        self.assertEqual(delivered_card["delivery"]["messageId"], "om_image_1")
+        self.assertIn("只用一句普通文本确认", delivered_card["description"])
+
+    def test_manage_account_fails_clearly_when_share_card_has_no_human_chat_route(self):
+        cfg = ClaworldConfig(server_url="https://staging.claworld.love", agent_id="agt_moza")
+        with patch(
+            "claworld_hermes_plugin.tools.request_json",
+            return_value={
+                "status": "ready",
+                "shareCard": {"status": "ready", "imageUrl": "https://staging.claworld.love/card.jpg"},
+            },
+        ), patch(
+            "claworld_hermes_plugin.tools._augment_account_binding",
+            side_effect=lambda payload, **_: payload,
+        ), patch(
+            "claworld_hermes_plugin.tools._current_hermes_session_context",
+            return_value={"platform": "local", "chatId": ""},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "active human chat route"):
+                claworld_tools._manage_account(cfg, {"action": "view_account", "generateShareCard": True})
+
     def test_tool_schemas_are_hermes_function_schemas(self):
         schemas = [
             claworld_tools.MANAGE_ACCOUNT_SCHEMA,
@@ -1711,7 +1777,10 @@ class ToolRoutingTests(unittest.TestCase):
                 },
             }
 
-        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request), patch(
+            "claworld_hermes_plugin.tools._deliver_account_share_card",
+            side_effect=lambda _cfg, result: result,
+        ):
             result = claworld_tools._manage_account(cfg, {"action": "view_account", "generateShareCard": True})
 
         self.assertEqual(calls[0]["endpoint"], "/v1/account")
@@ -1748,7 +1817,10 @@ class ToolRoutingTests(unittest.TestCase):
                 },
             }
 
-        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request), patch(
+            "claworld_hermes_plugin.tools._deliver_account_share_card",
+            side_effect=lambda _cfg, result: result,
+        ):
             result = claworld_tools._manage_account(
                 self.cfg,
                 {"action": "update_display_name", "displayName": "Mira"},
