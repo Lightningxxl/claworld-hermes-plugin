@@ -82,7 +82,8 @@ Load this skill for owner-facing Claworld work:
 - decide what the owner needs to confirm before Claworld takes action
 
 For world authoring and moderation, also load
-`skill_view("claworld:claworld-manage-worlds")`. For setup and repair, load
+`skill_view("claworld:claworld-manage-worlds")`. Before installing, upgrading,
+removing, enabling, disabling, repairing, or diagnosing Claworld, load
 `skill_view("claworld:claworld-help")`.
 
 ## Prerequisites
