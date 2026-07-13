@@ -10,10 +10,10 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult
 
 from .config import ClaworldConfig
-from .protocol import build_agent_text
+from .protocol import build_agent_text, classify_reply_content
 from .relay_client import RelayClient
 from .session_router import build_hermes_session_key, build_session_source, route_envelope
-from .working_memory import append_journal, build_prompt_context, ensure_working_memory, record_claworld_route
+from .working_memory import append_journal, build_prompt_context, ensure_working_memory, record_claworld_route, record_outbound_reply
 
 logger = logging.getLogger(__name__)
 
@@ -27,39 +27,10 @@ class DeliveryRecord:
     replyable: bool = True
     replied: bool = False
     delivery_type: str | None = None
+    chat_request_id: str | None = None
     retried: bool = False
     saw_operational_notice: bool = False
 
-
-@dataclass(frozen=True)
-class ReplyClassification:
-    text: str = ""
-    silence_reason: str | None = None
-
-
-_RELAY_OPERATIONAL_NOTICE_PATTERNS = (
-    re.compile("^\U0001f9ed\\s*New session:\\s+\\S+", re.IGNORECASE),
-    re.compile("^\U0001f9f9\\s*Auto-compaction complete(?:\\s*\\(count \\d+\\))?\\.$", re.IGNORECASE),
-    re.compile("^\u21aa\ufe0f?\\s*Model Fallback:", re.IGNORECASE),
-    re.compile("^\u21aa\ufe0f?\\s*Model Fallback cleared:", re.IGNORECASE),
-    re.compile("^\u26a0\ufe0f?\\s*Agent failed before reply:", re.IGNORECASE),
-    re.compile("^Sent the (?:reply|opener|Claworld reply)\\.?$", re.IGNORECASE),
-)
-
-_RELAY_RUNTIME_ERROR_PATTERNS = (
-    re.compile("^\u26a0\ufe0f?\\s*Agent failed before reply:", re.IGNORECASE),
-    re.compile("^LLM request failed:", re.IGNORECASE),
-    re.compile("^LLM request timed out\\.", re.IGNORECASE),
-    re.compile("^LLM request unauthorized\\.", re.IGNORECASE),
-    re.compile("^The AI service is temporarily overloaded\\.", re.IGNORECASE),
-    re.compile("^The AI service returned an error\\.", re.IGNORECASE),
-    re.compile("^\u26a0\ufe0f?\\s*API rate limit reached\\.", re.IGNORECASE),
-    re.compile("^\u26a0\ufe0f?\\s*.+\\s+returned a billing error\\b", re.IGNORECASE),
-)
-
-_RELAY_OPERATIONAL_SUFFIX_PATTERNS = (
-    re.compile("^Usage:\\s+.+\\s+in\\s+/\\s+.+\\s+out(?:\\s+\u00b7\\s+est\\s+.+)?$", re.IGNORECASE),
-)
 
 _HERMES_TRANSIENT_STATUS_PATTERNS = (
     re.compile("^\u23f3\\s*Working\\s+\u2014\\s+\\d+\\s+min(?:\\s+\u2014\\s+.*)?$", re.IGNORECASE),
@@ -124,7 +95,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             if not record.replyable:
                 record.replied = True
                 return SendResult(success=True, message_id=record.delivery_id)
-            classification = _classify_reply_content(content)
+            classification = classify_reply_content(content)
             if classification.silence_reason:
                 record.saw_operational_notice = True
                 logger.info(
@@ -134,6 +105,16 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             else:
                 await self.client.send_reply(record.delivery_id, record.relay_session_key, classification.text)
                 record.replied = True
+                try:
+                    record_outbound_reply(
+                        self.memory_root,
+                        chat_request_id=record.chat_request_id,
+                        delivery_id=record.delivery_id,
+                        from_agent_id=self.claworld_config.agent_id,
+                        command_text=classification.text,
+                    )
+                except Exception as exc:
+                    logger.warning("failed to index acknowledged Claworld reply: %s", exc)
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
         return SendResult(success=True, message_id=record.delivery_id)
@@ -201,6 +182,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             event_type=envelope.event_type,
             replyable=_is_replyable_delivery(envelope),
             delivery_type=envelope.metadata.get("deliveryType"),
+            chat_request_id=envelope.chat_request_id,
         )
         self._deliveries_by_id[record.delivery_id] = record
         self._latest_by_chat[route.chat_id] = record.delivery_id
@@ -285,10 +267,6 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         record.replied = True
 
 
-def _is_no_reply(content: str) -> bool:
-    return str(content or "").strip() == "NO_REPLY"
-
-
 def _is_hermes_home_channel_notice(content: str) -> bool:
     text = str(content or "").strip()
     return (
@@ -303,35 +281,8 @@ def _is_hermes_transient_status_notice(content: str) -> bool:
     return bool(text) and _matches_any(_HERMES_TRANSIENT_STATUS_PATTERNS, text)
 
 
-def _strip_relay_operational_suffix(content: str) -> str:
-    lines = str(content or "").splitlines()
-    while lines:
-        last_line = str(lines[-1] or "").strip()
-        if not last_line:
-            lines.pop()
-            continue
-        if not any(pattern.search(last_line) for pattern in _RELAY_OPERATIONAL_SUFFIX_PATTERNS):
-            break
-        lines.pop()
-    return "\n".join(lines).strip()
-
-
 def _matches_any(patterns, text: str) -> bool:
     return any(pattern.search(text) for pattern in patterns)
-
-
-def _classify_reply_content(content: str) -> ReplyClassification:
-    raw_text = str(content or "")
-    normalized = _strip_relay_operational_suffix(raw_text)
-    if not normalized:
-        return ReplyClassification(silence_reason="operational_notice_only" if raw_text.strip() else "empty_reply")
-    if _is_no_reply(normalized):
-        return ReplyClassification(silence_reason="no_reply")
-    if _matches_any(_RELAY_RUNTIME_ERROR_PATTERNS, normalized):
-        return ReplyClassification(silence_reason="runtime_failed_before_reply")
-    if _matches_any(_RELAY_OPERATIONAL_NOTICE_PATTERNS, normalized):
-        return ReplyClassification(silence_reason="operational_notice_only")
-    return ReplyClassification(text=normalized)
 
 
 def _completion_silence_reason(outcome: ProcessingOutcome, record: DeliveryRecord) -> str:

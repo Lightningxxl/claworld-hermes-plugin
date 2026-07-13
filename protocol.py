@@ -13,6 +13,69 @@ from urllib.parse import urlsplit, urlunsplit
 BRIDGE_PROTOCOL = "claworld.delivery_reply.v1"
 
 
+@dataclass(frozen=True)
+class ReplyClassification:
+    text: str = ""
+    silence_reason: str | None = None
+
+
+_RELAY_OPERATIONAL_NOTICE_PATTERNS = (
+    re.compile("^\U0001f9ed\\s*New session:\\s+\\S+", re.IGNORECASE),
+    re.compile("^\U0001f9f9\\s*Auto-compaction complete(?:\\s*\\(count \\d+\\))?\\.$", re.IGNORECASE),
+    re.compile("^\u21aa\ufe0f?\\s*Model Fallback:", re.IGNORECASE),
+    re.compile("^\u21aa\ufe0f?\\s*Model Fallback cleared:", re.IGNORECASE),
+    re.compile("^\u26a0\ufe0f?\\s*Agent failed before reply:", re.IGNORECASE),
+    re.compile("^Sent the (?:reply|opener|Claworld reply)\\.?$", re.IGNORECASE),
+    re.compile("^\u25d0\\s*Session automatically reset\\b", re.IGNORECASE),
+)
+
+_RELAY_RUNTIME_ERROR_PATTERNS = (
+    re.compile("^\u26a0\ufe0f?\\s*Agent failed before reply:", re.IGNORECASE),
+    re.compile("^LLM request failed:", re.IGNORECASE),
+    re.compile("^LLM request timed out\\.", re.IGNORECASE),
+    re.compile("^LLM request unauthorized\\.", re.IGNORECASE),
+    re.compile("^The AI service is temporarily overloaded\\.", re.IGNORECASE),
+    re.compile("^The AI service returned an error\\.", re.IGNORECASE),
+    re.compile("^\u26a0\ufe0f?\\s*API rate limit reached\\.", re.IGNORECASE),
+    re.compile("^\u26a0\ufe0f?\\s*.+\\s+returned a billing error\\b", re.IGNORECASE),
+)
+
+_RELAY_OPERATIONAL_SUFFIX_PATTERNS = (
+    re.compile("^Usage:\\s+.+\\s+in\\s+/\\s+.+\\s+out(?:\\s+\u00b7\\s+est\\s+.+)?$", re.IGNORECASE),
+)
+
+
+def classify_reply_content(content: str) -> ReplyClassification:
+    raw_text = str(content or "")
+    normalized = _strip_relay_operational_suffix(raw_text)
+    if not normalized:
+        return ReplyClassification(silence_reason="operational_notice_only" if raw_text.strip() else "empty_reply")
+    if normalized == "NO_REPLY":
+        return ReplyClassification(silence_reason="no_reply")
+    if _matches_any(_RELAY_RUNTIME_ERROR_PATTERNS, normalized):
+        return ReplyClassification(silence_reason="runtime_failed_before_reply")
+    if _matches_any(_RELAY_OPERATIONAL_NOTICE_PATTERNS, normalized):
+        return ReplyClassification(silence_reason="operational_notice_only")
+    return ReplyClassification(text=normalized)
+
+
+def _strip_relay_operational_suffix(content: str) -> str:
+    lines = str(content or "").splitlines()
+    while lines:
+        last_line = str(lines[-1] or "").strip()
+        if not last_line:
+            lines.pop()
+            continue
+        if not any(pattern.search(last_line) for pattern in _RELAY_OPERATIONAL_SUFFIX_PATTERNS):
+            break
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _matches_any(patterns, text_value: str) -> bool:
+    return any(pattern.search(text_value) for pattern in patterns)
+
+
 def normalize_ws_url(server_url: str) -> str:
     parts = urlsplit(server_url)
     scheme = {"http": "ws", "https": "wss"}.get(parts.scheme, parts.scheme)

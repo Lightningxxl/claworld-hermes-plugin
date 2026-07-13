@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ClaworldConfig, hermes_home_path
+from .protocol import classify_reply_content
 from .transcript_report_stylekit import display_cols
 from .transcript_report_styles import resolve_report_style
 from .transcript_report_types import TranscriptMessage
@@ -21,7 +22,6 @@ DEFAULT_WIDTH = 720
 DEFAULT_MAX_PAGE_HEIGHT = 2600
 
 TIME_SPLIT_SECONDS = 5 * 60
-SEGMENT_GAP_MINUTES = 240
 
 TOP_LEVEL_RENDER_FIELDS = {"mode", "stored", "manual", "style", "maxPageHeight"}
 MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
@@ -42,11 +42,8 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     if not normalized:
         raise ValueError("no visible transcript messages were found for rendering")
 
-    selected, selection = _select_messages(normalized, request)
-    if not selected:
-        if request["mode"] == "stored":
-            raise ValueError(f"chatRequestId was found in local index but no visible transcript episode matched it: {request['chatRequestId']}")
-        raise ValueError("selection did not include any visible transcript messages")
+    selected = normalized
+    selection = _selection_summary(request, len(selected))
 
     width = DEFAULT_WIDTH
     max_page_height = _int(render_args.get("maxPageHeight"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900, maximum=8000)
@@ -183,32 +180,6 @@ def _artifact_page(item: dict) -> dict:
     }
 
 
-def summarize_chat_request_transcript(cfg: ClaworldConfig, chat_request_id: str) -> dict:
-    root = cfg.memory_root_path()
-    index = read_session_index(root)
-    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
-    episode = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else None
-    if not episode:
-        return {"chatRequestId": chat_request_id, "available": False, "reason": "not_indexed"}
-    deliveries = episode.get("deliveries") if isinstance(episode.get("deliveries"), list) else []
-    renderable = [d for d in deliveries if isinstance(d, dict) and _text(d.get("commandText")) and _text(d.get("deliveryType")) != "kickoff"]
-    if not renderable:
-        return {"chatRequestId": chat_request_id, "available": False, "reason": "no_renderable_messages", "source": {"indexSource": "conversationEpisodes"}}
-    peer_count = sum(1 for d in renderable if _text(d.get("fromAgentId")) != cfg.agent_id)
-    local_count = len(renderable) - peer_count
-    timestamps = sorted([t for t in (_text(d.get("turnCreatedAt") or d.get("createdAt")) for d in renderable) if t])
-    return {
-        "chatRequestId": chat_request_id,
-        "available": True,
-        "renderableMessages": len(renderable),
-        "peerMessages": peer_count,
-        "localMessages": local_count,
-        "firstMessageAt": timestamps[0] if timestamps else None,
-        "lastMessageAt": timestamps[-1] if timestamps else None,
-        "source": {"indexSource": "conversationEpisodes"},
-    }
-
-
 def _normalize_render_request(args: dict) -> dict:
     if not isinstance(args, dict):
         raise ValueError("render arguments must be an object")
@@ -320,7 +291,12 @@ def _report_style_name(args: dict) -> str:
     return _text(args.get("style"), "claworld-comic-grid") or "claworld-comic-grid"
 
 
-def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, header_context: dict | None = None) -> list[TranscriptMessage]:
+def _normalize_messages(
+    raw_messages: list,
+    cfg: ClaworldConfig,
+    args: dict,
+    header_context: dict | None = None,
+) -> list[TranscriptMessage]:
     header_context = header_context or {}
     local_identity = _text(header_context.get("localIdentity"))
     peer_identity = _text(header_context.get("peerIdentity"), _text(header_context.get("peerId")))
@@ -343,15 +319,18 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, hea
             delivery_type = _text(raw.get("deliveryType"))
             if delivery_type == "kickoff":
                 continue
+            direction = _text(raw.get("direction"))
             from_agent_id = _text(raw.get("fromAgentId"))
             text = _text(raw.get("commandText"))
             if not text:
                 continue
-            if _is_no_reply(text):
+            classification = classify_reply_content(text)
+            if classification.silence_reason:
                 continue
+            text = classification.text
             created_at = _format_timestamp(raw.get("turnCreatedAt") or raw.get("createdAt"))
             message_id = _text(raw.get("deliveryId"), f"msg-{idx + 1}") or f"msg-{idx + 1}"
-            if from_agent_id and cfg.agent_id and from_agent_id == cfg.agent_id:
+            if direction == "outbound" or (not direction and from_agent_id and cfg.agent_id and from_agent_id == cfg.agent_id):
                 side = "right"
                 participant_id = local_id
                 participant_label = local_label
@@ -374,72 +353,27 @@ def _normalize_messages(raw_messages: list, cfg: ClaworldConfig, args: dict, hea
                 created_at=created_at,
                 tags=tags,
                 source_index=idx,
-                ends_segment="request end" in tags,
-                episode_id="",
             )
         )
     return normalized
 
 
-def _select_messages(messages: list[TranscriptMessage], request: dict) -> tuple[list[TranscriptMessage], dict]:
+def _selection_summary(request: dict, message_count: int) -> dict:
     if request["mode"] == "manual":
-        total = len(messages)
-        return messages, {
+        return {
             "mode": "manual",
-            "messageCount": total,
+            "messageCount": message_count,
             "omittedBefore": 0,
             "omittedAfter": 0,
         }
 
-    chat_request_id = request["chatRequestId"]
-    segments = _segment_messages(messages, SEGMENT_GAP_MINUTES)
-    for segment in segments:
-        episode_ids = {message.episode_id for message in segment if message.episode_id}
-        if chat_request_id in episode_ids:
-            total = len(segment)
-            return list(segment), {
-                "mode": "stored",
-                "chatRequestId": chat_request_id,
-                "messageCount": total,
-                "omittedBefore": 0,
-                "omittedAfter": 0,
-            }
-    return [], {
+    return {
         "mode": "stored",
-        "chatRequestId": chat_request_id,
+        "chatRequestId": request["chatRequestId"],
+        "messageCount": message_count,
         "omittedBefore": 0,
         "omittedAfter": 0,
     }
-
-
-def _segment_messages(messages: list[TranscriptMessage], gap_minutes: int) -> list[list[TranscriptMessage]]:
-    if not messages:
-        return []
-    segments: list[list[TranscriptMessage]] = [[]]
-    previous_ts: float | None = None
-    current_episode_id = ""
-    ended_sides: set[str] = set()
-    episode_completed = False
-    for message in messages:
-        ts = _parse_timeish(message.created_at)
-        gap_boundary = previous_ts is not None and ts is not None and (ts - previous_ts) > gap_minutes * 60
-        message_episode_id = _text(getattr(message, "episode_id", ""), "") or ""
-        episode_boundary = bool(message_episode_id and current_episode_id and message_episode_id != current_episode_id)
-        episode_start_boundary = bool(message_episode_id and not current_episode_id and segments[-1])
-        completion_boundary = episode_completed and not (message_episode_id and message_episode_id == current_episode_id)
-        if segments[-1] and (episode_boundary or episode_start_boundary or completion_boundary or gap_boundary):
-            segments.append([])
-            current_episode_id = ""
-            ended_sides = set()
-            episode_completed = False
-        segments[-1].append(message)
-        if message_episode_id and not current_episode_id:
-            current_episode_id = message_episode_id
-        if message.ends_segment:
-            ended_sides.add(message.side)
-            episode_completed = len(ended_sides) >= 2
-        previous_ts = ts or previous_ts
-    return [segment for segment in segments if segment]
 
 
 def _decorate_selection(messages: list[TranscriptMessage], selection: dict) -> list[dict[str, Any]]:
@@ -854,10 +788,6 @@ def _parse_timeish(value: Any) -> float | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
     except Exception:
         return None
-
-
-def _is_no_reply(text: str) -> bool:
-    return str(text or "").strip() == "NO_REPLY"
 
 
 def _squash_whitespace(text: str) -> str:

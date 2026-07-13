@@ -45,6 +45,7 @@ def _build_delivery_entry(envelope) -> dict | None:
     metadata = getattr(envelope, "metadata", {}) or {}
     entry = {
         "deliveryId": delivery_id,
+        "direction": "inbound",
         "fromAgentId": _text(metadata.get("fromAgentId")) or None,
         "fromAgentCode": _text(metadata.get("fromAgentCode")) or None,
         "fromDisplayIdentity": _text(metadata.get("fromDisplayIdentity")) or None,
@@ -265,6 +266,56 @@ def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) 
                 "deliveries": deliveries,
                 "updatedAt": now,
             }
+    write_session_index(root, data)
+
+
+def record_outbound_reply(
+    root: Path,
+    *,
+    chat_request_id: str | None,
+    delivery_id: str,
+    from_agent_id: str,
+    command_text: str,
+) -> None:
+    """Append an acknowledged local reply to its structured transcript episode."""
+
+    request_id = _text(chat_request_id)
+    reply_text = _text(command_text)
+    if not request_id or not reply_text:
+        return
+
+    data = read_session_index(root)
+    episodes = data.setdefault("conversationEpisodes", {})
+    episode = episodes.get(request_id) if isinstance(episodes.get(request_id), dict) else None
+    if episode is None:
+        return
+    reply_id = f"{delivery_id}:reply"
+    deliveries = list(episode.get("deliveries") or [])
+    if any(isinstance(item, dict) and item.get("deliveryId") == reply_id for item in deliveries):
+        return
+
+    now = iso_now()
+    deliveries.append(
+        {
+            "deliveryId": reply_id,
+            "direction": "outbound",
+            "deliveryType": "reply",
+            "fromAgentId": _text(from_agent_id),
+            "commandText": reply_text,
+            "createdAt": now,
+            "turnCreatedAt": now,
+        }
+    )
+    episode["deliveries"] = deliveries
+    episode["deliveryIds"] = [
+        item.get("deliveryId")
+        for item in deliveries
+        if isinstance(item, dict) and _text(item.get("deliveryId"))
+    ]
+    episode["deliveryCount"] = len(episode["deliveryIds"])
+    episode["lastSeenAt"] = now
+    episode["updatedAt"] = now
+    episodes[request_id] = episode
     write_session_index(root, data)
 
 
