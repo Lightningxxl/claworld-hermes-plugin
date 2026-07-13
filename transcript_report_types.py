@@ -16,8 +16,6 @@ class TranscriptMessage:
     created_at: str = ""
     tags: list[str] = field(default_factory=list)
     source_index: int = 0
-    ends_segment: bool = False
-    episode_id: str = ""
 
 
 @dataclass

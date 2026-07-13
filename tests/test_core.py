@@ -29,11 +29,19 @@ from claworld_hermes_plugin.config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldC
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
-from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, normalize_http_base_url, normalize_ws_url, reply_message
+from claworld_hermes_plugin import transcript_report as claworld_transcript
+from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, classify_reply_content, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
 from claworld_hermes_plugin.version import PLUGIN_VERSION
-from claworld_hermes_plugin.working_memory import build_prompt_context, ensure_working_memory, read_session_index, record_claworld_route
+from claworld_hermes_plugin.working_memory import (
+    build_prompt_context,
+    ensure_working_memory,
+    read_session_index,
+    record_claworld_route,
+    record_outbound_reply,
+    write_session_index,
+)
 
 
 def import_adapter_with_gateway_shim():
@@ -116,6 +124,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(payload["credential"], {"type": "agent_token", "token": "token-1"})
         self.assertEqual(payload["client"], "hermes-plugin")
         self.assertEqual(payload["clientVersion"], "client-1")
+
+    def test_classifies_session_reset_banner_as_operational_notice(self):
+        classification = classify_reply_content(
+            "\u25d0 Session automatically reset (inactive for 24h). Conversation history cleared.\n"
+            "Use /resume to browse and restore a previous session."
+        )
+
+        self.assertEqual(classification.silence_reason, "operational_notice_only")
+        self.assertEqual(classification.text, "")
 
     def test_builds_safe_text_for_slash_delivery(self):
         envelope = build_inbound_envelope(
@@ -272,6 +289,265 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("replyText", message["payload"])
 
 
+class TranscriptReportTests(unittest.TestCase):
+    def test_normalization_drops_runtime_notice(self):
+        cfg = ClaworldConfig(agent_id="agent-local")
+        normalized = claworld_transcript._normalize_messages(
+            [
+                {
+                    "deliveryId": "notice-1",
+                    "fromAgentId": "agent-peer",
+                    "commandText": "\u25d0 Session automatically reset (inactive for 24h). Conversation history cleared.",
+                    "turnCreatedAt": "2026-07-09T17:03:07Z",
+                },
+                {
+                    "deliveryId": "reply-1",
+                    "fromAgentId": "agent-peer",
+                    "commandText": "这里是实际的对话回复。",
+                    "turnCreatedAt": "2026-07-09T17:06:45Z",
+                },
+            ],
+            cfg,
+            {},
+        )
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].text, "这里是实际的对话回复。")
+
+    def test_stored_report_reads_exact_structured_episode_with_both_directions(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(
+                server_url="https://api.example.com",
+                app_token="tok",
+                agent_id="agent-local",
+                working_memory_root=str(root),
+            )
+            context_text = "\n".join(
+                [
+                    "# Background",
+                    "",
+                    "## Conversation Facts",
+                    "- Mode: `direct`",
+                    "",
+                    "## Participant Facts",
+                    "",
+                    "## Peer",
+                    "- Identity: `Peer Direct#PEER01`",
+                    "",
+                    "### Global Profile",
+                    "```text",
+                    "structured peer profile",
+                    "```",
+                ]
+            )
+            data = read_session_index(root)
+            data["conversationEpisodes"] = {
+                "req-old": {
+                    "chatRequestId": "req-old",
+                    "deliveries": [
+                        {
+                            "deliveryId": "old-1",
+                            "direction": "inbound",
+                            "fromAgentId": "agent-peer",
+                            "deliveryType": "turn",
+                            "commandText": "old episode must stay out",
+                            "turnCreatedAt": "2026-07-09T16:00:00Z",
+                        }
+                    ],
+                },
+                "req-new": {
+                    "chatRequestId": "req-new",
+                    "chatId": "conversation-1",
+                    "conversationKey": "pair:a::b:direct",
+                    "deliveries": [
+                        {
+                            "deliveryId": "new-kickoff",
+                            "direction": "inbound",
+                            "fromAgentId": "agent-peer",
+                            "deliveryType": "kickoff",
+                            "commandText": "Backend kickoff command must stay out",
+                            "contextText": context_text,
+                            "turnCreatedAt": "2026-07-09T17:00:00Z",
+                        },
+                        {
+                            "deliveryId": "new-1",
+                            "direction": "inbound",
+                            "fromAgentId": "agent-peer",
+                            "deliveryType": "turn",
+                            "commandText": "new peer hello",
+                            "turnCreatedAt": "2026-07-09T17:01:00Z",
+                        },
+                        {
+                            "deliveryId": "new-1:reply",
+                            "direction": "outbound",
+                            "fromAgentId": "agent-local",
+                            "deliveryType": "reply",
+                            "commandText": "new local reply",
+                            "turnCreatedAt": "2026-07-09T17:01:01Z",
+                        },
+                        {
+                            "deliveryId": "notice-1",
+                            "direction": "inbound",
+                            "fromAgentId": "agent-peer",
+                            "deliveryType": "turn",
+                            "commandText": "◐ Session automatically reset (inactive for 24h). Conversation history cleared.",
+                            "turnCreatedAt": "2026-07-09T17:02:00Z",
+                        },
+                        {
+                            "deliveryId": "new-2",
+                            "direction": "inbound",
+                            "fromAgentId": "agent-peer",
+                            "deliveryType": "turn",
+                            "commandText": "new peer final [[request_conversation_end]]",
+                            "turnCreatedAt": "2026-07-09T17:03:00Z",
+                        },
+                        {
+                            "deliveryId": "new-2:reply",
+                            "direction": "outbound",
+                            "fromAgentId": "agent-local",
+                            "deliveryType": "reply",
+                            "commandText": "new local final [[request_conversation_end]]",
+                            "turnCreatedAt": "2026-07-09T17:03:01Z",
+                        },
+                    ],
+                },
+            }
+            write_session_index(root, data)
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {"mode": "stored", "stored": {"chatRequestId": "req-new"}},
+            )
+
+            self.assertEqual(result["mode"], "stored")
+            self.assertEqual(result["chatRequestId"], "req-new")
+            self.assertEqual(result["messageCount"], 4)
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            rendered = json.dumps(spec, ensure_ascii=False)
+            self.assertIn("new peer hello", rendered)
+            self.assertIn("new local reply", rendered)
+            self.assertIn("new peer final", rendered)
+            self.assertIn("new local final", rendered)
+            self.assertNotIn("old episode must stay out", rendered)
+            self.assertNotIn("Backend kickoff command must stay out", rendered)
+            self.assertNotIn("Session automatically reset", rendered)
+            self.assertEqual({item["side"] for item in spec["participants"]}, {"left", "right"})
+            self.assertEqual(spec["scene"]["peerId"], "Peer Direct#PEER01")
+            self.assertEqual(spec["scene"]["peerProfile"], "structured peer profile")
+            self.assertEqual(spec["scene"]["peerProfileSource"], "contextText")
+
+    def test_manual_report_redacts_secrets_and_renders_control_tags(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Transcript",
+                        "peerProfile": "Peer profile",
+                        "localLabel": "local-agent",
+                        "peerLabel": "peer-agent",
+                        "messages": [
+                            {"from": "peer", "text": "hello [like]", "createdAt": "2026-07-09T17:00:00Z"},
+                            {
+                                "from": "local",
+                                "text": "answer api_key=secret-value [[request_conversation_end]]",
+                                "createdAt": "2026-07-09T17:00:01Z",
+                            },
+                        ],
+                    },
+                },
+            )
+
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            rendered = json.dumps(spec, ensure_ascii=False)
+            self.assertEqual(result["messageCount"], 2)
+            self.assertIn("hello", rendered)
+            self.assertIn('"like"', rendered)
+            self.assertIn('"request end"', rendered)
+            self.assertNotIn("secret-value", rendered)
+
+    def test_manual_report_paginates_long_conversation(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            messages = []
+            for idx in range(12):
+                messages.extend(
+                    [
+                        {
+                            "from": "peer",
+                            "text": f"Round {idx + 1}: peer message with 中文 and enough English text to wrap cleanly.",
+                            "createdAt": str(1700000000 + idx * 360),
+                        },
+                        {
+                            "from": "local",
+                            "text": "Local response with enough detail to exercise visual pagination.",
+                            "createdAt": str(1700000001 + idx * 360),
+                        },
+                    ]
+                )
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Paging test",
+                        "peerProfile": "Peer profile",
+                        "localLabel": "local-agent",
+                        "peerLabel": "peer-agent",
+                        "messages": messages,
+                    },
+                    "maxPageHeight": 980,
+                },
+            )
+
+            self.assertGreaterEqual(result["pageCount"], 2)
+            self.assertEqual(len(result["artifacts"]["pngPages"]), result["pageCount"])
+            self.assertEqual(len(result["artifacts"]["svgPages"]), result["pageCount"])
+
+    def test_local_episode_summary_counts_visible_directions(self):
+        cfg = ClaworldConfig(agent_id="agent-local")
+        summaries = claworld_tools._local_episode_summaries(
+            cfg,
+            {
+                "conversationEpisodes": {
+                    "req-1": {
+                        "chatRequestId": "req-1",
+                        "deliveries": [
+                            {"direction": "inbound", "deliveryType": "turn", "commandText": "peer message"},
+                            {"direction": "outbound", "deliveryType": "reply", "commandText": "local reply"},
+                            {
+                                "direction": "inbound",
+                                "deliveryType": "turn",
+                                "commandText": "◐ Session automatically reset (inactive for 24h).",
+                            },
+                            {"direction": "inbound", "deliveryType": "kickoff", "commandText": "backend command"},
+                        ],
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["renderableMessages"], 2)
+        self.assertEqual(summaries[0]["peerMessages"], 1)
+        self.assertEqual(summaries[0]["localMessages"], 1)
+
 class PluginEntryTests(unittest.TestCase):
     def test_validate_config_returns_plain_boolean(self):
         plugin = import_plugin_entry_with_gateway_shim()
@@ -396,6 +672,13 @@ class PluginSkillTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.hermes_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.hermes_home.cleanup)
+        self.hermes_home_env = patch.dict(os.environ, {"HERMES_HOME": self.hermes_home.name}, clear=False)
+        self.hermes_home_env.start()
+        self.addCleanup(self.hermes_home_env.stop)
+
     def test_connect_accepts_gateway_reconnect_kwarg(self):
         adapter_module = import_adapter_with_gateway_shim()
 
@@ -444,6 +727,89 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reply_result.success)
         self.assertTrue(record.replied)
         self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real peer-visible reply")])
+
+    async def test_acknowledged_reply_is_added_to_structured_transcript(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_root = Path(tmp) / ".claworld"
+            adapter = adapter_module.ClaworldPlatformAdapter(
+                types.SimpleNamespace(
+                    extra={
+                        "server_url": "https://api.example.com",
+                        "app_token": "tok",
+                        "agent_id": "agent-local",
+                        "working_memory_root": str(memory_root),
+                    }
+                )
+            )
+            adapter.client = FakeRelayClient()
+            envelope = build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "d-transcript",
+                        "sessionKey": "conversation:abc",
+                        "chatRequestId": "req-transcript",
+                        "payload": {
+                            "commandText": "peer message",
+                            "fromAgentId": "agent-peer",
+                        },
+                    },
+                }
+            )
+            route = route_envelope(envelope, adapter.claworld_config)
+            record_claworld_route(memory_root, route, build_hermes_session_key(route), envelope)
+            record = adapter_module.DeliveryRecord(
+                delivery_id="d-transcript",
+                relay_session_key="conversation:abc",
+                chat_id=route.chat_id,
+                chat_request_id="req-transcript",
+            )
+            adapter._deliveries_by_id[record.delivery_id] = record
+            adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+            result = await adapter.send(record.chat_id, "local reply")
+
+            self.assertTrue(result.success)
+            deliveries = read_session_index(memory_root)["conversationEpisodes"]["req-transcript"]["deliveries"]
+            self.assertEqual([item["commandText"] for item in deliveries], ["peer message", "local reply"])
+            self.assertEqual(deliveries[-1]["fromAgentId"], "agent-local")
+            self.assertEqual(deliveries[-1]["deliveryType"], "reply")
+
+    async def test_reply_delivery_stays_successful_when_local_index_write_fails(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        class FakeRelayClient:
+            def __init__(self):
+                self.replies = []
+
+            async def send_reply(self, delivery_id, session_key, reply_text):
+                self.replies.append((delivery_id, session_key, reply_text))
+
+        adapter = adapter_module.ClaworldPlatformAdapter(
+            types.SimpleNamespace(extra={"server_url": "https://api.example.com", "app_token": "tok"})
+        )
+        adapter.client = FakeRelayClient()
+        record = adapter_module.DeliveryRecord(
+            delivery_id="d1",
+            relay_session_key="conversation:abc",
+            chat_id="conversation-abc",
+            chat_request_id="req-1",
+        )
+        adapter._deliveries_by_id[record.delivery_id] = record
+        adapter._latest_by_chat[record.chat_id] = record.delivery_id
+
+        with patch.object(adapter_module, "record_outbound_reply", side_effect=OSError("disk full")):
+            result = await adapter.send(record.chat_id, "real reply")
+
+        self.assertTrue(result.success)
+        self.assertTrue(record.replied)
+        self.assertEqual(adapter.client.replies, [("d1", "conversation:abc", "real reply")])
 
     async def test_hermes_transient_status_does_not_consume_replyable_delivery(self):
         adapter_module = import_adapter_with_gateway_shim()
@@ -1048,7 +1414,7 @@ class WorkingMemoryTests(unittest.TestCase):
                         "deliveryId": "c1",
                         "sessionKey": "conversation:remote-a",
                         "conversationKey": "remote-a",
-                        "payload": {"text": "hello"},
+                        "payload": {"chatRequestId": "cr-route-1", "commandText": "hello"},
                     },
                 }
             )
@@ -1056,6 +1422,9 @@ class WorkingMemoryTests(unittest.TestCase):
             record_claworld_route(root, route, build_hermes_session_key(route), envelope)
             index = read_session_index(root)
             self.assertIn(route.chat_id, index["conversationSessions"])
+            episode = index["conversationEpisodes"]["cr-route-1"]
+            self.assertEqual(episode["deliveryIds"], ["c1"])
+            self.assertEqual(episode["deliveries"][0]["direction"], "inbound")
             context = build_prompt_context(root, platform="claworld", chat_id=route.chat_id)
             self.assertIn("# Claworld Conversation Startup Context", context)
             self.assertIn("## `.claworld/context/NOW.md`", context)
@@ -1063,6 +1432,38 @@ class WorkingMemoryTests(unittest.TestCase):
             self.assertIn("## `.claworld/context/PROFILE.md`", context)
             self.assertNotIn('skill_view("claworld:claworld-main-session")', context)
             self.assertNotIn("sessions/index.json summary", context)
+
+    def test_outbound_reply_recording_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", agent_id="agent-local")
+            envelope = build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "c1",
+                        "sessionKey": "conversation:remote-a",
+                        "chatRequestId": "req-1",
+                        "payload": {"commandText": "hello", "fromAgentId": "agent-peer"},
+                    },
+                }
+            )
+            route = route_envelope(envelope, cfg)
+            record_claworld_route(root, route, build_hermes_session_key(route), envelope)
+
+            for _ in range(2):
+                record_outbound_reply(
+                    root,
+                    chat_request_id="req-1",
+                    delivery_id="c1",
+                    from_agent_id="agent-local",
+                    command_text="reply",
+                )
+
+            episode = read_session_index(root)["conversationEpisodes"]["req-1"]
+            self.assertEqual([item["commandText"] for item in episode["deliveries"]], ["hello", "reply"])
+            self.assertEqual(episode["deliveryCount"], 2)
+            self.assertEqual([item["direction"] for item in episode["deliveries"]], ["inbound", "outbound"])
 
     def test_prompt_context_prefers_plugin_qualified_claworld_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1115,7 +1516,15 @@ class WorkingMemoryTests(unittest.TestCase):
 
 class ToolRoutingTests(unittest.TestCase):
     def setUp(self):
-        self.cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", account_id="acct", agent_id="agent-1")
+        self.memory_root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.memory_root.cleanup)
+        self.cfg = ClaworldConfig(
+            server_url="https://api.example.com",
+            app_token="tok",
+            account_id="acct",
+            agent_id="agent-1",
+            working_memory_root=str(Path(self.memory_root.name) / ".claworld"),
+        )
 
     def test_conversation_request_uses_public_chat_requests_route(self):
         calls = []
@@ -1939,11 +2348,9 @@ class AdapterCompletionTests(unittest.TestCase):
         self.assertTrue(adapter._requires_acceptance_delivery(normal))
 
     def test_no_reply_token_is_exact(self):
-        adapter = import_adapter_with_gateway_shim()
-
-        self.assertTrue(adapter._is_no_reply("NO_REPLY"))
-        self.assertFalse(adapter._is_no_reply("kept_silent"))
-        self.assertFalse(adapter._is_no_reply("NO_REPLY please"))
+        self.assertEqual(classify_reply_content("NO_REPLY").silence_reason, "no_reply")
+        self.assertIsNone(classify_reply_content("kept_silent").silence_reason)
+        self.assertIsNone(classify_reply_content("NO_REPLY please").silence_reason)
 
 
 class HttpClientTests(unittest.TestCase):

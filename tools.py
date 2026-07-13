@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import ClaworldConfig
 from .http_client import public_error_payload, request_json
+from .protocol import classify_reply_content
 from .transcript_report import render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
 from .working_memory import read_session_index, record_owner_route_from_context
@@ -938,8 +939,8 @@ def _local_episode_summaries(cfg: ClaworldConfig, index: dict) -> list[dict]:
         if not isinstance(entry, dict):
             continue
         deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
-        renderable = [d for d in deliveries if isinstance(d, dict) and _text(d.get("commandText")) and _text(d.get("deliveryType")) != "kickoff"]
-        peer_count = sum(1 for d in renderable if _text(d.get("fromAgentId")) != cfg.agent_id)
+        renderable = [d for d in deliveries if _renderable_transcript_delivery(d)]
+        peer_count = sum(1 for d in renderable if _text(d.get("direction")) != "outbound")
         summary = _drop_empty(
             {
                 "chatRequestId": entry.get("chatRequestId") or chat_request_id,
@@ -961,6 +962,13 @@ def _local_episode_summaries(cfg: ClaworldConfig, index: dict) -> list[dict]:
         summaries.append(summary)
     summaries.sort(key=lambda item: _text(item.get("lastSeenAt"), _text(item.get("firstSeenAt"), "")) or "", reverse=True)
     return summaries
+
+
+def _renderable_transcript_delivery(delivery: Any) -> bool:
+    if not isinstance(delivery, dict) or _text(delivery.get("deliveryType")) == "kickoff":
+        return False
+    text = _text(delivery.get("commandText"))
+    return bool(text and not classify_reply_content(text).silence_reason)
 
 
 def _filter_local_episodes(episodes: list[dict], filters: dict) -> list[dict]:
