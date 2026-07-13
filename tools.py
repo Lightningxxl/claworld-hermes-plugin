@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .config import ClaworldConfig
-from .http_client import public_error_payload, request_json
+from .config import ClaworldConfig, hermes_home_path
+from .http_client import download_share_card, public_error_payload, request_json
 from .protocol import classify_reply_content
 from .transcript_report import render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
@@ -67,7 +67,9 @@ MANAGE_ACCOUNT_DESCRIPTION = (
     "profile, preferences, notification, proactivity, visibility, contact, or "
     "subscription policy, load "
     'skill_view("claworld:claworld-main-session"). For Claworld problems or '
-    'feedback, load skill_view("claworld:claworld-help").'
+    'feedback, load skill_view("claworld:claworld-help"). When a share card '
+    "is ready, this tool sends its image through the current Hermes chat. "
+    "After successful delivery, confirm it in one short text reply."
 )
 SEARCH_DESCRIPTION = (
     "Use when the human asks to find, discover, search, or recommend Claworld "
@@ -488,7 +490,7 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
             ),
         )
         payload = _augment_account_binding(payload, cfg=cfg, account_id=account_id, agent_id=agent_id)
-        return _action_result("claworld_manage_account", action, payload)
+        return _deliver_account_share_card(cfg, _action_result("claworld_manage_account", action, payload))
 
     if action == "subscribe_person":
         target_id = _text(args.get("targetAgentId"), _text(args.get("targetId")))
@@ -537,7 +539,62 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         body["profile"] = args.get("agentProfile")
     payload = request_json(cfg, "POST", "/v1/account", body=body)
     payload = _augment_account_binding(payload, cfg=cfg, account_id=account_id, agent_id=agent_id)
-    return _action_result("claworld_manage_account", action, payload)
+    return _deliver_account_share_card(cfg, _action_result("claworld_manage_account", action, payload))
+
+
+def _deliver_account_share_card(cfg: ClaworldConfig, result: dict) -> dict:
+    profile = result.get("profile") if isinstance(result.get("profile"), dict) else None
+    share_card = result.get("shareCard") if isinstance(result.get("shareCard"), dict) else None
+    nested_share_card = profile.get("shareCard") if profile and isinstance(profile.get("shareCard"), dict) else None
+    share_card = share_card or nested_share_card
+    if not share_card or _text(share_card.get("status")) != "ready":
+        return result
+
+    image_url = _text(share_card.get("imageUrl"), _text(share_card.get("downloadUrl")))
+    if not image_url:
+        raise RuntimeError("share card is ready but has no deliverable image URL")
+
+    session = _current_hermes_session_context()
+    platform = _text(session.get("platform"))
+    chat_id = _text(session.get("chatId"))
+    if not platform or not chat_id or platform == "claworld":
+        raise RuntimeError("share-card delivery requires an active human chat route")
+
+    media_dir = hermes_home_path() / "cache" / "images" / "claworld_share_cards"
+    image_path = download_share_card(cfg, image_url, media_dir)
+    target = f"{platform}:{chat_id}"
+    thread_id = _text(session.get("threadId"))
+    if thread_id:
+        target = f"{target}:{thread_id}"
+    send_result = _call_send_message_tool(
+        {
+            "action": "send",
+            "target": target,
+            "message": f"MEDIA:{image_path}",
+        }
+    )
+    if not _send_succeeded(send_result):
+        error = _text(send_result.get("error")) if isinstance(send_result, dict) else None
+        raise RuntimeError(f"share-card image delivery failed: {error or 'Hermes send engine returned no success'}")
+
+    delivered_share_card = {
+        **share_card,
+        "description": (
+            "分享卡图片已通过当前聊天渠道发送给用户。"
+            "请只用一句普通文本确认分享卡已生成；不要下载、再次发送或输出 MEDIA:。"
+        ),
+        "delivery": {
+            "status": "delivered",
+            "channel": platform,
+            "messageId": send_result.get("message_id") or send_result.get("messageId"),
+        },
+    }
+    delivered = dict(result)
+    if nested_share_card is share_card and profile is not None:
+        delivered["profile"] = {**profile, "shareCard": delivered_share_card}
+    else:
+        delivered["shareCard"] = delivered_share_card
+    return delivered
 
 
 def _submit_feedback(cfg: ClaworldConfig, args: dict, account_id: str, agent_id: str | None) -> dict:
