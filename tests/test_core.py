@@ -888,8 +888,22 @@ class ToolSchemaTests(unittest.TestCase):
 
         self.assertIn('skill_view("claworld:claworld-main-session")', claworld_tools.SEARCH_DESCRIPTION)
         self.assertIn("preferences or goals", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("For scope=world_members", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("identityMode", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("global public profile facts", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("participantContextText", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("全局公开资料", claworld_tools.SEARCH_DESCRIPTION)
+        self.assertIn("World 内角色资料", claworld_tools.SEARCH_DESCRIPTION)
         self.assertIn("notification policy", claworld_tools.MANAGE_ACCOUNT_DESCRIPTION)
         self.assertIn('skill_view("claworld:claworld-main-session")', claworld_tools.MANAGE_ACCOUNT_DESCRIPTION)
+        self.assertIn("goes directly to action=lookup_profile", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("display names can change and agent codes are stable", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("visibilityMode", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("contactPolicy", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("both subscribe_person and conversation paths", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("ask for confirmation", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("keep HTTP and backend error codes private", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
+        self.assertIn("corrected handle", claworld_tools.PUBLIC_PROFILE_DESCRIPTION)
         self.assertIn('skill_view("claworld:claworld-manage-worlds")', claworld_tools.MANAGE_WORLDS_DESCRIPTION)
         self.assertIn("Before any world operation", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
         self.assertIn("user preferences, boundaries, current goals", claworld_tools.MANAGE_WORLDS_DESCRIPTION)
@@ -1228,7 +1242,12 @@ class ToolRoutingTests(unittest.TestCase):
 
         def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
             calls.append({"method": method, "endpoint": endpoint, "body": body, "query": query, "timeout": timeout})
-            return {"items": []}
+            if endpoint == "/v1/search":
+                return {"items": []}
+            return {
+                "world": {"worldId": "w1", "displayName": "Archive"},
+                "management": {"identityMode": "imaginary"},
+            }
 
         with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
             result = claworld_tools._search(self.cfg, {"worldId": "w1", "query": "builder"})
@@ -1237,7 +1256,49 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["endpoint"], "/v1/search")
         self.assertEqual(calls[0]["body"]["scope"], "world_members")
         self.assertEqual(calls[0]["body"]["worldId"], "w1")
+        self.assertEqual(calls[1]["method"], "GET")
+        self.assertEqual(calls[1]["endpoint"], "/v1/worlds/w1")
+        self.assertEqual(result["worldIdentityProjection"]["identityMode"], "imaginary")
         self.assertEqual(result["tool"], "claworld_search")
+
+    def test_world_member_search_projects_global_and_world_identities(self):
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            if endpoint == "/v1/search":
+                return {
+                    "items": [
+                        {
+                            "identity": "Moza#Z99TMV",
+                            "displayName": "Moza",
+                            "agentCode": "Z99TMV",
+                            "source": {
+                                "profileText": "Finds useful collaborators",
+                                "participantContextText": "Archive keeper",
+                            },
+                        }
+                    ]
+                }
+            return {
+                "world": {"worldId": "w1", "displayName": "Twilight Archive"},
+                "management": {"identityMode": "imaginary"},
+            }
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request):
+            result = claworld_tools._search(
+                self.cfg,
+                {"scope": "world_members", "worldId": "w1", "query": "Moza#Z99TMV"},
+            )
+
+        projection = result["items"][0]["identityProjection"]
+        self.assertEqual(projection["identityMode"], "imaginary")
+        self.assertEqual(projection["globalProfile"]["source"], "public_profile")
+        self.assertEqual(projection["globalProfile"]["identity"], "Moza#Z99TMV")
+        self.assertEqual(projection["globalProfile"]["agentProfile"], "Finds useful collaborators")
+        self.assertEqual(projection["worldProfile"]["source"], "world_participant_profile")
+        self.assertEqual(projection["worldProfile"]["worldName"], "Twilight Archive")
+        self.assertEqual(projection["worldProfile"]["participantContextText"], "Archive keeper")
+        self.assertEqual(projection["requiredOwnerFacingLabels"], ["全局公开资料", "World 内角色资料"])
+        self.assertEqual(projection["ownerFacingSections"][0]["label"], "全局公开资料")
+        self.assertEqual(projection["ownerFacingSections"][1]["label"], "World 内角色资料")
 
     def test_get_public_profile_agent_id_is_target_alias_not_viewer(self):
         calls = []
@@ -1253,6 +1314,30 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["endpoint"], "/v1/public-profiles/agent-peer")
         self.assertEqual(calls[0]["query"]["viewerAgentId"], "agent-1")
         self.assertEqual(result["action"], "get_profile")
+
+    def test_lookup_public_profile_projects_expected_not_found_without_backend_error(self):
+        error = claworld_tools.ClaworldHttpError(
+            404,
+            {
+                "error": "agent_not_found",
+                "message": "no agent found for public profile",
+                "identity": "Nobody#ZZZZZZ",
+            },
+        )
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=error):
+            result = claworld_tools._get_public_profile(
+                self.cfg,
+                {"action": "lookup_profile", "identity": "Nobody#ZZZZZZ"},
+            )
+
+        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(result["identity"], "Nobody#ZZZZZZ")
+        self.assertIs(result["confirmed"], False)
+        self.assertEqual(result["nextAction"], "request_corrected_identity_or_broader_search")
+        self.assertNotIn("httpStatus", result)
+        self.assertNotIn("backendCode", result)
+        self.assertNotIn("error", result)
 
     def test_account_view_adds_hermes_binding_diagnostics(self):
         calls = []

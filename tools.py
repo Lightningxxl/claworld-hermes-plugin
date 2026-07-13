@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ClaworldConfig
-from .http_client import public_error_payload, request_json
+from .http_client import ClaworldHttpError, public_error_payload, request_json
 from .transcript_report import render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
 from .working_memory import read_session_index, record_owner_route_from_context
@@ -74,13 +74,25 @@ SEARCH_DESCRIPTION = (
     "someone to talk to or a world/project/activity to join. Before browsing "
     "worlds, evaluating people, or starting Claworld work that depends on the "
     'human\'s preferences or goals, load skill_view("claworld:claworld-main-session"). '
+    "For scope=world_members, read the world's identityMode and clearly "
+    "separate global public profile facts from world participantContextText "
+    "and role in the final owner-facing response. Preserve the explicit labels "
+    "'全局公开资料' and 'World 内角色资料' from identityProjection. "
     'For Claworld problems or feedback, load skill_view("claworld:claworld-help").'
 )
 PUBLIC_PROFILE_DESCRIPTION = (
     "Use to inspect your own public Claworld profile or look up another agent's "
     "public identity/profile after search results, displayName#agentCode, agent "
-    "code, or agent id are known. Before using profile facts for Claworld "
-    'decisions about the human, load skill_view("claworld:claworld-main-session"). '
+    "code, or agent id are known. A complete displayName#agentCode handle goes "
+    "directly to action=lookup_profile with the full identity. In the final "
+    "owner-facing response, explain that display names can change and agent "
+    "codes are stable; summarize the public profile, visibilityMode, and "
+    "contactPolicy; offer both subscribe_person and conversation paths when "
+    "the returned actions support them; and ask for confirmation before taking "
+    "either action. For an exact lookup miss, explain that the identity cannot "
+    "be confirmed, keep HTTP and backend error codes private, and request a "
+    "corrected handle or permission for a broader search. Load "
+    "skill_view(\"claworld:claworld-main-session\") for broader owner context. "
     'For Claworld problems or feedback, load skill_view("claworld:claworld-help").'
 )
 MANAGE_WORLDS_DESCRIPTION = (
@@ -618,7 +630,94 @@ def _search(cfg: ClaworldConfig, args: dict) -> dict:
         }
     )
     payload = request_json(cfg, "POST", "/v1/search", body=body)
+    if scope == "world_members":
+        world_id = _text(args.get("worldId"))
+        world_payload = request_json(
+            cfg,
+            "GET",
+            f"/v1/worlds/{world_id}",
+            query=_drop_empty({"agentId": _agent_id(cfg, args)}),
+        )
+        payload = _project_world_member_identities(payload, world_payload, world_id)
     return {"tool": "claworld_search", **payload}
+
+
+def _project_world_member_identities(payload: dict, world_payload: dict, world_id: str) -> dict:
+    management = world_payload.get("management") if isinstance(world_payload.get("management"), dict) else {}
+    world = world_payload.get("world") if isinstance(world_payload.get("world"), dict) else {}
+    identity_mode = _text(world_payload.get("identityMode"), _text(management.get("identityMode")))
+    _require(identity_mode, "world identityMode is required for world member identity projection")
+    world_name = _text(world_payload.get("displayName"), _text(world.get("displayName")))
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    projected_items = []
+    for raw_item in items:
+        if not isinstance(raw_item, dict):
+            projected_items.append(raw_item)
+            continue
+        item = dict(raw_item)
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        profile_summary = item.get("profileSummary") if isinstance(item.get("profileSummary"), dict) else {}
+        identity = _text(item.get("identity"), _text(source.get("identity")))
+        display_name = _text(item.get("displayName"), _text(source.get("displayName")))
+        agent_code = _text(item.get("agentCode"), _text(source.get("agentCode")))
+        participant_context = _text(
+            item.get("participantContextText"),
+            _text(source.get("participantContextText"), _text(item.get("headline"))),
+        )
+        item["identityProjection"] = {
+            "identityMode": identity_mode,
+            "globalProfile": _drop_empty(
+                {
+                    "source": "public_profile",
+                    "identity": identity,
+                    "displayName": display_name,
+                    "agentCode": agent_code,
+                    "humanProfile": _text(profile_summary.get("humanProfile"), _text(source.get("humanProfile"))),
+                    "agentProfile": _text(
+                        profile_summary.get("agentProfile"),
+                        _text(source.get("agentProfile"), _text(source.get("profileText"))),
+                    ),
+                }
+            ),
+            "worldProfile": _drop_empty(
+                {
+                    "source": "world_participant_profile",
+                    "worldId": world_id,
+                    "worldName": world_name,
+                    "participantContextText": participant_context,
+                }
+            ),
+            "ownerFacingMeaning": (
+                "The public profile identifies the agent across Claworld; the world participant profile "
+                "describes this agent's role inside this world."
+            ),
+        }
+        projection = item["identityProjection"]
+        projection["ownerFacingSections"] = [
+            {
+                "label": "全局公开资料",
+                "content": projection["globalProfile"],
+            },
+            {
+                "label": "World 内角色资料",
+                "content": projection["worldProfile"],
+            },
+        ]
+        projection["requiredOwnerFacingLabels"] = ["全局公开资料", "World 内角色资料"]
+        projected_items.append(item)
+    return {
+        **payload,
+        "items": projected_items,
+        "worldIdentityProjection": _drop_empty(
+            {
+                "worldId": world_id,
+                "worldName": world_name,
+                "identityMode": identity_mode,
+                "globalProfileSource": "public_profile",
+                "worldProfileSource": "world_participant_profile",
+            }
+        ),
+    }
 
 
 def _get_public_profile(cfg: ClaworldConfig, args: dict) -> dict:
@@ -633,12 +732,24 @@ def _get_public_profile(cfg: ClaworldConfig, args: dict) -> dict:
         if not identity and args.get("displayName") and args.get("agentCode"):
             identity = f"{args['displayName']}#{args['agentCode']}"
         _require(identity, "identity or displayName+agentCode is required for action=lookup_profile")
-        payload = request_json(
-            cfg,
-            "GET",
-            "/v1/public-profiles/lookup",
-            query=_drop_empty({"identity": identity, "viewerAgentId": viewer_agent_id}),
-        )
+        try:
+            payload = request_json(
+                cfg,
+                "GET",
+                "/v1/public-profiles/lookup",
+                query=_drop_empty({"identity": identity, "viewerAgentId": viewer_agent_id}),
+            )
+        except ClaworldHttpError as exc:
+            body = exc.body if isinstance(exc.body, dict) else {}
+            if exc.status == 404 and body.get("error") == "agent_not_found":
+                payload = {
+                    "status": "not_found",
+                    "identity": identity,
+                    "confirmed": False,
+                    "nextAction": "request_corrected_identity_or_broader_search",
+                }
+            else:
+                raise
     else:
         target = _text(args.get("targetAgentId"), _text(args.get("agentId"), cfg.agent_id or _resolve_agent_id(cfg)))
         _require(target, "targetAgentId is required when the current agent id cannot be resolved")
