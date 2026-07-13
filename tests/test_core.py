@@ -751,6 +751,10 @@ class PluginSkillTests(unittest.TestCase):
             self.assertEqual(path.name, "SKILL.md")
             self.assertTrue(description.endswith("."))
             self.assertLessEqual(len(description), 60)
+        help_description = next(
+            description for name, _path, description in registered if name == "claworld-help"
+        )
+        self.assertIn("upgrade", help_description)
 
     def test_claworld_skills_are_hermes_native(self):
         for skill_name in claworld_skills.SKILL_DESCRIPTIONS:
@@ -772,6 +776,12 @@ class PluginSkillTests(unittest.TestCase):
         self.assertNotIn("report artifact exists when owner reporting was needed", management)
         main = (ROOT / "skills" / "claworld-main-session" / "SKILL.md").read_text(encoding="utf-8")
         self.assertNotIn("send_message", main)
+        self.assertIn("Before installing, upgrading", main)
+        help_skill = (ROOT / "skills" / "claworld-help" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn('claworld_manage_account(action="view_account")', help_skill)
+        self.assertIn("`upgradeCommand`", help_skill)
+        self.assertIn("send `/restart`", help_skill)
+        self.assertIn("Hermes Agent runtime update", help_skill)
 
     def test_manage_worlds_skill_requires_broadcast_confirmation_preview(self):
         text = (ROOT / "skills" / "claworld-manage-worlds" / "SKILL.md").read_text(encoding="utf-8")

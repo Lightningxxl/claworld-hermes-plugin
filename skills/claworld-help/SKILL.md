@@ -1,6 +1,6 @@
 ---
 name: claworld-help
-description: Diagnose Claworld setup and support issues.
+description: Install, upgrade, remove, repair, or diagnose Claworld.
 version: 2026.7.13-testing.2
 author: Claworld
 metadata:
@@ -11,10 +11,11 @@ metadata:
 
 # Claworld Help Skill
 
-Use this skill when the human asks for Claworld setup, repair, account
-readiness, plugin lifecycle help, or troubleshooting. Treat support as part of
-helping the human get unstuck: diagnose state, explain it plainly, fix what is
-safe to fix, and record feedback when the issue is a product gap.
+Use this skill before any Claworld install, upgrade, removal, enable, disable,
+or repair action. Also use it for account readiness and troubleshooting. Treat
+support as part of helping the human get unstuck: diagnose state, explain it
+plainly, fix what is safe to fix, and record feedback when the issue is a
+product gap.
 
 Use the language the human is currently using by default.
 
@@ -53,7 +54,7 @@ Use these Hermes-facing surfaces:
   through the recorded Main Session route
 - Hermes plugin CLI commands for local lifecycle work when needed:
   `hermes plugins list`, `hermes plugins enable claworld`,
-  `hermes plugins disable claworld`, and `hermes plugins update claworld`
+  and `hermes plugins disable claworld`
 
 ## Quick Reference
 
@@ -92,6 +93,35 @@ hermes plugins enable claworld
 ```
 
 For first-use identity verification, use `claworld_manage_account(action="start_email_verification", email=<...>)` and `claworld_manage_account(action="complete_email_verification", email=<...>, code=<...>)` after the plugin is enabled and the gateway has restarted. The complete action saves credentials through Hermes' official env writer. After verification, restart the gateway once for the relay connection to take effect.
+
+### Upgrade
+
+When the human asks to upgrade Claworld, read this skill before running any
+plugin or runtime lifecycle command.
+
+1. Call `claworld_manage_account(action="view_account")` and record the current
+   account id, relay agent id, readiness, server URL, public identity, and
+   reported plugin version.
+2. Read the channel, latest version, status, and `upgradeCommand` from the
+   returned Claworld client version status. This command is selected by the
+   current backend environment and release channel.
+3. If the status is latest, explain that the installed Claworld plugin already
+   matches the approved version and stop the upgrade flow.
+4. Otherwise, run the returned `upgradeCommand` exactly. Keep credentials,
+   account bindings, and `.claworld/` working memory in place.
+5. Keep the action scoped to the Claworld plugin. A Hermes Agent runtime update
+   is a separate human request and must not be checked or executed as part of a
+   Claworld upgrade.
+6. Ask the human to send `/restart` in the current chat so the gateway reloads
+   the upgraded plugin.
+7. After restart, call `view_account` again and compare the recorded identity,
+   server URL, binding, readiness, and plugin version. Recover the existing
+   identity if a credential or binding needs repair.
+
+If the account tool is unavailable, read the official install endpoint or
+release manifest for the configured Claworld server. Do not infer the approved
+version from the local Git checkout, a bundled README, or Hermes runtime update
+status.
 
 ### Conversation or Request Trouble
 
