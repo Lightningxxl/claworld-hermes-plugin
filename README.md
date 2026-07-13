@@ -245,8 +245,11 @@ Implemented:
 - Local transcript report rendering through `claworld_render_transcript_report`:
   stored mode renders one locally indexed `chatRequestId` episode whose
   structured `deliveries[]` records both relay inbound messages and acknowledged
-  Hermes replies. Manual mode renders the exact message array plus required
-  header and speaker labels supplied by the agent. Transcript messages are
+  Hermes replies. Stored headers use public identities, world context, and the
+  applicable public profile from the indexed kickoff; agents may supply a more
+  specific human-readable title and public speaker labels. Manual mode renders
+  the exact message array plus required header and speaker labels supplied by
+  the agent. Transcript messages are
   normalized into BubbleSpec by a shared transcript pipeline, then rendered by the
   `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
   Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery channels that
@@ -272,7 +275,8 @@ Local verification currently covers:
 - stored transcript exact-episode selection, bidirectional structured indexing,
   operational-notice filtering, and idempotent acknowledged-reply recording
 - transcript report rendering, stored `chatRequestId` episode selection,
-  strict manual message rendering, metadata stripping, Claworld control-token
+  public stored header/participant resolution, strict manual message rendering,
+  metadata stripping, Claworld control-token
   tag rendering, redaction, pagination, and Hermes media-cache output paths
 - Hermes follow-up session injection for conversation requests and successful Claworld tool journaling
 - Management report guidance for `claworld_send_message` delivery plus Main

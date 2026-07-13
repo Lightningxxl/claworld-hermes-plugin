@@ -327,21 +327,37 @@ class TranscriptReportTests(unittest.TestCase):
                 agent_id="agent-local",
                 working_memory_root=str(root),
             )
-            context_text = "\n".join(
+            kickoff_text = "\n".join(
                 [
+                    "Start this Claworld conversation and reply naturally.",
+                    "",
                     "# Background",
                     "",
                     "## Conversation Facts",
-                    "- Mode: `direct`",
+                    "- Mode: `world`",
+                    "- World: 暮色档案室-0710 (`wld-private-01`)",
                     "",
                     "## Participant Facts",
+                    "",
+                    "## You",
+                    "- Identity: `Mira#LOCAL01`",
+                    "",
+                    "### Global Profile",
+                    "```text",
+                    "Mira public profile",
+                    "```",
                     "",
                     "## Peer",
                     "- Identity: `Peer Direct#PEER01`",
                     "",
                     "### Global Profile",
                     "```text",
-                    "structured peer profile",
+                    "structured global profile",
+                    "```",
+                    "",
+                    "### World Membership Profile",
+                    "```text",
+                    "structured world profile",
                     "```",
                 ]
             )
@@ -370,8 +386,7 @@ class TranscriptReportTests(unittest.TestCase):
                             "direction": "inbound",
                             "fromAgentId": "agent-peer",
                             "deliveryType": "kickoff",
-                            "commandText": "Backend kickoff command must stay out",
-                            "contextText": context_text,
+                            "commandText": kickoff_text,
                             "turnCreatedAt": "2026-07-09T17:00:00Z",
                         },
                         {
@@ -434,12 +449,137 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertIn("new peer final", rendered)
             self.assertIn("new local final", rendered)
             self.assertNotIn("old episode must stay out", rendered)
-            self.assertNotIn("Backend kickoff command must stay out", rendered)
+            self.assertNotIn("Start this Claworld conversation", rendered)
             self.assertNotIn("Session automatically reset", rendered)
             self.assertEqual({item["side"] for item in spec["participants"]}, {"left", "right"})
-            self.assertEqual(spec["scene"]["peerId"], "Peer Direct#PEER01")
-            self.assertEqual(spec["scene"]["peerProfile"], "structured peer profile")
-            self.assertEqual(spec["scene"]["peerProfileSource"], "contextText")
+            self.assertEqual(
+                {item["name"] for item in spec["participants"]},
+                {"Mira#LOCAL01", "Peer Direct#PEER01"},
+            )
+            self.assertEqual(spec["scene"]["title"], "Peer Direct — 暮色档案室-0710")
+            self.assertEqual(spec["scene"]["subtitle"], "Peer Direct#PEER01 · structured world profile")
+            self.assertEqual(spec["scene"]["peerProfileSource"], "rawKickoffText")
+            visible_svg = "\n".join(
+                Path(page["path"]).read_text(encoding="utf-8")
+                for page in result["artifacts"]["svgPages"]
+            )
+            for internal_value in ("req-new", "conversation-1", "pair:a::b:direct", "agent-local"):
+                self.assertNotIn(internal_value, visible_svg)
+
+    def test_stored_report_accepts_public_header_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(agent_id="agt_internal", working_memory_root=str(root))
+            data = read_session_index(root)
+            data["conversationEpisodes"] = {
+                "req-custom": {
+                    "chatRequestId": "req-custom",
+                    "chatId": "conversation-private",
+                    "deliveries": [
+                        {
+                            "deliveryId": "custom-1",
+                            "direction": "inbound",
+                            "fromAgentId": "agt_peer",
+                            "deliveryType": "turn",
+                            "commandText": "好久不见，聊聊搭桥。",
+                            "turnCreatedAt": "2026-07-10T04:14:24Z",
+                        },
+                        {
+                            "deliveryId": "custom-1:reply",
+                            "direction": "outbound",
+                            "fromAgentId": "agt_internal",
+                            "deliveryType": "reply",
+                            "commandText": "好呀，我来帮忙。",
+                            "turnCreatedAt": "2026-07-10T04:14:25Z",
+                        },
+                    ],
+                }
+            }
+            write_session_index(root, data)
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "stored",
+                    "stored": {
+                        "chatRequestId": "req-custom",
+                        "title": "Moza — 老友重逢聊搭桥",
+                        "peerProfile": "Moza#Z99TMV · 帮 rx 打理 Claworld",
+                        "localLabel": "Mira",
+                        "peerLabel": "Moza",
+                    },
+                },
+            )
+
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(spec["scene"]["title"], "Moza — 老友重逢聊搭桥")
+            self.assertEqual(spec["scene"]["subtitle"], "Moza#Z99TMV · 帮 rx 打理 Claworld")
+            self.assertEqual(spec["scene"]["peerProfileSource"], "explicit")
+            self.assertEqual({item["name"] for item in spec["participants"]}, {"Mira", "Moza"})
+
+    def test_stored_report_uses_safe_visible_fallbacks_without_public_context(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(agent_id="agt_internal", working_memory_root=str(root))
+            data = read_session_index(root)
+            data["conversationEpisodes"] = {
+                "req-fallback": {
+                    "chatRequestId": "req-fallback",
+                    "chatId": "conversation-private",
+                    "deliveries": [
+                        {
+                            "deliveryId": "fallback-1",
+                            "direction": "inbound",
+                            "fromAgentId": "agt_peer",
+                            "deliveryType": "turn",
+                            "commandText": "peer message",
+                            "turnCreatedAt": "2026-07-10T04:14:24Z",
+                        },
+                        {
+                            "deliveryId": "fallback-1:reply",
+                            "direction": "outbound",
+                            "fromAgentId": "agt_internal",
+                            "deliveryType": "reply",
+                            "commandText": "local reply",
+                            "turnCreatedAt": "2026-07-10T04:14:25Z",
+                        },
+                    ],
+                }
+            }
+            write_session_index(root, data)
+
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "stored",
+                    "stored": {
+                        "chatRequestId": "req-fallback",
+                        "title": "req-fallback",
+                        "peerProfile": "conversation-private",
+                        "localLabel": "agt_internal",
+                        "peerLabel": "agt_peer",
+                    },
+                },
+            )
+
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(spec["scene"]["title"], "Peer")
+            self.assertEqual(spec["scene"]["subtitle"], "Peer")
+            self.assertEqual({item["name"] for item in spec["participants"]}, {"Me", "Peer"})
+            visible_svg = "\n".join(
+                Path(page["path"]).read_text(encoding="utf-8")
+                for page in result["artifacts"]["svgPages"]
+            )
+            for internal_value in ("req-fallback", "conversation-private", "agt_internal", "agt_peer"):
+                self.assertNotIn(internal_value, visible_svg)
 
     def test_manual_report_redacts_secrets_and_renders_control_tags(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

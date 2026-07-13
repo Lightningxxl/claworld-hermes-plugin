@@ -118,7 +118,10 @@ Use the Hermes Claworld tools:
   `.claworld/reports/`, `.claworld/context/NOW.md`, `.claworld/journal/`, and
   `.claworld/sessions/index.json` for candidate clues, then confirm the matching
   episode with `claworld_manage_conversations`. Prefer `mode="stored"` with the
-  matched `stored.chatRequestId`. Use `mode="manual"` only for requested
+  matched `stored.chatRequestId`. When the report or user request gives you a
+  clear topic, also provide a human-readable `stored.title`, public
+  `stored.peerProfile`, and public speaker labels; keep lookup ids and runtime
+  routing out of those visible fields. Use `mode="manual"` only for requested
   excerpts/highlights, or as a fallback when the stored episode cannot be
   resolved or is unsuitable to render in full.
 

@@ -26,7 +26,7 @@ TIME_SPLIT_SECONDS = 5 * 60
 TOP_LEVEL_RENDER_FIELDS = {"mode", "stored", "manual", "style", "maxPageHeight"}
 MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
 REQUIRED_MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
-STORED_RENDER_FIELDS = {"chatRequestId"}
+STORED_RENDER_FIELDS = {"chatRequestId", "title", "peerProfile", "localLabel", "peerLabel"}
 MANUAL_MESSAGE_FIELDS = {"from", "text", "createdAt"}
 
 
@@ -49,7 +49,7 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     max_page_height = _int(render_args.get("maxPageHeight"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900, maximum=8000)
     style = resolve_report_style(_report_style_name(render_args))
     participants = _participants(selected)
-    title, subtitle = _header_text(render_args, source, selection, selected, header_context)
+    title, subtitle = _header_text(render_args, selected, header_context)
     bubbles = _decorate_selection(selected, selection)
     bubble_spec = {
         "version": "1",
@@ -59,7 +59,11 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
             "subtitle": subtitle,
             "peerId": title,
             "peerProfile": subtitle,
-            "peerProfileSource": header_context.get("profileSource", "fallback"),
+            "peerProfileSource": (
+                "explicit"
+                if _public_header_value(render_args.get("peerProfile"))
+                else header_context.get("profileSource", "fallback")
+            ),
             "generatedAt": _iso_now(),
             "source": source["summary"],
             "selection": selection,
@@ -207,6 +211,8 @@ def _normalize_render_request(args: dict) -> dict:
         chat_request_id = _text(stored.get("chatRequestId"))
         if not chat_request_id:
             raise ValueError("stored.chatRequestId is required when mode=stored")
+        for key in ("title", "peerProfile", "localLabel", "peerLabel"):
+            render_args[key] = stored.get(key)
         return {
             "mode": mode,
             "chatRequestId": chat_request_id,
@@ -302,8 +308,8 @@ def _normalize_messages(
     peer_identity = _text(header_context.get("peerIdentity"), _text(header_context.get("peerId")))
     local_id = _text(local_identity, cfg.agent_id) or "local-agent"
     peer_id = peer_identity or "peer-agent"
-    local_label = _text(args.get("localLabel"), _text(local_identity, local_id)) or local_id
-    peer_label = _text(args.get("peerLabel"), _text(peer_identity, peer_id)) or peer_id
+    local_label = _public_header_value(args.get("localLabel")) or _public_header_value(local_identity) or "Me"
+    peer_label = _public_header_value(args.get("peerLabel")) or _public_header_value(peer_identity) or "Peer"
     normalized: list[TranscriptMessage] = []
     for idx, raw in enumerate(raw_messages):
         if not isinstance(raw, dict):
@@ -431,38 +437,52 @@ def _bubble_message_payload(item: dict[str, Any]) -> dict:
     }
 
 
-def _subtitle(source: dict, selection: dict) -> str:
-    pieces = []
-    chat_request_id = source["summary"].get("chatRequestId") or selection.get("chatRequestId")
-    if chat_request_id:
-        pieces.append(f"chatRequestId {chat_request_id}")
-    conversation_key = source["summary"].get("conversationKey")
-    if conversation_key:
-        pieces.append(f"conversation {conversation_key}")
-    chat_id = source["summary"].get("chatId")
-    if chat_id:
-        pieces.append(str(chat_id))
-    if selection.get("messageCount"):
-        pieces.append(f"{selection['messageCount']} messages")
-    return " · ".join(pieces)
-
-
-def _header_text(args: dict, source: dict, selection: dict, messages: list[TranscriptMessage], header_context: dict | None = None) -> tuple[str, str]:
+def _header_text(
+    args: dict,
+    messages: list[TranscriptMessage],
+    header_context: dict | None = None,
+) -> tuple[str, str]:
     header_context = header_context or {}
-    explicit_title = _text(args.get("title"))
-    peer_id = _text(explicit_title, _text(header_context.get("peerIdentity"), _text(header_context.get("peerId"))))
-    if not peer_id:
+    explicit_title = _public_header_value(args.get("title"))
+    peer_identity = _public_header_value(header_context.get("peerIdentity")) or _public_header_value(
+        header_context.get("peerId")
+    )
+    if not peer_identity:
         for message in messages:
             if message.side == "left":
-                peer_id = message.participant_id or message.participant_label
+                peer_identity = _public_header_value(message.participant_label)
                 break
-    peer_id = peer_id or "peer-agent"
-    profile = (
-        _text(args.get("peerProfile"))
-        or _text(header_context.get("peerProfile"))
-        or _subtitle(source, selection)
-    )
-    return peer_id, profile or "profile: unavailable"
+    peer_name = _display_name(peer_identity)
+    world_name = _public_header_value(header_context.get("worldName"))
+    title = explicit_title or _semantic_header_title(peer_name, world_name)
+
+    explicit_profile = _public_header_value(args.get("peerProfile"))
+    if explicit_profile:
+        subtitle = explicit_profile
+    else:
+        profile = _public_header_value(header_context.get("peerProfile"))
+        subtitle_parts = [part for part in (peer_identity, profile) if part]
+        if not subtitle_parts and world_name:
+            subtitle_parts.append(world_name)
+        subtitle = " · ".join(subtitle_parts) or "Conversation transcript"
+    return title, subtitle
+
+
+def _semantic_header_title(peer_name: str, world_name: str) -> str:
+    if peer_name and world_name:
+        return f"{peer_name} — {world_name}"
+    return peer_name or world_name or "Claworld conversation"
+
+
+def _display_name(identity: str) -> str:
+    return _public_header_value(str(identity or "").split("#", 1)[0])
+
+
+def _public_header_value(value: Any) -> str:
+    normalized = _text(value) or ""
+    if re.search(r"(?i)(?:^|[\s(])(?:agt|req|wld|dlv|conversation|management)[_:-][a-z0-9]", normalized):
+        return ""
+    return normalized
 
 
 def _extract_transcript_header_context(raw_messages: list) -> dict:
@@ -470,14 +490,14 @@ def _extract_transcript_header_context(raw_messages: list) -> dict:
     for raw in raw_messages:
         if not isinstance(raw, dict):
             continue
-        context_text = _text(raw.get("contextText"))
-        if context_text:
-            parsed = _parse_header_context_candidate(context_text, "contextText")
-            if parsed:
-                for key, value in parsed.items():
-                    normalized = _text(value)
-                    if normalized and _should_merge_header_value(merged, parsed, key, normalized):
-                        merged[key] = normalized
+        candidates = [
+            (_text(raw.get("contextText")), "contextText"),
+            (_text(raw.get("untrustedContext")), "untrustedContext"),
+        ]
+        if _text(raw.get("deliveryType")) == "kickoff":
+            candidates.append((_text(raw.get("commandText")), "rawKickoffText"))
+        for candidate, source in candidates:
+            _merge_header_context_candidate(merged, candidate, source)
         from_display = _text(raw.get("fromDisplayIdentity"))
         if from_display and "peerIdentity" not in merged:
             merged["peerIdentity"] = from_display
@@ -496,6 +516,16 @@ def _extract_transcript_header_context(raw_messages: list) -> dict:
         }.items()
         if value
     }
+
+
+def _merge_header_context_candidate(merged: dict[str, str], text: str | None, source: str) -> None:
+    if not text:
+        return
+    parsed = _parse_header_context_candidate(text, source)
+    for key, value in parsed.items():
+        normalized = _text(value)
+        if normalized and _should_merge_header_value(merged, parsed, key, normalized):
+            merged[key] = normalized
 
 
 def _should_merge_header_value(merged: dict[str, str], parsed: dict[str, str], key: str, value: str) -> bool:
