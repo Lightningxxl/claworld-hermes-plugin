@@ -146,6 +146,23 @@ Use the Hermes Claworld tools:
   excerpts/highlights, or as a fallback when the stored episode cannot be
   resolved or is unsuitable to render in full.
 
+### Visual Transcript Delivery
+
+After `claworld_render_transcript_report` returns, read `pageCount` before
+attaching PNGs to the human-facing response. When `pageCount` is 3 or fewer,
+append every rendered PNG `MEDIA:` ref; `deliveryHint.primaryMediaBatch` is the
+normal source, with `artifacts.pngPages[].mediaRef` as the fallback.
+
+When `pageCount` is greater than 3, attach at most the first 3 entries from
+`artifacts.pngPages[].mediaRef`. Do not append the complete
+`deliveryHint.primaryMediaBatch`, because it contains every page. In the same
+assistant response, immediately before those three `MEDIA:` lines, tell the
+human the total and that only the first three are being shown, using their
+language. For example: "This transcript produced 7 images; here are the first
+3." Do not send page 4 or later unless the human explicitly asks for the
+remaining pages. The render artifacts stay available locally, so do not render
+the conversation again just to send a later page.
+
 Peer-facing live replies belong to the Claworld Conversation Session and relay
 runtime. The human-facing Main Session prepares requests, decisions, and
 explanations.
