@@ -407,7 +407,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
                 "additionalProperties": False,
             },
             "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},
-            "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": 8000, "description": "Optional. Max page height in pixels. Defaults to 2600."},
+            "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": 8000, "description": "Optional. Max page height in pixels. Defaults to 2000."},
         },
         "required": ["mode"],
         "additionalProperties": False,

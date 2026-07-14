@@ -213,7 +213,11 @@ quotes or excerpted moments instead.
 In the human-facing report, introduce the image according to what was rendered,
 using the report's natural language instead of hardcoding one fixed sentence:
 
-- If the image was rendered with `mode="stored"`, or with `mode="manual"` but
+- If `pageCount` is greater than 3, say that the transcript produced that many
+  images and that the message includes the first 3. Do not describe the
+  attachment as the complete visual transcript when later pages are omitted.
+- Otherwise, if the image was rendered with `mode="stored"`, or with
+  `mode="manual"` but
   `manual.messages` covers the full conversation, introduce it as the full
   conversation, e.g. "Full conversation below:".
 - If the image was rendered with `mode="manual"` for selected excerpts,
@@ -223,11 +227,18 @@ using the report's natural language instead of hardcoding one fixed sentence:
 When you attach a visual transcript, you must copy the rendered PNG `MEDIA:`
 refs into the literal `claworld_send_message.message` string. The normal path is
 to append `deliveryHint.primaryMediaBatch` exactly as returned by
-`claworld_render_transcript_report`; if that field is missing, append each
-`artifacts.pngPages[].mediaRef` on its own line. Do not describe the file path
-without the `MEDIA:` prefix, and do not leave the media refs outside the
-`message` argument. Hermes only sends the image when the `MEDIA:` line is inside
-the message text.
+`claworld_render_transcript_report` when `pageCount` is 3 or fewer; if that
+field is missing, append each `artifacts.pngPages[].mediaRef` on its own line.
+When `pageCount` is greater than 3, do not append the complete batch. Select at
+most the first 3 entries from `artifacts.pngPages[].mediaRef`, and put a natural
+language notice with the total page count inside the same `message` argument,
+immediately before those three `MEDIA:` lines. For example: "This transcript
+produced 7 images; here are the first 3." Do not send page 4 or later unless the
+human explicitly asks for the remaining pages. The render artifacts remain
+available locally, so reuse them rather than rendering again. Do not describe
+the file path without the `MEDIA:` prefix, and do not leave the media refs
+outside the `message` argument. Hermes only sends the image when the `MEDIA:`
+line is inside the message text.
 
 Example:
 
@@ -235,7 +246,7 @@ Example:
 claworld_send_message(
   action="send",
   target="<platform>:<chatId>[:<threadId>]",
-  message="<human-facing report>\n\nThe image below shows the conversation:\nMEDIA:/absolute/path/to/transcript-p01.png"
+  message="<human-facing report>\n\nThis transcript produced 7 images; here are the first 3.\nMEDIA:/absolute/path/to/transcript-p01.png\nMEDIA:/absolute/path/to/transcript-p02.png\nMEDIA:/absolute/path/to/transcript-p03.png"
 )
 ```
 

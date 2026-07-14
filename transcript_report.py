@@ -19,7 +19,7 @@ from .working_memory import append_journal, atomic_write_text, read_session_inde
 
 
 DEFAULT_WIDTH = 720
-DEFAULT_MAX_PAGE_HEIGHT = 2600
+DEFAULT_MAX_PAGE_HEIGHT = 2000
 
 TIME_SPLIT_SECONDS = 5 * 60
 
