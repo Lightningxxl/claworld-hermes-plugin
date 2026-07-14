@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,36 @@ from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
 from .working_memory import read_session_index, record_owner_route_from_context
 
 TOOLSET = "claworld"
+
+_TERMINAL_COMMAND_STATUSES = frozenset({"applied", "rejected", "failed_terminal"})
+
+
+def _poll_command_status(cfg: ClaworldConfig, command_id: str, max_attempts: int = 6, interval_s: float = 1.0) -> dict | None:
+    for attempt in range(max_attempts):
+        time.sleep(0.5 if attempt == 0 else interval_s)
+        try:
+            resp = request_json(cfg, "GET", f"/v1/orchestration/commands/{command_id}")
+        except Exception:
+            continue
+        command = resp.get("command") if isinstance(resp, dict) else None
+        if not isinstance(command, dict):
+            continue
+        status = _text(command.get("status"))
+        if status in _TERMINAL_COMMAND_STATUSES:
+            result = command.get("result") if isinstance(command.get("result"), dict) else {}
+            return {
+                "status": status,
+                "broadcastId": _text(result.get("broadcastId")),
+                "fanoutStatus": _text(result.get("fanoutStatus")),
+                "totalTargets": result.get("totalTargets"),
+                "createdCount": result.get("createdCount"),
+                "failedCount": result.get("failedCount"),
+                "pendingCount": result.get("pendingCount"),
+                "autoAcceptedCount": result.get("autoAcceptedCount"),
+                "rejectedCount": result.get("rejectedCount"),
+                "nextAction": _text(result.get("nextAction")),
+            }
+    return None
 
 ACCOUNT_ACTIONS = (
     "view_account",
@@ -289,7 +320,7 @@ MANAGE_WORLDS_SCHEMA = _schema(
         "joinPolicy": {"type": "string"},
         "approvalPolicy": {"type": "string"},
         "broadcastEnabled": {"type": "boolean"},
-        "broadcast": {"type": "object"},
+        "broadcast": {"type": "object", "description": "World broadcast config for owner update_world only (enabled, audience, replyPolicy, excludeSelf)."},
         "subscriptionId": {"type": "string"},
         "inviteMessage": {"type": "string"},
         "status": {"type": "string"},
@@ -861,14 +892,15 @@ def _manage_worlds(cfg: ClaworldConfig, args: dict) -> dict:
         payload = _delete_subscription(cfg, agent_id, args.get("subscriptionId"), "world", world_id)
     elif action in {"list_world_activity", "list_broadcast_history"}:
         _require(world_id, f"worldId is required for action={action}")
+        query = _drop_empty({"agentId": agent_id, "limit": args.get("limit")})
+        if action == "list_broadcast_history":
+            query["activityType"] = "world_broadcast_published"
         payload = request_json(
             cfg,
             "GET",
             f"/v1/worlds/{world_id}/activity",
-            query=_drop_empty({"agentId": agent_id, "limit": args.get("limit")}),
+            query=query,
         )
-        if action == "list_broadcast_history" and isinstance(payload.get("items"), list):
-            payload = {**payload, "items": [item for item in payload["items"] if "broadcast" in str(item.get("activityType") or item.get("type") or "").lower()]}
     elif action == "publish_broadcast":
         _require(world_id, "worldId is required for action=publish_broadcast")
         _require(args.get("announcementText"), "announcementText is required for action=publish_broadcast")
@@ -887,6 +919,11 @@ def _manage_worlds(cfg: ClaworldConfig, args: dict) -> dict:
                 }
             ),
         )
+        command_id = _text(payload.get("commandId"))
+        if _text(payload.get("status")) == "queued" and command_id:
+            terminal = _poll_command_status(cfg, command_id)
+            if terminal:
+                payload = {**payload, **terminal}
     elif action == "manage_members":
         _require(world_id, "worldId is required for action=manage_members")
         payload = request_json(
