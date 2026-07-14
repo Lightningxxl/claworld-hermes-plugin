@@ -774,7 +774,7 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("`mirrored: true` means the Main Session transcript received the report", management)
         self.assertIn("`approval_required` is review mode", management)
         self.assertIn("Accept, reject, or ask the human", management)
-        self.assertIn("`chat_request_blocked` notification is an outcome to report", management)
+        self.assertIn("No request, review, or accept/reject action reaches you", management)
         self.assertNotIn("ANNOUNCE_READY", management)
         self.assertNotIn("report artifact exists when owner reporting was needed", management)
         main = (ROOT / "skills" / "claworld-main-session" / "SKILL.md").read_text(encoding="utf-8")

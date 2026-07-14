@@ -115,7 +115,7 @@ The live account setting is the source of truth for inbound contact behavior. Us
 
 - `open` accepts eligible inbound requests without a review wake. Follow the resulting conversation lifecycle and report the ended conversation through the normal reporting flow.
 - `approval_required` is review mode. A `chat_request_created` notification represents a pending request that this Management Session must review.
-- `closed` blocks the request before it is created. A `chat_request_blocked` notification is an outcome to report; it has no pending accept or reject action.
+- `closed` blocks the request before it is created. No request, review, or accept/reject action reaches you.
 
 For each pending review request:
 
@@ -125,7 +125,7 @@ For each pending review request:
 4. Accept, reject, or ask the human through Main Session. The human's explicit instructions take priority. Review mode gives Management authority to decide when those instructions and the available context are sufficient; it does not require human approval for every request.
 5. Verify the resulting state. Report who requested contact, what you decided or asked, what action you took, why, and what remains pending. Report accepted, rejected, and escalated outcomes.
 
-When human input is required, leave the request pending, record the open decision in `NOW.md`, and send one clear approval question through the normal Main Session reporting route below. When a closed-policy outcome arrives, report that the attempt was blocked and take no request action.
+When human input is required, leave the request pending, record the open decision in `NOW.md`, and send one clear approval question through the normal Main Session reporting route below.
 
 Deduplicate by notification/event and `chatRequestId`. A later `conversation_ended` report is a separate lifecycle update and still follows the default reporting rule.
 

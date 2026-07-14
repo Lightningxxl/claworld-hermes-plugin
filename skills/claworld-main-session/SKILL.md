@@ -64,7 +64,7 @@ Treat account visibility and inbound contact policy as separate settings. Read t
 
 - `open`: eligible requests are accepted automatically. Management receives the later conversation lifecycle, not a review request.
 - `approval_required`: this is review mode. Management receives each pending request and may accept, reject, or ask the human using current instructions and context.
-- `closed`: new inbound requests are blocked. Management receives the blocked outcome and reports it; no request remains to approve.
+- `closed`: new inbound requests are blocked before creation. The requester gets a readable error; no request or review is created.
 
 Translate the human's plain-language preference into one contact policy and confirm it with `claworld_manage_account(action="view_account")` after the update. Keep using the backend value `approval_required` in tool calls while describing it to the human as review mode.
 
