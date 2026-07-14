@@ -7,10 +7,13 @@ import inspect
 import io
 import json
 import os
+import struct
 import sys
 import tempfile
 import types
 import unittest
+import xml.etree.ElementTree as ET
+import zlib
 from enum import Enum
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +23,73 @@ PACKAGE = "claworld_hermes_plugin"
 pkg = types.ModuleType(PACKAGE)
 pkg.__path__ = [str(ROOT)]
 sys.modules.setdefault(PACKAGE, pkg)
+
+
+def decode_resvg_rgba_png(path: Path) -> tuple[int, int, list[bytes]]:
+    """Decode the non-interlaced RGBA8 PNG shape emitted by pinned resvg."""
+
+    payload = path.read_bytes()
+    if payload[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG file")
+
+    width = height = 0
+    compressed = []
+    offset = 8
+    while offset < len(payload):
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        chunk_type = payload[offset + 4 : offset + 8]
+        chunk = payload[offset + 8 : offset + 8 + length]
+        offset += length + 12
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB", chunk
+            )
+            if (bit_depth, color_type, compression, filtering, interlace) != (8, 6, 0, 0, 0):
+                raise ValueError("expected a non-interlaced RGBA8 resvg PNG")
+        elif chunk_type == b"IDAT":
+            compressed.append(chunk)
+        elif chunk_type == b"IEND":
+            break
+
+    stride = width * 4
+    raw = zlib.decompress(b"".join(compressed))
+    if len(raw) != height * (stride + 1):
+        raise ValueError("unexpected PNG scanline length")
+
+    rows: list[bytes] = []
+    prior = bytes(stride)
+    offset = 0
+    for _row in range(height):
+        filter_type = raw[offset]
+        encoded = raw[offset + 1 : offset + stride + 1]
+        offset += stride + 1
+        decoded = bytearray(stride)
+        for idx, value in enumerate(encoded):
+            left = decoded[idx - 4] if idx >= 4 else 0
+            above = prior[idx]
+            upper_left = prior[idx - 4] if idx >= 4 else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = above
+            elif filter_type == 3:
+                predictor = (left + above) // 2
+            elif filter_type == 4:
+                estimate = left + above - upper_left
+                distances = (
+                    abs(estimate - left),
+                    abs(estimate - above),
+                    abs(estimate - upper_left),
+                )
+                predictor = (left, above, upper_left)[distances.index(min(distances))]
+            else:
+                raise ValueError(f"unsupported PNG filter {filter_type}")
+            decoded[idx] = (value + predictor) & 0xFF
+        prior = bytes(decoded)
+        rows.append(prior)
+    return width, height, rows
 
 from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
@@ -365,6 +435,74 @@ class TranscriptReportTests(unittest.TestCase):
                 self.assertIn(emoji, svg)
             png = Path(result["artifacts"]["pngPages"][0]["path"])
             self.assertEqual(png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_resvg_png_contains_composed_skin_tone_emoji_pixels(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Emoji raster regression",
+                        "peerProfile": "PNG pixels, not only SVG source",
+                        "localLabel": "Local",
+                        "peerLabel": "Peer",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "text": "before 👋🏽 after",
+                                "createdAt": "2026-07-14T09:00:00Z",
+                            }
+                        ],
+                    },
+                },
+            )
+
+            svg_path = Path(result["artifacts"]["svgPages"][0]["path"])
+            svg_root = ET.fromstring(svg_path.read_text(encoding="utf-8"))
+            emoji_nodes = [
+                node
+                for node in svg_root.iter("{http://www.w3.org/2000/svg}text")
+                if node.text and "👋🏽" in node.text
+            ]
+            self.assertEqual(len(emoji_nodes), 1)
+            emoji_node = emoji_nodes[0]
+            font_size = float(emoji_node.attrib["font-size"])
+            prefix = emoji_node.text.split("👋🏽", 1)[0]
+            emoji_x = float(emoji_node.attrib["x"]) + claworld_stylekit.text_units(prefix) * font_size
+            baseline_y = float(emoji_node.attrib["y"])
+
+            png_path = Path(result["artifacts"]["pngPages"][0]["path"])
+            width, height, rows = decode_resvg_rgba_png(png_path)
+            left = max(0, int(emoji_x - 2))
+            right = min(width, int(emoji_x + font_size * 1.4) + 1)
+            top = max(0, int(baseline_y - font_size * 1.25))
+            bottom = min(height, int(baseline_y + font_size * 0.3) + 1)
+
+            skin_tone_pixels = 0
+            for y in range(top, bottom):
+                for x in range(left, right):
+                    red, green, blue, alpha = rows[y][x * 4 : x * 4 + 4]
+                    if (
+                        alpha >= 200
+                        and red >= 90
+                        and red >= green >= blue
+                        and red - blue >= 30
+                        and green - blue >= 8
+                    ):
+                        skin_tone_pixels += 1
+
+            self.assertGreater(
+                skin_tone_pixels,
+                20,
+                "resvg PNG does not contain the expected composed skin-tone emoji pixels; "
+                "the emoji font may have rasterized as missing-glyph boxes",
+            )
 
     def test_resvg_dependency_error_does_not_use_a_visual_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
