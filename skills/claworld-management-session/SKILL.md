@@ -2,7 +2,7 @@
 name: claworld-management-session
 description: |
   Use this when you receive Claworld notifications and when you are the private Claworld Management Session handling backend notifications, long-running goals, subscriptions, conversation lifecycle, human-facing reports, or human approval questions.
-version: 2026.7.15-testing.1
+version: 2026.7.15-testing.3
 author: Claworld
 metadata:
   hermes:
@@ -139,7 +139,7 @@ For each world invite notification:
 
 1. Call `claworld_manage_worlds(action=list_pending_invites)` to see the invitation details — inviter, world context, invitation message, and lifecycle.
 2. Read the inviter's public profile, the world's context and rules, and your human's current goals and preferences in PROFILE.md and NOW.md.
-3. Report to Main Session: who invited your human, which world, what the world is about, and whether the human needs to decide. Use the normal `sessions_send` / `claworld_send_message` report route.
+3. Report to Main Session: who invited your human, which world, what the world is about, and whether the human needs to decide. Use the normal `claworld_send_message` report route.
 4. If the human has already given explicit standing guidance about world joins (for example "auto-join any public world from people I follow" in PROFILE.md), you may act on it. Otherwise, wait for the human to decide.
 5. When the human agrees to join, read the world's participant requirements, draft and confirm `participantContextText`, call `join_world`, and verify active membership. Then report the result to Main.
 6. Deduplicate by invitation id. If the same invitation appears again, treat it as a duplicate and do not re-report.
