@@ -13,6 +13,12 @@ from typing import Any
 
 RESVG_REQUIREMENT = "resvg_py>=0.3.3,<0.5"
 
+# Native color emoji glyphs commonly paint a little beyond a nominal 1em text
+# advance. Reserve a small amount of inline breathing room and nudge mixed-run
+# emoji left so their ink does not collide with the following bold text.
+EMOJI_INLINE_UNITS = 1.12
+EMOJI_INLINE_X_OFFSET = -0.055
+
 SYSTEM_EMOJI_FONT_FAMILIES = (
     # Prefer each operating system's native color emoji face. The monochrome
     # families at the end keep symbols visible on minimal Linux images.
@@ -539,7 +545,7 @@ def text_units(text: str) -> float:
 
 def cluster_units(cluster: str) -> float:
     if is_emoji_cluster(cluster):
-        return 1.0
+        return EMOJI_INLINE_UNITS
     return sum(char_units(ch) for ch in cluster)
 
 

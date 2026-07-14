@@ -7,6 +7,7 @@ from typing import Any
 
 from . import TranscriptReportStyle
 from ..transcript_report_stylekit import (
+    EMOJI_INLINE_X_OFFSET,
     clip_display,
     display_cols,
     ellipsize_text,
@@ -255,8 +256,9 @@ def _render_inline_text_svg(
     for run, script in runs:
         classes = " ".join((*base_classes, f"font-{script}"))
         weight = 400 if script == "emoji" else font_weight
+        render_x = cursor + (font_size * EMOJI_INLINE_X_OFFSET if script == "emoji" else 0)
         nodes.append(
-            f'<text class="{classes}" x="{cursor:.1f}" y="{y:.1f}" '
+            f'<text class="{classes}" x="{render_x:.1f}" y="{y:.1f}" '
             f'font-size="{font_size}" font-weight="{weight}" fill="{fill}">{esc(run)}</text>'
         )
         cursor += text_units(run) * font_size

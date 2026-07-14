@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import io
 import json
+import math
 import os
 import struct
 import sys
@@ -414,7 +415,10 @@ class TranscriptReportTests(unittest.TestCase):
         clusters = claworld_stylekit.grapheme_clusters(value)
         for emoji in ("👍🏽", "👨‍👩‍👧‍👦", "🏳️‍🌈", "🇨🇳"):
             self.assertIn(emoji, clusters)
-            self.assertEqual(claworld_stylekit.text_units(emoji), 1.0)
+            self.assertEqual(
+                claworld_stylekit.text_units(emoji),
+                claworld_stylekit.EMOJI_INLINE_UNITS,
+            )
             self.assertEqual(claworld_stylekit.display_cols(emoji), 2)
         self.assertEqual(
             claworld_stylekit.text_runs("今天很开心 😄，发布成功 🎉！"),
@@ -597,6 +601,40 @@ class TranscriptReportTests(unittest.TestCase):
                         f"{emoji} has no sufficiently colorful pixels in the final resvg PNG; "
                         "it may have rasterized as a missing-glyph box",
                     )
+
+            text_nodes = list(svg_root.iter("{http://www.w3.org/2000/svg}text"))
+            checked_spacing_pairs = 0
+            for index, node in enumerate(text_nodes[:-1]):
+                if "font-emoji" not in node.attrib.get("class", ""):
+                    continue
+                following = text_nodes[index + 1]
+                if following.attrib.get("y") != node.attrib.get("y"):
+                    continue
+                font_size = float(node.attrib["font-size"])
+                glyph_x = float(node.attrib["x"])
+                baseline_y = float(node.attrib["y"])
+                colorful_x = []
+                for y in range(
+                    max(0, int(baseline_y - font_size * 1.25)),
+                    min(height, int(baseline_y + font_size * 0.3) + 1),
+                ):
+                    for x in range(
+                        max(0, int(glyph_x - 2)),
+                        min(width, int(glyph_x + font_size * 1.4) + 1),
+                    ):
+                        red, green, blue, alpha = rows[y][x * 4 : x * 4 + 4]
+                        if alpha >= 200 and max(red, green, blue) - min(red, green, blue) >= 45:
+                            colorful_x.append(x)
+                if not colorful_x:
+                    continue
+                following_x = float(following.attrib["x"])
+                self.assertLess(
+                    max(colorful_x),
+                    math.ceil(following_x),
+                    f"{node.text} pixels overlap the following text run in the final PNG",
+                )
+                checked_spacing_pairs += 1
+            self.assertGreater(checked_spacing_pairs, 0)
 
     def test_resvg_dependency_error_does_not_use_a_visual_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
