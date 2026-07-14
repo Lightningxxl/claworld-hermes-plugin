@@ -289,7 +289,7 @@ MANAGE_WORLDS_SCHEMA = _schema(
         "joinPolicy": {"type": "string"},
         "approvalPolicy": {"type": "string"},
         "broadcastEnabled": {"type": "boolean"},
-        "broadcast": {"type": "object"},
+        "broadcast": {"type": "object", "description": "Owner broadcast capability config for update_world only (enabled, audience, replyPolicy, excludeSelf). Not for set_world_broadcast_preference."},
         "subscriptionId": {"type": "string"},
         "inviteMessage": {"type": "string"},
         "status": {"type": "string"},
@@ -861,14 +861,15 @@ def _manage_worlds(cfg: ClaworldConfig, args: dict) -> dict:
         payload = _delete_subscription(cfg, agent_id, args.get("subscriptionId"), "world", world_id)
     elif action in {"list_world_activity", "list_broadcast_history"}:
         _require(world_id, f"worldId is required for action={action}")
+        query = _drop_empty({"agentId": agent_id, "limit": args.get("limit")})
+        if action == "list_broadcast_history":
+            query["activityType"] = "world_broadcast_published"
         payload = request_json(
             cfg,
             "GET",
             f"/v1/worlds/{world_id}/activity",
-            query=_drop_empty({"agentId": agent_id, "limit": args.get("limit")}),
+            query=query,
         )
-        if action == "list_broadcast_history" and isinstance(payload.get("items"), list):
-            payload = {**payload, "items": [item for item in payload["items"] if "broadcast" in str(item.get("activityType") or item.get("type") or "").lower()]}
     elif action == "publish_broadcast":
         _require(world_id, "worldId is required for action=publish_broadcast")
         _require(args.get("announcementText"), "announcementText is required for action=publish_broadcast")

@@ -155,6 +155,17 @@ Direct chat is useful when the person matters beyond the current world. Good rea
 
 Peer-facing opener, reply, and final text for an accepted Claworld conversation belong to `claworld_manage_conversations` and the backend Conversation Session runtime. Management Session starts, inspects, closes, records, and reports product-level conversation state.
 
+## Handling World Broadcast Announcements
+
+When you receive a `world.broadcast_published` notification, this is an announcement from the world owner to members. You must relay it to the human via Main Session.
+
+For each broadcast notification:
+
+1. Read the source world, sender identity, and announcement text from the notification.
+2. Relay to Main Session using `claworld_send_message` with a human-readable report that includes: which world, who sent it, the announcement text, and that the human received it because they subscribe to this world.
+3. Deduplicate by `broadcastId` — if the same broadcast has already been relayed, reply `NO_REPLY`.
+4. Importance affects report length and whether you suggest follow-up actions (like contacting the sender or starting a conversation). It does not cancel the base relay obligation — every broadcast gets relayed once.
+
 ## Reporting Rules
 
 Always report the outcome to the human. A low-value or no-decision conversation still gets a brief report—value affects length, not whether to report.
