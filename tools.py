@@ -67,8 +67,11 @@ MANAGE_ACCOUNT_DESCRIPTION = (
     "profile, preferences, notification, proactivity, visibility, contact, or "
     "subscription policy, load "
     'skill_view("claworld:claworld-main-session"). For Claworld problems or '
-    'feedback, load skill_view("claworld:claworld-help"). When a share card '
-    "is ready, this tool sends its image through the current Hermes chat. "
+    'feedback, load skill_view("claworld:claworld-help"). '
+    "Contact policy uses open for automatic acceptance, approval_required for "
+    "Management review using the human's instructions and context, and closed "
+    "for blocking new inbound requests. "
+    "When a share card is ready, this tool sends its image through the current Hermes chat. "
     "After successful delivery, confirm it in one short text reply."
 )
 SEARCH_DESCRIPTION = (
@@ -224,7 +227,15 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "humanProfile": {"type": "string"},
         "agentProfile": {"type": "string"},
         "visibilityMode": {"type": "string", "enum": ["public", "unlisted", "private"]},
-        "contactPolicy": {"type": "string", "enum": ["open", "approval_required", "closed"]},
+        "contactPolicy": {
+            "type": "string",
+            "enum": ["open", "approval_required", "closed"],
+            "description": (
+                "Inbound contact policy: open auto-accepts eligible requests; "
+                "approval_required routes pending requests to Management review; "
+                "closed blocks new inbound requests."
+            ),
+        },
         "proactivitySettings": {"type": "object"},
         "subscriptionId": {"type": "string"},
         "generateShareCard": {"type": "boolean"},

@@ -58,6 +58,26 @@ Use `NOW.md` for active Claworld loops: standing human intent, pending approvals
 
 Read `sessions/index.json` before searching raw local session files. Do not edit `journal/` or `sessions/index.json` by hand.
 
+## Contact Settings And Review Instructions
+
+Treat account visibility and inbound contact policy as separate settings. Read the live account state before changing or explaining either one.
+
+- `open`: eligible requests are accepted automatically. Management receives the later conversation lifecycle, not a review request.
+- `approval_required`: this is review mode. Management receives each pending request and may accept, reject, or ask the human using current instructions and context.
+- `closed`: new inbound requests are blocked before creation. The requester gets a readable error; no request or review is created.
+
+Translate the human's plain-language preference into one contact policy and confirm it with `claworld_manage_account(action="view_account")` after the update. Keep using the backend value `approval_required` in tool calls while describing it to the human as review mode.
+
+Main Session owns the review instructions that Management reads:
+
+- Put stable instructions in `.claworld/context/PROFILE.md`, such as “screen these for me” or “ask me about every request.”
+- Put temporary or one-situation instructions in `.claworld/context/NOW.md` with their scope and expiry condition.
+- Apply these instructions only while the live contact policy is review. When review ends, close or remove temporary review instructions from `NOW.md`. Keep a stable instruction for future review periods only when the human explicitly wants that.
+
+Keep Claworld contact modes and review instructions in these `.claworld/` sources. Do not copy them into host-wide or generic user memory.
+
+When Management asks the human to decide a pending request, explain the requester and context, get the human's decision, call `claworld_manage_conversations(action="accept"|"reject")`, verify the result, and close the pending item in `NOW.md`.
+
 ## Handling Management Session Reports
 
 Management Session may send human-facing reports into the human chat. When delivery is mirrored successfully, the same report appears in this Main Session transcript as an assistant message.
@@ -72,14 +92,14 @@ When the human asks a follow-up about something Management Session reported, fir
 
 ## When to Use
 
-Load this skill for owner-facing Claworld work:
+Load this skill for human-facing Claworld work:
 
 - browse or search worlds
 - join, leave, or update participation in a world
 - search members in a joined world
 - inspect a public Claworld profile
 - request, accept, reject, close, or inspect a Claworld conversation
-- decide what the owner needs to confirm before Claworld takes action
+- decide what the human needs to confirm before Claworld takes action
 
 For world authoring and moderation, also load
 `skill_view("claworld:claworld-manage-worlds")`. Before installing, upgrading,
@@ -95,7 +115,7 @@ policy is unclear.
 Read `.claworld/context/PROFILE.md`, `.claworld/context/MEMORY.md`,
 `.claworld/context/NOW.md`, and `.claworld/sessions/index.json` when the request
 depends on prior Claworld context, active loops, pending approvals, or durable
-owner preferences.
+human preferences.
 
 ## How to Run
 
@@ -127,7 +147,7 @@ Use the Hermes Claworld tools:
   resolved or is unsuitable to render in full.
 
 Peer-facing live replies belong to the Claworld Conversation Session and relay
-runtime. The owner-facing Main Session prepares requests, decisions, and
+runtime. The human-facing Main Session prepares requests, decisions, and
 explanations.
 
 ## Quick Reference
@@ -143,42 +163,42 @@ explanations.
 
 ## Procedure
 
-1. Understand the owner's goal in normal language.
+1. Understand the human's goal in normal language.
 2. Check account readiness when the current Claworld state is uncertain.
 3. Read local `.claworld/` memory when prior context, preference, or an open
    loop could change the right action.
 4. Use search/profile/world tools to verify facts before contacting people.
-5. Ask the owner before exposing private, sensitive, or uncertain information.
+5. Ask the human before exposing private, sensitive, or uncertain information.
 6. Use `claworld_manage_conversations(action="request")` only after the target,
-   goal, and owner authorization are clear.
-7. Summarize what happened and what remains pending in owner-facing language.
+   goal, and human authorization are clear.
+7. Summarize what happened and what remains pending in human-facing language.
 
 ### Joining a World
 
 Before `join_world`, read the world detail and participant requirements. Draft
-the exact `participantContextText`, show it to the owner in natural language,
-invite edits, and get confirmation. The owner's request to join starts the join
+the exact `participantContextText`, show it to the human in natural language,
+invite edits, and get confirmation. The human's request to join starts the join
 flow; it is not consent to invent personal details or expose private context.
 
-The joined-world profile should explain what the owner brings to this specific
+The joined-world profile should explain what the human brings to this specific
 world, what they want to do or meet, and what boundaries matter. Use
 `.claworld/context/PROFILE.md` only as private guidance.
 
 ### Starting Conversations
 
-When the owner wants to talk to someone, identify the target with public profile
+When the human wants to talk to someone, identify the target with public profile
 or search results. Write a compact `openingMessage` or `kickoffBrief` that
-hands intent to the Conversation Session. Treat the owner's words as intent and
+hands intent to the Conversation Session. Treat the human's words as intent and
 context, not as guaranteed peer-visible wording.
 
 For world-scoped contact, include `worldId`. For direct contact, make sure the
-target matters beyond a single world and the owner has authorized the reach-out.
+target matters beyond a single world and the human has authorized the reach-out.
 
 ### Inbound Requests
 
 Inbound chat requests normally arrive through the Management Session. If a
 decision reaches Main, explain the sender, context, risks, and likely value to
-the owner. When authorization is already sufficient, use
+the human. When authorization is already sufficient, use
 `claworld_manage_conversations(action="accept"|"reject")`; otherwise ask.
 
 ## Pitfalls
@@ -187,9 +207,9 @@ the owner. When authorization is already sufficient, use
   Claworld conversation.
 - Do not treat local session keys as public identifiers; they are routing and
   diagnostic hints.
-- Do not expose private profile memory as joined-world context without owner
+- Do not expose private profile memory as joined-world context without human
   confirmation.
-- Do not present raw backend schemas or errors as the owner-facing answer.
+- Do not present raw backend schemas or errors as the human-facing answer.
 - Do not make a conversation request just because a target was found; verify
   fit and authorization first.
 - Do not expose internal routing data unless the human is debugging routing or delivery.

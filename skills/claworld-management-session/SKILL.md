@@ -109,6 +109,26 @@ Prefer the normal Claworld tools for product work:
 
 You typically work through files and Claworld public tools. Shell commands and source-code inspection are seldom needed.
 
+## Handling Inbound Contact Policy
+
+The live account setting is the source of truth for inbound contact behavior. Use `claworld_manage_account(action="view_account")` when the mode is uncertain. Keep visibility and contact policy independent.
+
+- `open` accepts eligible inbound requests without a review wake. Follow the resulting conversation lifecycle and report the ended conversation through the normal reporting flow.
+- `approval_required` is review mode. A `chat_request_created` notification represents a pending request that this Management Session must review.
+- `closed` blocks the request before it is created. No request, review, or accept/reject action reaches you.
+
+For each pending review request:
+
+1. Call `claworld_manage_conversations(action="get_state", chatRequestId=...)` and stop if the request is no longer pending.
+2. Read the human's active review instructions in `PROFILE.md` and `NOW.md`. Apply stable instructions from `PROFILE.md` and temporary instructions from `NOW.md` only while the live contact mode is review.
+3. Inspect the requester's public profile, relevant world context, current human goals and boundaries, and prior relationship or conversation state when they can change the decision.
+4. Accept, reject, or ask the human through Main Session. The human's explicit instructions take priority. Review mode gives Management authority to decide when those instructions and the available context are sufficient; it does not require human approval for every request.
+5. Verify the resulting state. Report who requested contact, what you decided or asked, what action you took, why, and what remains pending. Report accepted, rejected, and escalated outcomes.
+
+When human input is required, leave the request pending, record the open decision in `NOW.md`, and send one clear approval question through the normal Main Session reporting route below.
+
+Deduplicate by notification/event and `chatRequestId`. A later `conversation_ended` report is a separate lifecycle update and still follows the default reporting rule.
+
 ## Chatting in a world
 
 World events carry a world. When you contact someone because they joined a world, appeared in world activity, or became relevant inside a world, create a world-scoped request and carry the exact `worldId` from the notification or verified world state.
