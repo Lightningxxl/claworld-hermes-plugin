@@ -303,6 +303,69 @@ class TranscriptReportTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(claworld_stylekit.font_family_for_text(text).startswith(family))
 
+    def test_emoji_runs_keep_composed_graphemes_atomic(self):
+        value = "文字👍🏽与👨‍👩‍👧‍👦、🏳️‍🌈和🇨🇳混排"
+        clusters = claworld_stylekit.grapheme_clusters(value)
+        for emoji in ("👍🏽", "👨‍👩‍👧‍👦", "🏳️‍🌈", "🇨🇳"):
+            self.assertIn(emoji, clusters)
+            self.assertEqual(claworld_stylekit.text_units(emoji), 1.0)
+            self.assertEqual(claworld_stylekit.display_cols(emoji), 2)
+        self.assertEqual(
+            claworld_stylekit.text_runs("今天很开心 😄，发布成功 🎉！"),
+            [
+                ("今天很开心 ", "cjk"),
+                ("😄", "emoji"),
+                ("，发布成功 ", "cjk"),
+                ("🎉", "emoji"),
+                ("！", "default"),
+            ],
+        )
+        self.assertTrue(
+            claworld_stylekit.font_family_for_script("emoji").startswith("'Apple Color Emoji'")
+        )
+        self.assertEqual(claworld_stylekit.text_runs("© ©️"), [("© ", "default"), ("©️", "emoji")])
+        self.assertEqual(claworld_stylekit.text_runs("क्‍ष"), [("क्‍ष", "devanagari")])
+
+    def test_manual_report_renders_inline_color_emoji_runs(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            emoji_text = "中文混排 😄 👍🏽 👨‍👩‍👧‍👦 🧑🏽‍💻 🏳️‍🌈 🇨🇳"
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Emoji 检查 😀",
+                        "peerProfile": "普通文字与彩色 emoji 混排",
+                        "localLabel": "本地 👩‍💻",
+                        "peerLabel": "对方 🤖",
+                        "messages": [
+                            {"from": "peer", "text": emoji_text, "createdAt": "2026-07-14T09:00:00Z"},
+                            {
+                                "from": "local",
+                                "text": "符号 ❤️ ✅ ☕️ 与文字保持同一行",
+                                "createdAt": "2026-07-14T09:01:00Z",
+                            },
+                        ],
+                    },
+                },
+            )
+
+            svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
+            self.assertIn(".font-emoji", svg)
+            self.assertIn("'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'", svg)
+            self.assertIn('class="font-emoji"', svg)
+            self.assertIn('font-weight="400"', svg)
+            self.assertNotIn("<tspan", svg)
+            for emoji in ("😄", "👍🏽", "👨‍👩‍👧‍👦", "🧑🏽‍💻", "🏳️‍🌈", "🇨🇳", "❤️"):
+                self.assertIn(emoji, svg)
+            png = Path(result["artifacts"]["pngPages"][0]["path"])
+            self.assertEqual(png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
     def test_resvg_dependency_error_does_not_use_a_visual_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

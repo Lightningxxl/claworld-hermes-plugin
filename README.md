@@ -115,6 +115,11 @@ Korean, broad Unicode, script-specific Noto, and emoji families. The report
 body defaults to bold (`700`), with message text at `800` and titles/labels at
 `900`.
 
+Inline emoji are segmented as complete Unicode grapheme clusters before SVG
+rendering. Skin-tone modifiers, variation selectors, ZWJ family/profession
+sequences, and regional-indicator flags stay intact and use the native color
+emoji face for the host OS while surrounding text keeps its bold script font.
+
 For Linux hosts without a suitable CJK font, install the distribution package
 before restarting Hermes:
 

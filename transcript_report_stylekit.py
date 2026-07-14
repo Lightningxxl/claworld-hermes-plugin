@@ -13,6 +13,17 @@ from typing import Any
 
 RESVG_REQUIREMENT = "resvg_py>=0.3.3,<0.5"
 
+SYSTEM_EMOJI_FONT_FAMILIES = (
+    # Prefer each operating system's native color emoji face. The monochrome
+    # families at the end keep symbols visible on minimal Linux images.
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Noto Color Emoji",
+    "Noto Emoji",
+    "Noto Sans Symbols 2",
+    "Symbola",
+)
+
 # One ordered system-font policy is shared by the SVG source and every PNG
 # render. Families with dependable semibold/bold faces come first. Missing
 # families are skipped by resvg's system-font database, so this same list works
@@ -59,10 +70,10 @@ SYSTEM_UI_FONT_FAMILIES = (
     "Noto Sans Khmer",
     "Noto Sans Myanmar",
     "Noto Sans Ethiopic",
-    # Keep emoji last so it only supplies glyphs unavailable above.
-    "Apple Color Emoji",
-    "Segoe UI Emoji",
-    "Noto Color Emoji",
+    # Keep emoji last for legacy whole-line consumers. Transcript SVG text is
+    # split into explicit emoji runs so partial symbol coverage in a UI font
+    # cannot prevent color-emoji shaping.
+    *SYSTEM_EMOJI_FONT_FAMILIES,
 )
 
 SYSTEM_MONO_FONT_FAMILIES = (
@@ -153,6 +164,8 @@ def font_family_for_text(text: str) -> str:
 
 
 def font_family_for_script(script: str) -> str:
+    if script == "emoji":
+        return _css_font_family(SYSTEM_EMOJI_FONT_FAMILIES, "sans-serif")
     preferred = SCRIPT_FONT_FAMILIES.get(script, ())
     families = tuple(dict.fromkeys((*preferred, *SYSTEM_UI_FONT_FAMILIES)))
     return _css_font_family(families, "sans-serif")
@@ -163,7 +176,13 @@ def font_class_for_text(text: str) -> str:
 
 
 def font_css_rules(texts: list[str]) -> str:
-    scripts = tuple(dict.fromkeys(_text_script(text) for text in texts))
+    scripts = tuple(
+        dict.fromkeys(
+            script
+            for text in texts
+            for _run, script in text_runs(text)
+        )
+    )
     return " ".join(
         f".font-{script} {{ font-family: {font_family_for_script(script)}; }}"
         for script in scripts
@@ -223,6 +242,150 @@ def _text_script(text: str) -> str:
     return script if count else "default"
 
 
+def grapheme_clusters(text: str) -> list[str]:
+    """Keep emoji modifiers, flags, variation selectors, and ZWJ chains intact."""
+
+    value = str(text or "")
+    clusters: list[str] = []
+    index = 0
+    while index < len(value):
+        cluster = value[index]
+        first_code = ord(value[index])
+        index += 1
+
+        # A national flag is one cluster made from two regional indicators.
+        if _is_regional_indicator(first_code) and index < len(value):
+            if _is_regional_indicator(ord(value[index])):
+                cluster += value[index]
+                index += 1
+
+        while index < len(value):
+            code = ord(value[index])
+            if _is_grapheme_extend(value[index]):
+                cluster += value[index]
+                index += 1
+                continue
+            if code == 0x200D and index + 1 < len(value):
+                cluster += value[index : index + 2]
+                index += 2
+                continue
+            break
+        clusters.append(cluster)
+    return clusters
+
+
+def text_runs(text: str) -> list[tuple[str, str]]:
+    """Split one visible line into normal-script and color-emoji font runs."""
+
+    runs: list[tuple[str, str]] = []
+    normal = ""
+    for cluster in grapheme_clusters(text):
+        if is_emoji_cluster(cluster):
+            if normal:
+                runs.append((normal, _text_script(normal)))
+                normal = ""
+            if runs and runs[-1][1] == "emoji":
+                runs[-1] = (runs[-1][0] + cluster, "emoji")
+            else:
+                runs.append((cluster, "emoji"))
+            continue
+        normal += cluster
+    if normal:
+        runs.append((normal, _text_script(normal)))
+    return runs or [("", "default")]
+
+
+def is_emoji_cluster(cluster: str) -> bool:
+    """Return whether a complete grapheme should use a native emoji font."""
+
+    codes = [ord(ch) for ch in str(cluster or "")]
+    if not codes or (0xFE0E in codes and 0xFE0F not in codes):
+        return False
+    if any(
+        code == 0xFE0F
+        or _is_emoji_modifier(code)
+        or _is_regional_indicator(code)
+        or 0xE0020 <= code <= 0xE007F
+        for code in codes
+    ):
+        return True
+    # ZWJ is also used by some complex writing systems. Only route a ZWJ
+    # cluster to an emoji face when the cluster contains an emoji base.
+    if 0x200D in codes and any(_is_emoji_codepoint(code) for code in codes):
+        return True
+    if 0x20E3 in codes:
+        return True
+    return any(_is_emoji_codepoint(code) for code in codes)
+
+
+def _is_grapheme_extend(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        code in {0x200C, 0xFE0E, 0xFE0F, 0x20E3}
+        or _is_emoji_modifier(code)
+        or 0xE0020 <= code <= 0xE007F
+        or unicodedata.category(ch) in {"Mn", "Mc", "Me"}
+    )
+
+
+def _is_emoji_modifier(code: int) -> bool:
+    return 0x1F3FB <= code <= 0x1F3FF
+
+
+def _is_regional_indicator(code: int) -> bool:
+    return 0x1F1E6 <= code <= 0x1F1FF
+
+
+def _is_emoji_codepoint(code: int) -> bool:
+    if 0x1F000 <= code <= 0x1FAFF:
+        return True
+    return (
+        code in {
+            0x231A,
+            0x231B,
+            0x23F0,
+            0x23F3,
+            0x2614,
+            0x2615,
+            0x267F,
+            0x2693,
+            0x26A1,
+            0x26AA,
+            0x26AB,
+            0x26BD,
+            0x26BE,
+            0x26C4,
+            0x26C5,
+            0x26CE,
+            0x26D4,
+            0x26EA,
+            0x26F2,
+            0x26F3,
+            0x26F5,
+            0x26FA,
+            0x26FD,
+            0x2705,
+            0x270A,
+            0x270B,
+            0x2728,
+            0x274C,
+            0x274E,
+            0x2757,
+            0x27B0,
+            0x27BF,
+            0x2B1B,
+            0x2B1C,
+            0x2B50,
+            0x2B55,
+        }
+        or 0x23E9 <= code <= 0x23EC
+        or 0x25FD <= code <= 0x25FE
+        or 0x2648 <= code <= 0x2653
+        or 0x2753 <= code <= 0x2755
+        or 0x2795 <= code <= 0x2797
+    )
+
+
 def wrap_text(text: str, max_units: float) -> list[str]:
     lines: list[str] = []
     for paragraph in str(text or "").splitlines() or [""]:
@@ -240,13 +403,13 @@ def wrap_text(text: str, max_units: float) -> list[str]:
                 current = ""
                 current_units = 0.0
             if token_units > max_units:
-                for ch in token:
-                    units = char_units(ch)
+                for cluster in grapheme_clusters(token):
+                    units = cluster_units(cluster)
                     if current and current_units + units > max_units:
                         lines.append(current.rstrip())
                         current = ""
                         current_units = 0.0
-                    current += ch
+                    current += cluster
                     current_units += units
             else:
                 current += token
@@ -273,13 +436,13 @@ def wrap_terminal_text(text: str, max_cols: int) -> list[str]:
                 current = ""
                 current_cols = 0
             if token_cols > max_cols:
-                for ch in token:
-                    cols = char_cols(ch)
+                for cluster in grapheme_clusters(token):
+                    cols = cluster_cols(cluster)
                     if current and current_cols + cols > max_cols:
                         lines.append(current.rstrip())
                         current = ""
                         current_cols = 0
-                    current += ch
+                    current += cluster
                     current_cols += cols
             else:
                 current += token
@@ -299,21 +462,29 @@ def wrap_tokens(paragraph: str) -> list[str]:
             tokens.append(current)
             current = ""
 
-    for ch in paragraph:
-        if ch.isspace():
+    for cluster in grapheme_clusters(paragraph):
+        if cluster.isspace():
             flush()
             tokens.append(" ")
-        elif unicodedata.east_asian_width(ch) in {"W", "F"}:
+        elif is_emoji_cluster(cluster) or any(
+            unicodedata.east_asian_width(ch) in {"W", "F"} for ch in cluster
+        ):
             flush()
-            tokens.append(ch)
+            tokens.append(cluster)
         else:
-            current += ch
+            current += cluster
     flush()
     return tokens
 
 
 def display_cols(text: str) -> int:
-    return sum(char_cols(ch) for ch in str(text or ""))
+    return sum(cluster_cols(cluster) for cluster in grapheme_clusters(text))
+
+
+def cluster_cols(cluster: str) -> int:
+    if is_emoji_cluster(cluster):
+        return 2
+    return sum(char_cols(ch) for ch in cluster)
 
 
 def char_cols(ch: str) -> int:
@@ -330,11 +501,11 @@ def clip_display(text: str, max_cols: int) -> str:
     target = max(0, max_cols - len(suffix))
     kept = ""
     used = 0
-    for ch in value:
-        cols = char_cols(ch)
+    for cluster in grapheme_clusters(value):
+        cols = cluster_cols(cluster)
         if used + cols > target:
             break
-        kept += ch
+        kept += cluster
         used += cols
     return kept.rstrip() + suffix
 
@@ -363,7 +534,13 @@ def _is_nonspacing(ch: str) -> bool:
 
 
 def text_units(text: str) -> float:
-    return sum(char_units(ch) for ch in text)
+    return sum(cluster_units(cluster) for cluster in grapheme_clusters(text))
+
+
+def cluster_units(cluster: str) -> float:
+    if is_emoji_cluster(cluster):
+        return 1.0
+    return sum(char_units(ch) for ch in cluster)
 
 
 def ellipsize_text(text: str, max_units: float, *, suffix: str = "...") -> str:
@@ -373,11 +550,11 @@ def ellipsize_text(text: str, max_units: float, *, suffix: str = "...") -> str:
     allowed = max(0.0, max_units - text_units(suffix))
     kept = ""
     used = 0.0
-    for ch in value:
-        units = char_units(ch)
+    for cluster in grapheme_clusters(value):
+        units = cluster_units(cluster)
         if used + units > allowed:
             break
-        kept += ch
+        kept += cluster
         used += units
     return kept.rstrip() + suffix
 

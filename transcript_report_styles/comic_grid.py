@@ -11,9 +11,9 @@ from ..transcript_report_stylekit import (
     display_cols,
     ellipsize_text,
     esc,
-    font_class_for_text,
     font_css_rules,
     font_family,
+    text_runs,
     text_units,
     wrap_text,
     write_png_from_svg,
@@ -200,13 +200,67 @@ def render_svg(page: LayoutPage) -> str:
         parts.append(_render_message_svg(item))
     parts.append("</g>")
     if page.footer:
-        parts.append(f'<text class="{font_class_for_text(page.footer)}" x="{page.width / 2:.1f}" y="{page.height - 24}" text-anchor="middle" font-size="{SMALL_FONT_SIZE}" fill="#444444">{esc(page.footer)}</text>')
+        parts.append(
+            _render_inline_text_svg(
+                page.footer,
+                page.width / 2,
+                page.height - 24,
+                font_size=SMALL_FONT_SIZE,
+                font_weight=700,
+                fill="#444444",
+                anchor="middle",
+            )
+        )
     parts.append("</svg>")
     return "\n".join(parts)
 
 
 def write_png(svg_path: Path, png_path: Path, page: LayoutPage) -> dict:
     return write_png_from_svg(svg_path, png_path, width=page.width, height=page.height)
+
+
+def _render_inline_text_svg(
+    text: str,
+    x: float,
+    y: float,
+    *,
+    font_size: int,
+    font_weight: int,
+    fill: str,
+    anchor: str = "start",
+    class_name: str = "",
+) -> str:
+    """Render normal and emoji runs as independent text nodes for resvg."""
+
+    runs = text_runs(text)
+    base_classes = class_name.split()
+    if len(runs) == 1:
+        run, script = runs[0]
+        classes = " ".join((*base_classes, f"font-{script}"))
+        weight = 400 if script == "emoji" else font_weight
+        anchor_attr = f' text-anchor="{anchor}"' if anchor != "start" else ""
+        return (
+            f'<text class="{classes}" x="{x:.1f}" y="{y:.1f}"{anchor_attr} '
+            f'font-size="{font_size}" font-weight="{weight}" fill="{fill}">{esc(run)}</text>'
+        )
+
+    total_width = sum(text_units(run) * font_size for run, _script in runs)
+    cursor = x
+    if anchor == "middle":
+        cursor -= total_width / 2
+    elif anchor == "end":
+        cursor -= total_width
+
+    nodes = []
+    for run, script in runs:
+        classes = " ".join((*base_classes, f"font-{script}"))
+        weight = 400 if script == "emoji" else font_weight
+        nodes.append(
+            f'<text class="{classes}" x="{cursor:.1f}" y="{y:.1f}" '
+            f'font-size="{font_size}" font-weight="{weight}" fill="{fill}">{esc(run)}</text>'
+        )
+        cursor += text_units(run) * font_size
+    return "\n".join(nodes)
 
 
 def _positions(width: int, bubble_w: int, label: str, side: str) -> tuple[int, int, int, str]:
@@ -233,7 +287,14 @@ def _render_header(page: LayoutPage) -> str:
             f'<rect x="{x + 11}" y="{y + 6}" width="{w + 2}" height="{h + 10}" rx="22" fill="{BLACK}"/>',
             f'<rect x="{x + 7}" y="{y + 6}" width="{w}" height="{h + 4}" rx="22" fill="url(#headerAccent)"/>',
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="22" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
-            f'<text class="{font_class_for_text(title)}" x="{x + 28}" y="{y + 43}" font-size="{TITLE_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(title)}</text>',
+            _render_inline_text_svg(
+                title,
+                x + 28,
+                y + 43,
+                font_size=TITLE_FONT_SIZE,
+                font_weight=900,
+                fill=BLACK,
+            ),
             subtitle,
             _decorative_star_svg(x + w - 62, y + 34, 22, "#FFFFFF", "url(#headerAccent)"),
             f'<circle cx="{x + w - 23}" cy="{y + 55}" r="9" fill="#72E3C0" stroke="{BLACK}" stroke-width="3"/>',
@@ -263,7 +324,15 @@ def _header_height(subtitle: str) -> int:
 def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
     return "\n".join(
         [
-            f'<text class="header-subtitle-line {font_class_for_text(line)}" x="{x:.1f}" y="{y + idx * HEADER_SUBTITLE_LINE_HEIGHT:.1f}" font-size="15" font-weight="700" fill="{THEME["muted"]}">{esc(line)}</text>'
+            _render_inline_text_svg(
+                line,
+                x,
+                y + idx * HEADER_SUBTITLE_LINE_HEIGHT,
+                font_size=15,
+                font_weight=700,
+                fill=THEME["muted"],
+                class_name="header-subtitle-line",
+            )
             for idx, line in enumerate(lines)
         ]
     )
@@ -271,7 +340,15 @@ def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
 
 def _render_ellipsis_svg(page: LayoutPage, item: dict[str, Any]) -> str:
     y = item["y"] + 7
-    return f'<text class="{font_class_for_text(item["label"])}" x="{page.width / 2:.1f}" y="{y + 14}" text-anchor="middle" font-size="{SMALL_FONT_SIZE}" fill="#555555">{esc(item["label"])}</text>'
+    return _render_inline_text_svg(
+        item["label"],
+        page.width / 2,
+        y + 14,
+        font_size=SMALL_FONT_SIZE,
+        font_weight=700,
+        fill="#555555",
+        anchor="middle",
+    )
 
 
 def _render_time_svg(page: LayoutPage, item: dict[str, Any]) -> str:
@@ -285,7 +362,15 @@ def _render_time_svg(page: LayoutPage, item: dict[str, Any]) -> str:
             _diamond_svg(x - 28, y + 16, 13, "#FF5BE2"),
             f'<rect x="{x + 3:.1f}" y="{y + 4}" width="{label_w}" height="30" rx="15" fill="{BLACK}"/>',
             f'<rect x="{x:.1f}" y="{y}" width="{label_w}" height="30" rx="15" fill="{THEME["time_fill"]}" stroke="{BLACK}" stroke-width="3"/>',
-            f'<text class="{font_class_for_text(label)}" x="{page.width / 2:.1f}" y="{y + 21}" text-anchor="middle" font-size="{FONT_SIZE}" font-weight="700" fill="{BLACK}">{esc(label)}</text>',
+            _render_inline_text_svg(
+                label,
+                page.width / 2,
+                y + 21,
+                font_size=FONT_SIZE,
+                font_weight=700,
+                fill=BLACK,
+                anchor="middle",
+            ),
             _diamond_svg(x + label_w + 28, y + 16, 13, "#5FE0A7"),
             "</g>",
         ]
@@ -301,12 +386,29 @@ def _render_message_svg(item: dict[str, Any]) -> str:
         f'<title>{label_text}</title>',
         _bubble_layers_svg(item, colors),
         f'<rect x="{item["labelX"]}" y="{item["labelY"]}" width="{item["labelWidth"]}" height="{LABEL_HEIGHT}" rx="9" fill="{colors["label"]}" stroke="{BLACK}" stroke-width="3"/>',
-        f'<text class="{font_class_for_text(item["label"])}" x="{item["labelX"] + item["labelWidth"] / 2:.1f}" y="{item["labelY"] + 21}" text-anchor="middle" font-size="{LABEL_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(item["label"])}</text>',
+        _render_inline_text_svg(
+            item["label"],
+            item["labelX"] + item["labelWidth"] / 2,
+            item["labelY"] + 21,
+            font_size=LABEL_FONT_SIZE,
+            font_weight=900,
+            fill=BLACK,
+            anchor="middle",
+        ),
     ]
     text_x = item["bubbleX"] + BUBBLE_PAD_X
     text_y = item["bubbleY"] + BUBBLE_PAD_Y + 17
     for line in item["lines"]:
-        parts.append(f'<text class="{font_class_for_text(line)}" x="{text_x}" y="{text_y}" font-size="{FONT_SIZE}" font-weight="800" fill="{BLACK}">{esc(line)}</text>')
+        parts.append(
+            _render_inline_text_svg(
+                line,
+                text_x,
+                text_y,
+                font_size=FONT_SIZE,
+                font_weight=800,
+                fill=BLACK,
+            )
+        )
         text_y += LINE_HEIGHT
     if message.tags:
         parts.append(_render_tag_icons_svg(message.tags, text_x, text_y + TAG_ICON_TOP_GAP))
@@ -422,7 +524,15 @@ def _fallback_tag_svg(tag: str, x: float, y: float) -> str:
             f"<title>{esc(label)}</title>",
             f'<rect x="{x + 3:.1f}" y="{y + 4:.1f}" width="{w}" height="{TAG_ICON_SIZE}" rx="9" fill="{BLACK}"/>',
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w}" height="{TAG_ICON_SIZE}" rx="9" fill="#F6F1FF" stroke="{BLACK}" stroke-width="2.5"/>',
-            f'<text class="{font_class_for_text(label)}" x="{x + w / 2:.1f}" y="{y + 20.5:.1f}" text-anchor="middle" font-size="{LABEL_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(label)}</text>',
+            _render_inline_text_svg(
+                label,
+                x + w / 2,
+                y + 20.5,
+                font_size=LABEL_FONT_SIZE,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+            ),
             "</g>",
         ]
     )
