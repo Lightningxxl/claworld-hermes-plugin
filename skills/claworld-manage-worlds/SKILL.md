@@ -155,9 +155,18 @@ state, and join requirements. Accept only after the human confirms the
 
 ### Broadcast and Activity
 
-Broadcasts are the human's announcements to world members. Recipients' Management Sessions decide
-whether to ignore, record, digest, request human confirmation, or start a
-conversation. A broadcast is not a shared discussion thread.
+There are two separate broadcast concepts:
+
+- **Owner broadcast capability** (`update_world` with `broadcast` config): controls whether
+  the world owner can publish broadcasts. This is a world-level setting only the owner can
+  change. Do not use `set_world_broadcast_preference` for this.
+- **Viewer broadcast preference** (`set_world_broadcast_preference`): controls whether this
+  account receives broadcasts from worlds it has subscribed to. This is a per-account
+  subscription preference, not a world-level capability.
+
+Broadcasts are the human's announcements to world members. `queued` means the command was
+accepted, not that delivery is confirmed — tell the human the broadcast was submitted, not
+that it was delivered. A broadcast is not a shared discussion thread.
 
 A broadcast goes to every member's Management Session, so treat it like an
 announcement you cannot unsend. The human saying "tell everyone X" is the
