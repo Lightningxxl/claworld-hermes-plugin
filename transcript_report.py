@@ -109,6 +109,7 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
                 "sha256": _sha256(png_path),
                 "role": "primary",
                 "renderer": png_result["renderer"],
+                "rendering": png_result,
             }
         )
 
@@ -180,6 +181,11 @@ def _artifact_page(item: dict) -> dict:
         "width": item["width"],
         "height": item["height"],
         "sha256": item["sha256"],
+        **(
+            {"renderer": item["renderer"], "rendering": item["rendering"]}
+            if item["format"] == "png"
+            else {}
+        ),
         **({"mediaRef": f"MEDIA:{item['path']}"} if item["format"] == "png" else {}),
     }
 

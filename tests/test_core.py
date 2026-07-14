@@ -6,11 +6,15 @@ import asyncio
 import inspect
 import io
 import json
+import math
 import os
+import struct
 import sys
 import tempfile
 import types
 import unittest
+import xml.etree.ElementTree as ET
+import zlib
 from enum import Enum
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +25,109 @@ pkg = types.ModuleType(PACKAGE)
 pkg.__path__ = [str(ROOT)]
 sys.modules.setdefault(PACKAGE, pkg)
 
+
+def decode_resvg_rgba_png(path: Path) -> tuple[int, int, list[bytes]]:
+    """Decode the non-interlaced RGBA8 PNG shape emitted by pinned resvg."""
+
+    payload = path.read_bytes()
+    if payload[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG file")
+
+    width = height = 0
+    compressed = []
+    offset = 8
+    while offset < len(payload):
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        chunk_type = payload[offset + 4 : offset + 8]
+        chunk = payload[offset + 8 : offset + 8 + length]
+        offset += length + 12
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB", chunk
+            )
+            if (bit_depth, color_type, compression, filtering, interlace) != (8, 6, 0, 0, 0):
+                raise ValueError("expected a non-interlaced RGBA8 resvg PNG")
+        elif chunk_type == b"IDAT":
+            compressed.append(chunk)
+        elif chunk_type == b"IEND":
+            break
+
+    stride = width * 4
+    raw = zlib.decompress(b"".join(compressed))
+    if len(raw) != height * (stride + 1):
+        raise ValueError("unexpected PNG scanline length")
+
+    rows: list[bytes] = []
+    prior = bytes(stride)
+    offset = 0
+    for _row in range(height):
+        filter_type = raw[offset]
+        encoded = raw[offset + 1 : offset + stride + 1]
+        offset += stride + 1
+        decoded = bytearray(stride)
+        for idx, value in enumerate(encoded):
+            left = decoded[idx - 4] if idx >= 4 else 0
+            above = prior[idx]
+            upper_left = prior[idx - 4] if idx >= 4 else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = above
+            elif filter_type == 3:
+                predictor = (left + above) // 2
+            elif filter_type == 4:
+                estimate = left + above - upper_left
+                distances = (
+                    abs(estimate - left),
+                    abs(estimate - above),
+                    abs(estimate - upper_left),
+                )
+                predictor = (left, above, upper_left)[distances.index(min(distances))]
+            else:
+                raise ValueError(f"unsupported PNG filter {filter_type}")
+            decoded[idx] = (value + predictor) & 0xFF
+        prior = bytes(decoded)
+        rows.append(prior)
+    return width, height, rows
+
+
+def rendered_text_pixel_regions(
+    svg_root: ET.Element,
+    width: int,
+    height: int,
+    rows: list[bytes],
+    target: str,
+) -> list[list[tuple[int, int, int, int]]]:
+    """Return tight PNG pixel regions for every occurrence of an SVG text target."""
+
+    regions: list[list[tuple[int, int, int, int]]] = []
+    for node in svg_root.iter("{http://www.w3.org/2000/svg}text"):
+        value = node.text or ""
+        search_from = 0
+        while True:
+            index = value.find(target, search_from)
+            if index < 0:
+                break
+            font_size = float(node.attrib["font-size"])
+            prefix = value[:index]
+            glyph_x = float(node.attrib["x"]) + claworld_stylekit.text_units(prefix) * font_size
+            baseline_y = float(node.attrib["y"])
+            left = max(0, int(glyph_x - 2))
+            right = min(width, int(glyph_x + font_size * 1.4) + 1)
+            top = max(0, int(baseline_y - font_size * 1.25))
+            bottom = min(height, int(baseline_y + font_size * 0.3) + 1)
+            regions.append(
+                [
+                    tuple(rows[y][x * 4 : x * 4 + 4])
+                    for y in range(top, bottom)
+                    for x in range(left, right)
+                ]
+            )
+            search_from = index + len(target)
+    return regions
+
 from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
 from claworld_hermes_plugin import http_client as claworld_http
@@ -30,6 +137,7 @@ from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, 
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin import transcript_report as claworld_transcript
+from claworld_hermes_plugin import transcript_report_stylekit as claworld_stylekit
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, classify_reply_content, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
@@ -290,6 +398,263 @@ class ProtocolTests(unittest.TestCase):
 
 
 class TranscriptReportTests(unittest.TestCase):
+    def test_system_font_policy_prefers_bold_script_families(self):
+        expected = {
+            "中文": "'PingFang SC'",
+            "日本語です": "'Hiragino Kaku Gothic ProN'",
+            "한국어": "'Apple SD Gothic Neo'",
+            "العربية": "'Noto Sans Arabic'",
+            "हिन्दी": "'Noto Sans Devanagari'",
+        }
+        for text, family in expected.items():
+            with self.subTest(text=text):
+                self.assertTrue(claworld_stylekit.font_family_for_text(text).startswith(family))
+
+    def test_emoji_runs_keep_composed_graphemes_atomic(self):
+        value = "文字👍🏽与👨‍👩‍👧‍👦、🏳️‍🌈和🇨🇳混排"
+        clusters = claworld_stylekit.grapheme_clusters(value)
+        for emoji in ("👍🏽", "👨‍👩‍👧‍👦", "🏳️‍🌈", "🇨🇳"):
+            self.assertIn(emoji, clusters)
+            self.assertEqual(
+                claworld_stylekit.text_units(emoji),
+                claworld_stylekit.EMOJI_INLINE_UNITS,
+            )
+            self.assertEqual(claworld_stylekit.display_cols(emoji), 2)
+        self.assertEqual(
+            claworld_stylekit.text_runs("今天很开心 😄，发布成功 🎉！"),
+            [
+                ("今天很开心 ", "cjk"),
+                ("😄", "emoji"),
+                ("，发布成功 ", "cjk"),
+                ("🎉", "emoji"),
+                ("！", "default"),
+            ],
+        )
+        self.assertTrue(
+            claworld_stylekit.font_family_for_script("emoji").startswith("'Apple Color Emoji'")
+        )
+        self.assertEqual(claworld_stylekit.text_runs("© ©️"), [("© ", "default"), ("©️", "emoji")])
+        self.assertEqual(claworld_stylekit.text_runs("क्‍ष"), [("क्‍ष", "devanagari")])
+
+    def test_manual_report_renders_inline_color_emoji_runs(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            emoji_text = "中文混排 😄 👍🏽 👨‍👩‍👧‍👦 🧑🏽‍💻 🏳️‍🌈 🇨🇳"
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Emoji 检查 😀",
+                        "peerProfile": "普通文字与彩色 emoji 混排",
+                        "localLabel": "本地 👩‍💻",
+                        "peerLabel": "对方 🤖",
+                        "messages": [
+                            {"from": "peer", "text": emoji_text, "createdAt": "2026-07-14T09:00:00Z"},
+                            {
+                                "from": "local",
+                                "text": "符号 ❤️ ✅ ☕️ 与文字保持同一行",
+                                "createdAt": "2026-07-14T09:01:00Z",
+                            },
+                        ],
+                    },
+                },
+            )
+
+            svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
+            self.assertIn(".font-emoji", svg)
+            self.assertIn("'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'", svg)
+            self.assertIn('class="font-emoji"', svg)
+            self.assertIn('font-weight="400"', svg)
+            self.assertNotIn("<tspan", svg)
+            for emoji in ("😄", "👍🏽", "👨‍👩‍👧‍👦", "🧑🏽‍💻", "🏳️‍🌈", "🇨🇳", "❤️"):
+                self.assertIn(emoji, svg)
+            png = Path(result["artifacts"]["pngPages"][0]["path"])
+            self.assertEqual(png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_resvg_png_contains_composed_skin_tone_emoji_pixels(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Emoji raster regression",
+                        "peerProfile": "PNG pixels, not only SVG source",
+                        "localLabel": "Local",
+                        "peerLabel": "Peer",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "text": "before 👋🏽 after",
+                                "createdAt": "2026-07-14T09:00:00Z",
+                            }
+                        ],
+                    },
+                },
+            )
+
+            svg_path = Path(result["artifacts"]["svgPages"][0]["path"])
+            svg_root = ET.fromstring(svg_path.read_text(encoding="utf-8"))
+            png_path = Path(result["artifacts"]["pngPages"][0]["path"])
+            width, height, rows = decode_resvg_rgba_png(png_path)
+            regions = rendered_text_pixel_regions(svg_root, width, height, rows, "👋🏽")
+            self.assertEqual(len(regions), 1)
+            skin_tone_pixels = sum(
+                1
+                for red, green, blue, alpha in regions[0]
+                if (
+                    alpha >= 200
+                    and red >= 90
+                    and red >= green >= blue
+                    and red - blue >= 30
+                    and green - blue >= 8
+                )
+            )
+
+            self.assertGreater(
+                skin_tone_pixels,
+                20,
+                "resvg PNG does not contain the expected composed skin-tone emoji pixels; "
+                "the emoji font may have rasterized as missing-glyph boxes",
+            )
+
+    def test_realistic_chat_rasterizes_common_ai_emoji_in_final_png(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "发布前渲染确认",
+                        "peerProfile": "一段包含常用 AI emoji 的真实多轮对话",
+                        "localLabel": "Isolde",
+                        "peerLabel": "冯宝宝",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "text": "今天的 testing.3 候选包准备好了吗？😊",
+                                "createdAt": "2026-07-14T10:00:00Z",
+                            },
+                            {
+                                "from": "local",
+                                "text": "准备好了：代码检查 ✅，105 项测试也通过 ✅。",
+                                "createdAt": "2026-07-14T10:01:00Z",
+                            },
+                            {
+                                "from": "peer",
+                                "text": "我看到旧版本里 emoji 会变成方框 ❌，尤其是肤色组合 👋🏽。",
+                                "createdAt": "2026-07-14T10:02:00Z",
+                            },
+                            {
+                                "from": "local",
+                                "text": "已经修复。笑脸 😊、思考 🤔、警告 ⚠️ 和中文/English 混排都正常。",
+                                "createdAt": "2026-07-14T10:03:00Z",
+                            },
+                            {
+                                "from": "peer",
+                                "text": "我再确认一下成功、失败和警告状态，别让图标和正文错位。",
+                                "createdAt": "2026-07-14T10:04:00Z",
+                            },
+                            {
+                                "from": "local",
+                                "text": "复测通过 ✅，效果很好 👍，可以发布了 🎉 🚀",
+                                "createdAt": "2026-07-14T10:05:00Z",
+                            },
+                        ],
+                    },
+                },
+            )
+
+            self.assertEqual(result["pageCount"], 1)
+            svg_path = Path(result["artifacts"]["svgPages"][0]["path"])
+            svg_root = ET.fromstring(svg_path.read_text(encoding="utf-8"))
+            png_path = Path(result["artifacts"]["pngPages"][0]["path"])
+            width, height, rows = decode_resvg_rgba_png(png_path)
+
+            for emoji in ("✅", "❌", "😊", "🤔", "⚠️", "👋🏽", "👍", "🎉", "🚀"):
+                regions = rendered_text_pixel_regions(svg_root, width, height, rows, emoji)
+                self.assertTrue(regions, f"no rendered SVG text region found for {emoji}")
+                for region in regions:
+                    colorful_pixels = sum(
+                        1
+                        for red, green, blue, alpha in region
+                        if alpha >= 200 and max(red, green, blue) - min(red, green, blue) >= 45
+                    )
+                    self.assertGreater(
+                        colorful_pixels,
+                        12,
+                        f"{emoji} has no sufficiently colorful pixels in the final resvg PNG; "
+                        "it may have rasterized as a missing-glyph box",
+                    )
+
+            text_nodes = list(svg_root.iter("{http://www.w3.org/2000/svg}text"))
+            checked_spacing_pairs = 0
+            for index, node in enumerate(text_nodes[:-1]):
+                if "font-emoji" not in node.attrib.get("class", ""):
+                    continue
+                following = text_nodes[index + 1]
+                if following.attrib.get("y") != node.attrib.get("y"):
+                    continue
+                font_size = float(node.attrib["font-size"])
+                glyph_x = float(node.attrib["x"])
+                baseline_y = float(node.attrib["y"])
+                colorful_x = []
+                for y in range(
+                    max(0, int(baseline_y - font_size * 1.25)),
+                    min(height, int(baseline_y + font_size * 0.3) + 1),
+                ):
+                    for x in range(
+                        max(0, int(glyph_x - 2)),
+                        min(width, int(glyph_x + font_size * 1.4) + 1),
+                    ):
+                        red, green, blue, alpha = rows[y][x * 4 : x * 4 + 4]
+                        if alpha >= 200 and max(red, green, blue) - min(red, green, blue) >= 45:
+                            colorful_x.append(x)
+                if not colorful_x:
+                    continue
+                following_x = float(following.attrib["x"])
+                self.assertLess(
+                    max(colorful_x),
+                    math.ceil(following_x),
+                    f"{node.text} pixels overlap the following text run in the final PNG",
+                )
+                checked_spacing_pairs += 1
+            self.assertGreater(checked_spacing_pairs, 0)
+
+    def test_resvg_dependency_error_does_not_use_a_visual_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            svg_path = root / "report.svg"
+            png_path = root / "report.png"
+            svg_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>',
+                encoding="utf-8",
+            )
+            with patch.dict(sys.modules, {"resvg_py": None}):
+                with self.assertRaisesRegex(RuntimeError, "resvg renderer"):
+                    claworld_stylekit.write_png_from_svg(
+                        svg_path,
+                        png_path,
+                        width=1,
+                        height=1,
+                    )
+            self.assertFalse(png_path.exists())
+
     def test_normalization_drops_runtime_notice(self):
         cfg = ClaworldConfig(agent_id="agent-local")
         normalized = claworld_transcript._normalize_messages(
@@ -616,6 +981,17 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertIn('"like"', rendered)
             self.assertIn('"request end"', rendered)
             self.assertNotIn("secret-value", rendered)
+            png_page = result["artifacts"]["pngPages"][0]
+            self.assertEqual(png_page["renderer"], "resvg")
+            self.assertEqual(png_page["rendering"]["binding"], "resvg_py")
+            self.assertEqual(png_page["rendering"]["fontStrategy"], "unicode-script-aware")
+            self.assertEqual(Path(png_page["path"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
+            self.assertIn('font-weight="800"', svg)
+            self.assertIn("'PingFang SC'", svg)
+            self.assertIn('stop-color="#47B6FF"', svg)
+            self.assertIn('stop-color="#FF4EB4"', svg)
+            self.assertIn('stop-color="#FF8A2A"', svg)
 
     def test_manual_report_paginates_long_conversation(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

@@ -7,16 +7,17 @@ from typing import Any
 
 from . import TranscriptReportStyle
 from ..transcript_report_stylekit import (
+    EMOJI_INLINE_X_OFFSET,
     clip_display,
     display_cols,
     ellipsize_text,
     esc,
+    font_css_rules,
     font_family,
-    pil_font,
-    rgba,
+    text_runs,
     text_units,
     wrap_text,
-    write_png_with_fallback,
+    write_png_from_svg,
 )
 from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMessage
 
@@ -48,6 +49,7 @@ LINE_HEIGHT = 29
 HEADER_SUBTITLE_MAX_UNITS = 33.0
 HEADER_SUBTITLE_MAX_LINES = 2
 HEADER_SUBTITLE_LINE_HEIGHT = 19
+HEADER_TITLE_MAX_COLS = 26
 TAG_HEIGHT = 58
 TAG_ICON_SIZE = 30
 TAG_ICON_GAP = 12
@@ -181,7 +183,7 @@ def render_svg(page: LayoutPage) -> str:
         f'<svg class="comic-grid" xmlns="http://www.w3.org/2000/svg" width="{page.width}" height="{page.height}" viewBox="0 0 {page.width} {page.height}" role="img" aria-labelledby="{title_id} {desc_id}">',
         f'<title id="{title_id}">{esc(page.title)}</title>',
         f'<desc id="{desc_id}">{esc(desc)}</desc>',
-        _svg_defs(),
+        _svg_defs(page),
         f'<rect x="0" y="0" width="{page.width}" height="{page.height}" fill="{THEME["paper"]}"/>',
         f'<rect x="0" y="0" width="{page.width}" height="{page.height}" fill="url(#comicGridMinor)"/>',
         f'<rect x="0" y="0" width="{page.width}" height="{page.height}" fill="url(#comicGridMajor)" opacity="0.46"/>',
@@ -199,42 +201,68 @@ def render_svg(page: LayoutPage) -> str:
         parts.append(_render_message_svg(item))
     parts.append("</g>")
     if page.footer:
-        parts.append(f'<text x="{page.width / 2:.1f}" y="{page.height - 24}" text-anchor="middle" font-size="{SMALL_FONT_SIZE}" fill="#444444">{esc(page.footer)}</text>')
+        parts.append(
+            _render_inline_text_svg(
+                page.footer,
+                page.width / 2,
+                page.height - 24,
+                font_size=SMALL_FONT_SIZE,
+                font_weight=700,
+                fill="#444444",
+                anchor="middle",
+            )
+        )
     parts.append("</svg>")
     return "\n".join(parts)
 
 
 def write_png(svg_path: Path, png_path: Path, page: LayoutPage) -> dict:
-    return write_png_with_fallback(svg_path, png_path, page, _render_png_with_pillow)
+    return write_png_from_svg(svg_path, png_path, width=page.width, height=page.height)
 
 
-def _render_png_with_pillow(page: LayoutPage, png_path: Path) -> None:
-    from PIL import Image, ImageDraw
+def _render_inline_text_svg(
+    text: str,
+    x: float,
+    y: float,
+    *,
+    font_size: int,
+    font_weight: int,
+    fill: str,
+    anchor: str = "start",
+    class_name: str = "",
+) -> str:
+    """Render normal and emoji runs as independent text nodes for resvg."""
 
-    scale = 2
-    img = Image.new("RGBA", (page.width * scale, page.height * scale), rgba(THEME["paper"]))
-    draw = ImageDraw.Draw(img, "RGBA")
-    _draw_grid_png(draw, page.width * scale, page.height * scale, scale)
-    font_regular = pil_font(FONT_SIZE * scale)
-    font_small = pil_font(SMALL_FONT_SIZE * scale)
-    font_label = pil_font(LABEL_FONT_SIZE * scale)
-    font_title = pil_font(TITLE_FONT_SIZE * scale)
-    font_profile = pil_font(15 * scale)
+    runs = text_runs(text)
+    base_classes = class_name.split()
+    if len(runs) == 1:
+        run, script = runs[0]
+        classes = " ".join((*base_classes, f"font-{script}"))
+        weight = 400 if script == "emoji" else font_weight
+        anchor_attr = f' text-anchor="{anchor}"' if anchor != "start" else ""
+        return (
+            f'<text class="{classes}" x="{x:.1f}" y="{y:.1f}"{anchor_attr} '
+            f'font-size="{font_size}" font-weight="{weight}" fill="{fill}">{esc(run)}</text>'
+        )
 
-    draw.rounded_rectangle([FRAME_MARGIN * scale, FRAME_MARGIN * scale, (page.width - FRAME_MARGIN) * scale, (page.height - FRAME_MARGIN) * scale], radius=46 * scale, outline=rgba(BLACK), width=6 * scale)
-    _render_header_png(img, draw, page, font_title, font_profile, scale)
-    for item in page.items:
-        if item["kind"] == "ellipsis":
-            _render_ellipsis_png(draw, page, item, font_small, scale)
-            continue
-        if item["kind"] == "time":
-            _render_time_png(draw, page, item, font_small, scale)
-            continue
-        _render_message_png(img, draw, item, font_regular, font_small, font_label, scale)
-    if page.footer:
-        draw.text((page.width * scale / 2, (page.height - 34) * scale), page.footer, fill=rgba("#444444"), font=font_small, anchor="ma")
-    img = img.resize((page.width, page.height), Image.Resampling.LANCZOS)
-    img.convert("RGB").save(png_path)
+    total_width = sum(text_units(run) * font_size for run, _script in runs)
+    cursor = x
+    if anchor == "middle":
+        cursor -= total_width / 2
+    elif anchor == "end":
+        cursor -= total_width
+
+    nodes = []
+    for run, script in runs:
+        classes = " ".join((*base_classes, f"font-{script}"))
+        weight = 400 if script == "emoji" else font_weight
+        render_x = cursor + (font_size * EMOJI_INLINE_X_OFFSET if script == "emoji" else 0)
+        nodes.append(
+            f'<text class="{classes}" x="{render_x:.1f}" y="{y:.1f}" '
+            f'font-size="{font_size}" font-weight="{weight}" fill="{fill}">{esc(run)}</text>'
+        )
+        cursor += text_units(run) * font_size
+    return "\n".join(nodes)
 
 
 def _positions(width: int, bubble_w: int, label: str, side: str) -> tuple[int, int, int, str]:
@@ -254,14 +282,21 @@ def _render_header(page: LayoutPage) -> str:
     y = HEADER_Y
     w = page.width - (CANVAS_MARGIN + 26) * 2
     h = _header_card_height(page.subtitle)
-    title = clip_display(_header_title(page.title), 32)
+    title = clip_display(_header_title(page.title), HEADER_TITLE_MAX_COLS)
     subtitle = _render_header_subtitle_svg(x + 35, y + 70, _header_subtitle_lines(page.subtitle))
     return "\n".join(
         [
             f'<rect x="{x + 11}" y="{y + 6}" width="{w + 2}" height="{h + 10}" rx="22" fill="{BLACK}"/>',
             f'<rect x="{x + 7}" y="{y + 6}" width="{w}" height="{h + 4}" rx="22" fill="url(#headerAccent)"/>',
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="22" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
-            f'<text x="{x + 28}" y="{y + 43}" font-size="{TITLE_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(title)}</text>',
+            _render_inline_text_svg(
+                title,
+                x + 28,
+                y + 43,
+                font_size=TITLE_FONT_SIZE,
+                font_weight=900,
+                fill=BLACK,
+            ),
             subtitle,
             _decorative_star_svg(x + w - 62, y + 34, 22, "#FFFFFF", "url(#headerAccent)"),
             f'<circle cx="{x + w - 23}" cy="{y + 55}" r="9" fill="#72E3C0" stroke="{BLACK}" stroke-width="3"/>',
@@ -291,7 +326,15 @@ def _header_height(subtitle: str) -> int:
 def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
     return "\n".join(
         [
-            f'<text class="header-subtitle-line" x="{x:.1f}" y="{y + idx * HEADER_SUBTITLE_LINE_HEIGHT:.1f}" font-size="15" font-weight="600" fill="{THEME["muted"]}">{esc(line)}</text>'
+            _render_inline_text_svg(
+                line,
+                x,
+                y + idx * HEADER_SUBTITLE_LINE_HEIGHT,
+                font_size=15,
+                font_weight=700,
+                fill=THEME["muted"],
+                class_name="header-subtitle-line",
+            )
             for idx, line in enumerate(lines)
         ]
     )
@@ -299,7 +342,15 @@ def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
 
 def _render_ellipsis_svg(page: LayoutPage, item: dict[str, Any]) -> str:
     y = item["y"] + 7
-    return f'<text x="{page.width / 2:.1f}" y="{y + 14}" text-anchor="middle" font-size="{SMALL_FONT_SIZE}" fill="#555555">{esc(item["label"])}</text>'
+    return _render_inline_text_svg(
+        item["label"],
+        page.width / 2,
+        y + 14,
+        font_size=SMALL_FONT_SIZE,
+        font_weight=700,
+        fill="#555555",
+        anchor="middle",
+    )
 
 
 def _render_time_svg(page: LayoutPage, item: dict[str, Any]) -> str:
@@ -313,7 +364,15 @@ def _render_time_svg(page: LayoutPage, item: dict[str, Any]) -> str:
             _diamond_svg(x - 28, y + 16, 13, "#FF5BE2"),
             f'<rect x="{x + 3:.1f}" y="{y + 4}" width="{label_w}" height="30" rx="15" fill="{BLACK}"/>',
             f'<rect x="{x:.1f}" y="{y}" width="{label_w}" height="30" rx="15" fill="{THEME["time_fill"]}" stroke="{BLACK}" stroke-width="3"/>',
-            f'<text x="{page.width / 2:.1f}" y="{y + 21}" text-anchor="middle" font-size="{FONT_SIZE}" font-weight="700" fill="{BLACK}">{esc(label)}</text>',
+            _render_inline_text_svg(
+                label,
+                page.width / 2,
+                y + 21,
+                font_size=FONT_SIZE,
+                font_weight=700,
+                fill=BLACK,
+                anchor="middle",
+            ),
             _diamond_svg(x + label_w + 28, y + 16, 13, "#5FE0A7"),
             "</g>",
         ]
@@ -329,12 +388,29 @@ def _render_message_svg(item: dict[str, Any]) -> str:
         f'<title>{label_text}</title>',
         _bubble_layers_svg(item, colors),
         f'<rect x="{item["labelX"]}" y="{item["labelY"]}" width="{item["labelWidth"]}" height="{LABEL_HEIGHT}" rx="9" fill="{colors["label"]}" stroke="{BLACK}" stroke-width="3"/>',
-        f'<text x="{item["labelX"] + item["labelWidth"] / 2:.1f}" y="{item["labelY"] + 21}" text-anchor="middle" font-size="{LABEL_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(item["label"])}</text>',
+        _render_inline_text_svg(
+            item["label"],
+            item["labelX"] + item["labelWidth"] / 2,
+            item["labelY"] + 21,
+            font_size=LABEL_FONT_SIZE,
+            font_weight=900,
+            fill=BLACK,
+            anchor="middle",
+        ),
     ]
     text_x = item["bubbleX"] + BUBBLE_PAD_X
     text_y = item["bubbleY"] + BUBBLE_PAD_Y + 17
     for line in item["lines"]:
-        parts.append(f'<text x="{text_x}" y="{text_y}" font-size="{FONT_SIZE}" font-weight="800" fill="{BLACK}">{esc(line)}</text>')
+        parts.append(
+            _render_inline_text_svg(
+                line,
+                text_x,
+                text_y,
+                font_size=FONT_SIZE,
+                font_weight=800,
+                fill=BLACK,
+            )
+        )
         text_y += LINE_HEIGHT
     if message.tags:
         parts.append(_render_tag_icons_svg(message.tags, text_x, text_y + TAG_ICON_TOP_GAP))
@@ -450,7 +526,15 @@ def _fallback_tag_svg(tag: str, x: float, y: float) -> str:
             f"<title>{esc(label)}</title>",
             f'<rect x="{x + 3:.1f}" y="{y + 4:.1f}" width="{w}" height="{TAG_ICON_SIZE}" rx="9" fill="{BLACK}"/>',
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w}" height="{TAG_ICON_SIZE}" rx="9" fill="#F6F1FF" stroke="{BLACK}" stroke-width="2.5"/>',
-            f'<text x="{x + w / 2:.1f}" y="{y + 20.5:.1f}" text-anchor="middle" font-size="{LABEL_FONT_SIZE}" font-weight="900" fill="{BLACK}">{esc(label)}</text>',
+            _render_inline_text_svg(
+                label,
+                x + w / 2,
+                y + 20.5,
+                font_size=LABEL_FONT_SIZE,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+            ),
             "</g>",
         ]
     )
@@ -516,201 +600,13 @@ def _star_points(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
     ]
 
 
-def _draw_grid_png(draw, width: int, height: int, scale: int) -> None:
-    minor = 32 * scale
-    major = 128 * scale
-    for x in range(0, width + minor, minor):
-        color = rgba(THEME["grid_major"], 112) if x % major == 0 else rgba(THEME["grid_minor"], 82)
-        draw.line([(x, 0), (x, height)], fill=color, width=scale)
-    for y in range(0, height + minor, minor):
-        color = rgba(THEME["grid_major"], 112) if y % major == 0 else rgba(THEME["grid_minor"], 82)
-        draw.line([(0, y), (width, y)], fill=color, width=scale)
-
-
-def _render_header_png(img, draw, page: LayoutPage, font_title, font_profile, scale: int) -> None:
-    x = (CANVAS_MARGIN + 26) * scale
-    y = HEADER_Y * scale
-    w = (page.width - (CANVAS_MARGIN + 26) * 2) * scale
-    h = _header_card_height(page.subtitle) * scale
-    draw.rounded_rectangle([x + 11 * scale, y + 6 * scale, x + w + 13 * scale, y + h + 16 * scale], radius=22 * scale, fill=rgba(BLACK))
-    _draw_horizontal_gradient_rect(img, draw, [x + 7 * scale, y + 6 * scale, x + w + 7 * scale, y + h + 10 * scale], THEME["left_accent_b"], THEME["right_accent_b"], scale, radius=22 * scale)
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=22 * scale, fill=rgba(THEME["header_fill"]), outline=rgba(BLACK), width=4 * scale)
-    draw.text((x + 28 * scale, y + 8 * scale), clip_display(_header_title(page.title), 32), fill=rgba(BLACK), font=font_title)
-    for idx, line in enumerate(_header_subtitle_lines(page.subtitle)):
-        line_y = y + (56 + idx * HEADER_SUBTITLE_LINE_HEIGHT) * scale
-        draw.text((x + 35 * scale, line_y), line, fill=rgba(THEME["muted"]), font=font_profile)
-    _draw_star_png(draw, x + w - 62 * scale, y + 34 * scale, 22 * scale)
-    draw.ellipse([x + w - 32 * scale, y + 46 * scale, x + w - 14 * scale, y + 64 * scale], fill=rgba("#72E3C0"), outline=rgba(BLACK), width=3 * scale)
-    draw.ellipse([x + w - 34 * scale, y + 44 * scale, x + w - 16 * scale, y + 62 * scale], fill=rgba("#72E3C0"), outline=rgba(BLACK), width=3 * scale)
-
-
-def _render_ellipsis_png(draw, page: LayoutPage, item: dict[str, Any], font, scale: int) -> None:
-    draw.text((page.width * scale / 2, (item["y"] + 10) * scale), item["label"], fill=rgba("#555555"), font=font, anchor="ma")
-
-
-def _render_time_png(draw, page: LayoutPage, item: dict[str, Any], font, scale: int) -> None:
-    label = clip_display(item["label"], 22)
-    label_w = max(150, display_cols(label) * 8 + 44) * scale
-    x = page.width * scale / 2 - label_w / 2
-    y = (item["y"] + 4) * scale
-    draw.rounded_rectangle([x + 3 * scale, y + 4 * scale, x + label_w + 3 * scale, y + 34 * scale], radius=15 * scale, fill=rgba(BLACK))
-    draw.rounded_rectangle([x, y, x + label_w, y + 30 * scale], radius=15 * scale, fill=rgba(THEME["time_fill"]), outline=rgba(BLACK), width=3 * scale)
-    draw.text((page.width * scale / 2, y + 7 * scale), label, fill=rgba(BLACK), font=font, anchor="ma")
-    _draw_diamond_png(draw, x - 28 * scale, y + 15 * scale, 13 * scale, THEME["time_accent_left"])
-    _draw_diamond_png(draw, x + label_w + 28 * scale, y + 15 * scale, 13 * scale, THEME["time_accent_right"])
-
-
-def _render_message_png(img, draw, item: dict[str, Any], font_regular, font_small, font_label, scale: int) -> None:
-    message: TranscriptMessage = item["message"]
-    colors = _side_colors_png(message.side)
-    x = item["bubbleX"] * scale
-    y = item["bubbleY"] * scale
-    w = item["width"] * scale
-    h = item["bubbleHeight"] * scale
-    draw.rounded_rectangle([x + 11 * scale, y + 9 * scale, x + w + 13 * scale, y + h + 13 * scale], radius=17 * scale, fill=rgba(BLACK))
-    _draw_horizontal_gradient_rect(img, draw, [x + 11 * scale, y + 9 * scale, x + w + 8 * scale, y + h + 9 * scale], colors["accent_a"], colors["accent_b"], scale, radius=17 * scale, outline=BLACK, outline_width=3 * scale)
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=17 * scale, fill=rgba(colors["fill"]), outline=rgba(BLACK), width=4 * scale)
-    label_x = item["labelX"] * scale
-    label_y = item["labelY"] * scale
-    label_w = item["labelWidth"] * scale
-    draw.rounded_rectangle([label_x, label_y, label_x + label_w, label_y + LABEL_HEIGHT * scale], radius=9 * scale, fill=rgba(colors["label"]), outline=rgba(BLACK), width=3 * scale)
-    draw.text((label_x + label_w / 2, label_y + 5 * scale), item["label"], fill=rgba(BLACK), font=font_label, anchor="ma")
-    text_x = (item["bubbleX"] + BUBBLE_PAD_X) * scale
-    text_y = (item["bubbleY"] + BUBBLE_PAD_Y - 1) * scale
-    for line in item["lines"]:
-        draw.text((text_x, text_y), line, fill=rgba(BLACK), font=font_regular)
-        text_y += LINE_HEIGHT * scale
-    if message.tags:
-        _draw_tag_icons_png(draw, message.tags, text_x, text_y + TAG_ICON_TOP_GAP * scale, scale, font_label)
-
-
-def _side_colors_png(side: str) -> dict[str, str]:
-    if side == "right":
-        return {
-            "fill": THEME["right_fill"],
-            "label": THEME["right_label"],
-            "accent_a": THEME["right_accent_a"],
-            "accent_b": THEME["right_accent_b"],
-        }
-    return {
-        "fill": THEME["left_fill"],
-        "label": THEME["left_label"],
-        "accent_a": THEME["left_accent_a"],
-        "accent_b": THEME["left_accent_b"],
-    }
-
-
-def _draw_horizontal_gradient_rect(img, draw, box: list[float], left: str, right: str, scale: int, *, radius: int = 0, outline: str | None = None, outline_width: int = 0) -> None:
-    from PIL import Image, ImageDraw
-
-    x1, y1, x2, y2 = [int(v) for v in box]
-    width = max(1, x2 - x1)
-    height = max(1, y2 - y1)
-    gradient = Image.new("RGBA", (width, height), rgba(left))
-    gd = ImageDraw.Draw(gradient)
-    left_rgb = rgba(left)
-    right_rgb = rgba(right)
-    for x in range(width):
-        t = x / max(1, width - 1)
-        color = tuple(int(left_rgb[i] * (1 - t) + right_rgb[i] * t) for i in range(4))
-        gd.line([(x, 0), (x, height)], fill=color)
-    if radius:
-        mask = Image.new("L", (width, height), 0)
-        md = ImageDraw.Draw(mask)
-        md.rounded_rectangle([0, 0, width - 1, height - 1], radius=radius, fill=255)
-        gradient.putalpha(mask)
-        img.alpha_composite(gradient, (x1, y1))
-    else:
-        img.alpha_composite(gradient, (x1, y1))
-    if outline and outline_width:
-        draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, outline=rgba(outline), width=outline_width)
-
-
-def _draw_tag_icons_png(draw, tags: list[str], x: float, y: float, scale: int, font_label) -> None:
-    cursor = x
-    size = TAG_ICON_SIZE * scale
-    for tag in tags:
-        normalized = _tag_name(tag)
-        fill, accent = TAG_ICON_THEMES.get(normalized, ("#FFFFFF", "#7DD7FF"))
-        tag_w = _tag_width(normalized) * scale
-        draw.rounded_rectangle([cursor + 3 * scale, y + 4 * scale, cursor + 3 * scale + tag_w, y + 4 * scale + size], radius=9 * scale, fill=rgba(BLACK))
-        if normalized not in {"like", "dislike", "request end"}:
-            draw.rounded_rectangle([cursor, y, cursor + tag_w, y + size], radius=9 * scale, fill=rgba("#F6F1FF"), outline=rgba(BLACK), width=2 * scale)
-            draw.text((cursor + tag_w / 2, y + 15 * scale), _fallback_tag_label(normalized), fill=rgba(BLACK), font=font_label, anchor="mm")
-        elif normalized == "request end":
-            draw.rounded_rectangle([cursor, y, cursor + tag_w, y + size], radius=9 * scale, fill=rgba(fill), outline=rgba(BLACK), width=2 * scale)
-            _draw_request_end_icon_png(draw, cursor, y, accent, scale)
-        else:
-            draw.rounded_rectangle([cursor, y, cursor + tag_w, y + size], radius=9 * scale, fill=rgba(fill), outline=rgba(BLACK), width=2 * scale)
-            _draw_thumb_icon_png(draw, cursor, y, accent, scale, down=normalized == "dislike")
-        cursor += tag_w + TAG_ICON_GAP * scale
-
-
-def _draw_thumb_icon_png(draw, x: float, y: float, accent: str, scale: int, *, down: bool = False) -> None:
-    def pt(px: float, py: float) -> tuple[float, float]:
-        if not down:
-            return x + px * scale, y + py * scale
-        return x + (TAG_ICON_SIZE - px) * scale, y + (TAG_ICON_SIZE - py) * scale
-
-    cuff = [pt(7.8, 13.3), pt(12.0, 13.3), pt(12.0, 24.0), pt(7.8, 24.0)]
-    body = [
-        pt(12.0, 23.6),
-        pt(21.2, 23.6),
-        pt(24.4, 20.9),
-        pt(25.4, 15.6),
-        pt(22.7, 12.2),
-        pt(18.6, 12.2),
-        pt(19.2, 9.1),
-        pt(16.7, 5.4),
-        pt(15.8, 5.3),
-        pt(12.0, 12.9),
-    ]
-    draw.polygon(cuff, fill=rgba("#FFFFFF"), outline=rgba(BLACK))
-    draw.line(cuff + [cuff[0]], fill=rgba(BLACK), width=2 * scale)
-    draw.polygon(body, fill=rgba(accent), outline=rgba(BLACK))
-    draw.line(body + [body[0]], fill=rgba(BLACK), width=2 * scale)
-
-
-def _draw_request_end_icon_png(draw, x: float, y: float, accent: str, scale: int) -> None:
-    def draw_poly(points: list[tuple[float, float]], *, width: int = 2) -> None:
-        polygon = [(x + px * scale, y + py * scale) for px, py in points]
-        draw.polygon(polygon, fill=rgba(accent), outline=rgba(BLACK))
-        draw.line(polygon + [polygon[0]], fill=rgba(BLACK), width=width * scale)
-
-    draw.line([(x + 22.0 * scale, y + 4.0 * scale), (x + 25.2 * scale, y + 5.4 * scale), (x + 26.6 * scale, y + 7.8 * scale), (x + 26.5 * scale, y + 10.6 * scale)], fill=rgba(BLACK), width=2 * scale)
-    draw_poly([(9.2, 18.1), (10.0, 22.5), (13.4, 25.0), (17.1, 24.0), (19.4, 23.3), (22.3, 22.5), (23.5, 19.6), (22.5, 16.7), (21.4, 12.8), (9.2, 16.3)])
-    draw_poly([(9.7, 7.9), (11.2, 8.4), (13.0, 14.6), (11.9, 15.8), (10.2, 15.4), (8.4, 9.2)], width=2)
-    draw_poly([(11.9, 6.0), (13.5, 6.5), (15.5, 13.6), (14.5, 14.9), (12.7, 14.4), (10.7, 7.3)], width=2)
-    draw_poly([(14.6, 5.6), (16.2, 6.1), (18.1, 12.9), (17.1, 14.2), (15.3, 13.7), (13.4, 6.9)], width=2)
-    draw_poly([(17.8, 6.1), (19.4, 6.5), (20.9, 12.0), (19.8, 13.2), (18.2, 12.8), (16.6, 7.3)], width=2)
-    draw_poly([(9.5, 20.0), (6.0, 17.8), (7.1, 15.6), (10.6, 17.2)], width=2)
-    draw.polygon([(x + 10.5 * scale, y + 19.5 * scale), (x + 11.0 * scale, y + 20.0 * scale), (x + 11.5 * scale, y + 17.0 * scale), (x + 9.5 * scale, y + 17.5 * scale), (x + 9.0 * scale, y + 18.5 * scale)], fill=rgba(accent))
-
-
-def _draw_diamond_png(draw, cx: float, cy: float, r: float, fill: str) -> None:
-    shadow = [(cx + 1, cy + 2 - r), (cx + 1 + r * 0.46, cy + 2), (cx + 1, cy + 2 + r), (cx + 1 - r * 0.46, cy + 2)]
-    draw.polygon(shadow, fill=rgba(BLACK), outline=rgba(BLACK))
-    draw.line([shadow[0], shadow[1], shadow[2], shadow[3], shadow[0]], fill=rgba(BLACK), width=3)
-    points = [(cx, cy - r), (cx + r * 0.46, cy), (cx, cy + r), (cx - r * 0.46, cy)]
-    draw.polygon(points, fill=rgba(fill), outline=rgba(BLACK))
-    draw.line([points[0], points[1], points[2], points[3], points[0]], fill=rgba(BLACK), width=3)
-
-
-def _draw_star_png(draw, cx: float, cy: float, r: float) -> None:
-    back = _star_points(cx + 3, cy + 5, r)
-    front = _star_points(cx, cy, r)
-    stroke_width = max(2, int(r / 7.3))
-    draw.polygon(back, fill=rgba(THEME["right_accent_b"]))
-    draw.polygon(front, fill=rgba("#FFFFFF"), outline=rgba(BLACK))
-    draw.line(front + [front[0]], fill=rgba(BLACK), width=stroke_width)
-
-
-def _svg_defs() -> str:
+def _svg_defs(page: LayoutPage) -> str:
     font = font_family()
+    script_fonts = font_css_rules(_page_text_values(page))
     return "\n".join(
         [
             "<defs>",
-            f'<style><![CDATA[text {{ font-family: {font}; letter-spacing: 0; }} .message-row:hover rect:last-of-type {{ filter: url(#comicLift); }}]]></style>',
+            f'<style><![CDATA[text {{ font-family: {font}; font-weight: 700; letter-spacing: 0; }} {script_fonts} .message-row:hover rect:last-of-type {{ filter: url(#comicLift); }}]]></style>',
             '<pattern id="comicGridMinor" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#BED1D8" stroke-width="1" stroke-opacity="0.62"/></pattern>',
             '<pattern id="comicGridMajor" width="128" height="128" patternUnits="userSpaceOnUse"><path d="M 128 0 L 0 0 0 128" fill="none" stroke="#AABFC8" stroke-width="1.4" stroke-opacity="0.72"/></pattern>',
             '<linearGradient id="headerAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#47B6FF"/><stop offset="52%" stop-color="#FF4EB4"/><stop offset="100%" stop-color="#FF8A2A"/></linearGradient>',
@@ -720,6 +616,17 @@ def _svg_defs() -> str:
             "</defs>",
         ]
     )
+
+
+def _page_text_values(page: LayoutPage) -> list[str]:
+    values = [page.title, page.subtitle, page.footer]
+    for item in page.items:
+        values.append(str(item.get("label") or ""))
+        values.extend(str(line) for line in item.get("lines") or [])
+        message = item.get("message")
+        if isinstance(message, TranscriptMessage):
+            values.extend(message.tags)
+    return values
 
 
 STYLE = TranscriptReportStyle(
