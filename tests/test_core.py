@@ -91,6 +91,42 @@ def decode_resvg_rgba_png(path: Path) -> tuple[int, int, list[bytes]]:
         rows.append(prior)
     return width, height, rows
 
+
+def rendered_text_pixel_regions(
+    svg_root: ET.Element,
+    width: int,
+    height: int,
+    rows: list[bytes],
+    target: str,
+) -> list[list[tuple[int, int, int, int]]]:
+    """Return tight PNG pixel regions for every occurrence of an SVG text target."""
+
+    regions: list[list[tuple[int, int, int, int]]] = []
+    for node in svg_root.iter("{http://www.w3.org/2000/svg}text"):
+        value = node.text or ""
+        search_from = 0
+        while True:
+            index = value.find(target, search_from)
+            if index < 0:
+                break
+            font_size = float(node.attrib["font-size"])
+            prefix = value[:index]
+            glyph_x = float(node.attrib["x"]) + claworld_stylekit.text_units(prefix) * font_size
+            baseline_y = float(node.attrib["y"])
+            left = max(0, int(glyph_x - 2))
+            right = min(width, int(glyph_x + font_size * 1.4) + 1)
+            top = max(0, int(baseline_y - font_size * 1.25))
+            bottom = min(height, int(baseline_y + font_size * 0.3) + 1)
+            regions.append(
+                [
+                    tuple(rows[y][x * 4 : x * 4 + 4])
+                    for y in range(top, bottom)
+                    for x in range(left, right)
+                ]
+            )
+            search_from = index + len(target)
+    return regions
+
 from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
 from claworld_hermes_plugin import http_client as claworld_http
@@ -465,37 +501,21 @@ class TranscriptReportTests(unittest.TestCase):
 
             svg_path = Path(result["artifacts"]["svgPages"][0]["path"])
             svg_root = ET.fromstring(svg_path.read_text(encoding="utf-8"))
-            emoji_nodes = [
-                node
-                for node in svg_root.iter("{http://www.w3.org/2000/svg}text")
-                if node.text and "👋🏽" in node.text
-            ]
-            self.assertEqual(len(emoji_nodes), 1)
-            emoji_node = emoji_nodes[0]
-            font_size = float(emoji_node.attrib["font-size"])
-            prefix = emoji_node.text.split("👋🏽", 1)[0]
-            emoji_x = float(emoji_node.attrib["x"]) + claworld_stylekit.text_units(prefix) * font_size
-            baseline_y = float(emoji_node.attrib["y"])
-
             png_path = Path(result["artifacts"]["pngPages"][0]["path"])
             width, height, rows = decode_resvg_rgba_png(png_path)
-            left = max(0, int(emoji_x - 2))
-            right = min(width, int(emoji_x + font_size * 1.4) + 1)
-            top = max(0, int(baseline_y - font_size * 1.25))
-            bottom = min(height, int(baseline_y + font_size * 0.3) + 1)
-
-            skin_tone_pixels = 0
-            for y in range(top, bottom):
-                for x in range(left, right):
-                    red, green, blue, alpha = rows[y][x * 4 : x * 4 + 4]
-                    if (
-                        alpha >= 200
-                        and red >= 90
-                        and red >= green >= blue
-                        and red - blue >= 30
-                        and green - blue >= 8
-                    ):
-                        skin_tone_pixels += 1
+            regions = rendered_text_pixel_regions(svg_root, width, height, rows, "👋🏽")
+            self.assertEqual(len(regions), 1)
+            skin_tone_pixels = sum(
+                1
+                for red, green, blue, alpha in regions[0]
+                if (
+                    alpha >= 200
+                    and red >= 90
+                    and red >= green >= blue
+                    and red - blue >= 30
+                    and green - blue >= 8
+                )
+            )
 
             self.assertGreater(
                 skin_tone_pixels,
@@ -503,6 +523,80 @@ class TranscriptReportTests(unittest.TestCase):
                 "resvg PNG does not contain the expected composed skin-tone emoji pixels; "
                 "the emoji font may have rasterized as missing-glyph boxes",
             )
+
+    def test_realistic_chat_rasterizes_common_ai_emoji_in_final_png(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "发布前渲染确认",
+                        "peerProfile": "一段包含常用 AI emoji 的真实多轮对话",
+                        "localLabel": "Isolde",
+                        "peerLabel": "冯宝宝",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "text": "今天的 testing.3 候选包准备好了吗？😊",
+                                "createdAt": "2026-07-14T10:00:00Z",
+                            },
+                            {
+                                "from": "local",
+                                "text": "准备好了：代码检查 ✅，105 项测试也通过 ✅。",
+                                "createdAt": "2026-07-14T10:01:00Z",
+                            },
+                            {
+                                "from": "peer",
+                                "text": "我看到旧版本里 emoji 会变成方框 ❌，尤其是肤色组合 👋🏽。",
+                                "createdAt": "2026-07-14T10:02:00Z",
+                            },
+                            {
+                                "from": "local",
+                                "text": "已经修复。笑脸 😊、思考 🤔、警告 ⚠️ 和中文/English 混排都正常。",
+                                "createdAt": "2026-07-14T10:03:00Z",
+                            },
+                            {
+                                "from": "peer",
+                                "text": "我再确认一下成功、失败和警告状态，别让图标和正文错位。",
+                                "createdAt": "2026-07-14T10:04:00Z",
+                            },
+                            {
+                                "from": "local",
+                                "text": "复测通过 ✅，效果很好 👍，可以发布了 🎉 🚀",
+                                "createdAt": "2026-07-14T10:05:00Z",
+                            },
+                        ],
+                    },
+                },
+            )
+
+            self.assertEqual(result["pageCount"], 1)
+            svg_path = Path(result["artifacts"]["svgPages"][0]["path"])
+            svg_root = ET.fromstring(svg_path.read_text(encoding="utf-8"))
+            png_path = Path(result["artifacts"]["pngPages"][0]["path"])
+            width, height, rows = decode_resvg_rgba_png(png_path)
+
+            for emoji in ("✅", "❌", "😊", "🤔", "⚠️", "👋🏽", "👍", "🎉", "🚀"):
+                regions = rendered_text_pixel_regions(svg_root, width, height, rows, emoji)
+                self.assertTrue(regions, f"no rendered SVG text region found for {emoji}")
+                for region in regions:
+                    colorful_pixels = sum(
+                        1
+                        for red, green, blue, alpha in region
+                        if alpha >= 200 and max(red, green, blue) - min(red, green, blue) >= 45
+                    )
+                    self.assertGreater(
+                        colorful_pixels,
+                        12,
+                        f"{emoji} has no sufficiently colorful pixels in the final resvg PNG; "
+                        "it may have rasterized as a missing-glyph box",
+                    )
 
     def test_resvg_dependency_error_does_not_use_a_visual_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
