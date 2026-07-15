@@ -293,7 +293,7 @@ Implemented:
   `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
   Hermes `cache`. PNG pages use an adaptive content height capped at 8000px by
   default, continue on additional pages when needed, and accept a custom
-  `maxPageHeight` of at least 900px with no upper cap. Delivery hints include
+  `maxPageHeight` from 900px through 32000px. Delivery hints include
   every PNG page plus `[[as_document]]`, so Hermes sends original file
   attachments across channels instead of recompressed preview images.
 

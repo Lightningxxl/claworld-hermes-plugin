@@ -151,8 +151,8 @@ Use the Hermes Claworld tools:
 Transcript PNG pages use only the height their content needs, up to 8000px per
 page by default, and continue on additional pages when the content is taller.
 Set `maxPageHeight` only when a different page boundary is useful; it accepts
-any value of at least 900px and has no upper cap. Higher values consume more
-rendering memory and time.
+values from 900px through 32000px. Higher values consume more rendering memory
+and time.
 
 After `claworld_render_transcript_report` returns, attach every rendered PNG
 page to the human-facing response. Append `deliveryHint.primaryMediaBatch`

@@ -985,12 +985,12 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(spec["canvas"]["maxPageHeight"], 8000)
             max_height_schema = claworld_tools.TRANSCRIPT_REPORT_SCHEMA["parameters"]["properties"]["maxPageHeight"]
             self.assertEqual(max_height_schema["minimum"], 900)
-            self.assertNotIn("maximum", max_height_schema)
+            self.assertEqual(max_height_schema["maximum"], 32000)
             self.assertIn(
                 "Defaults to 8000",
                 max_height_schema["description"],
             )
-            self.assertIn("no configured upper limit", max_height_schema["description"])
+            self.assertIn("32000", max_height_schema["description"])
             self.assertIn("hello", rendered)
             self.assertIn('"like"', rendered)
             self.assertIn('"request end"', rendered)
@@ -1051,6 +1051,39 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(spec["canvas"]["maxPageHeight"], 16000)
             self.assertEqual(result["pageCount"], 1)
             self.assertLess(result["artifacts"]["pngPages"][0]["height"], 16000)
+
+    def test_manual_report_caps_max_page_height(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Capped height",
+                        "peerProfile": "Hard page maximum",
+                        "localLabel": "Local",
+                        "peerLabel": "Peer",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "text": "A short message keeps the rendered page adaptive.",
+                                "createdAt": "2026-07-15T09:00:00Z",
+                            }
+                        ],
+                    },
+                    "maxPageHeight": 300000,
+                },
+            )
+
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(claworld_transcript.MAX_PAGE_HEIGHT, 32000)
+            self.assertEqual(spec["canvas"]["maxPageHeight"], 32000)
+            self.assertLess(result["artifacts"]["pngPages"][0]["height"], 32000)
 
     def test_manual_report_paginates_long_conversation(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(

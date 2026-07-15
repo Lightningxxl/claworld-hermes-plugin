@@ -11,7 +11,7 @@ from typing import Any
 from .config import ClaworldConfig, hermes_home_path
 from .http_client import download_share_card, public_error_payload, request_json
 from .protocol import classify_reply_content
-from .transcript_report import render_transcript_report as render_transcript_report_artifact
+from .transcript_report import MAX_PAGE_HEIGHT, render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
 from .working_memory import read_session_index, record_owner_route_from_context
 
@@ -409,7 +409,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
                 "additionalProperties": False,
             },
             "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},
-            "maxPageHeight": {"type": "integer", "minimum": 900, "description": "Optional maximum page height in pixels. Defaults to 8000. Pages remain content-height when shorter, continue on additional pages when taller, and have no configured upper limit. Higher values increase rendering memory and time."},
+            "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": MAX_PAGE_HEIGHT, "description": "Optional maximum page height in pixels. Defaults to 8000. Pages remain content-height when shorter and continue on additional pages when taller. Accepted values range from 900 through 32000."},
         },
         "required": ["mode"],
         "additionalProperties": False,

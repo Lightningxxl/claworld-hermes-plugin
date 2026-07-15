@@ -20,6 +20,7 @@ from .working_memory import append_journal, atomic_write_text, read_session_inde
 
 DEFAULT_WIDTH = 720
 DEFAULT_MAX_PAGE_HEIGHT = 8000
+MAX_PAGE_HEIGHT = 32000
 DOCUMENT_DELIVERY_DIRECTIVE = "[[as_document]]"
 
 TIME_SPLIT_SECONDS = 5 * 60
@@ -47,7 +48,12 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     selection = _selection_summary(request, len(selected))
 
     width = DEFAULT_WIDTH
-    max_page_height = _int(render_args.get("maxPageHeight"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900)
+    max_page_height = _int(
+        render_args.get("maxPageHeight"),
+        DEFAULT_MAX_PAGE_HEIGHT,
+        minimum=900,
+        maximum=MAX_PAGE_HEIGHT,
+    )
     style = resolve_report_style(_report_style_name(render_args))
     participants = _participants(selected)
     title, subtitle = _header_text(render_args, selected, header_context)
