@@ -216,7 +216,16 @@ def build_inbound_envelope(message: dict) -> InboundEnvelope | None:
         updated_at=first_text(data.get("updatedAt"), payload.get("updatedAt"), notification.get("updatedAt")),
         turn_created_at=first_text(data.get("turnCreatedAt"), payload.get("turnCreatedAt")),
         payload=payload,
-        metadata={**metadata, "relayEvent": relay_event, "inboxItemId": first_text(data.get("inboxItemId"), payload.get("inboxItemId"))},
+        metadata={
+            **metadata,
+            "relayEvent": relay_event,
+            "inboxItemId": first_text(data.get("inboxItemId"), payload.get("inboxItemId")),
+            "notificationId": first_text(
+                data.get("notificationId"),
+                payload.get("notificationId"),
+                notification.get("notificationId"),
+            ),
+        },
         raw=message,
     )
 

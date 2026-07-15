@@ -13,7 +13,16 @@ from .config import ClaworldConfig
 from .protocol import build_agent_text, classify_reply_content
 from .relay_client import RelayClient
 from .session_router import build_hermes_session_key, build_session_source, route_envelope
-from .working_memory import append_journal, build_prompt_context, ensure_working_memory, record_claworld_route, record_outbound_reply
+from .working_memory import (
+    append_journal,
+    build_prompt_context,
+    claim_inbound_notification,
+    complete_inbound_notification,
+    ensure_working_memory,
+    record_claworld_route,
+    record_outbound_reply,
+    release_inbound_notification,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +45,21 @@ _HERMES_TRANSIENT_STATUS_PATTERNS = (
     re.compile("^\u23f3\\s*Working\\s+\u2014\\s+\\d+\\s+min(?:\\s+\u2014\\s+.*)?$", re.IGNORECASE),
     re.compile("^\U0001f504\\s*Primary model failed\\s+\u2014\\s+switching to fallback:", re.IGNORECASE),
 )
+
+
+def _management_notification_key(envelope, route) -> str | None:
+    if envelope.event_type == "delivery" or route.session_kind != "management":
+        return None
+    candidates = (
+        envelope.metadata.get("notificationId"),
+        envelope.metadata.get("inboxItemId"),
+        envelope.delivery_id,
+    )
+    for candidate in candidates:
+        normalized = str(candidate or "").strip()
+        if normalized:
+            return normalized
+    return None
 
 
 class ClaworldPlatformAdapter(BasePlatformAdapter):
@@ -173,6 +197,28 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
 
     async def _on_delivery(self, envelope) -> None:
         route = route_envelope(envelope, self.claworld_config)
+        ensure_working_memory(self.memory_root)
+        notification_key = _management_notification_key(envelope, route)
+        notification_claim = None
+        if notification_key:
+            notification_claim = claim_inbound_notification(self.memory_root, notification_key)
+            if not notification_claim["claimed"]:
+                logger.info(
+                    "suppressed duplicate Claworld Management notification delivery_id=%s reason=%s",
+                    envelope.delivery_id,
+                    notification_claim["reason"],
+                )
+                return
+        try:
+            await self._dispatch_inbound_envelope(envelope, route)
+            if notification_claim is not None:
+                complete_inbound_notification(notification_claim)
+        except Exception:
+            if notification_claim is not None:
+                release_inbound_notification(notification_claim)
+            raise
+
+    async def _dispatch_inbound_envelope(self, envelope, route) -> None:
         source = build_session_source(route, envelope)
         hermes_session_key = build_hermes_session_key(route)
         record = DeliveryRecord(
@@ -187,7 +233,6 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         self._deliveries_by_id[record.delivery_id] = record
         self._latest_by_chat[route.chat_id] = record.delivery_id
 
-        ensure_working_memory(self.memory_root)
         record_claworld_route(self.memory_root, route, hermes_session_key, envelope)
         append_journal(
             self.memory_root,

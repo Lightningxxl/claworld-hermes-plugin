@@ -144,10 +144,13 @@ from claworld_hermes_plugin.session_router import build_hermes_session_key, rout
 from claworld_hermes_plugin.version import PLUGIN_VERSION
 from claworld_hermes_plugin.working_memory import (
     build_prompt_context,
+    claim_inbound_notification,
+    complete_inbound_notification,
     ensure_working_memory,
     read_session_index,
     record_claworld_route,
     record_outbound_reply,
+    release_inbound_notification,
     write_session_index,
 )
 
@@ -291,6 +294,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(envelope.event_name, "world.invite_received")
         self.assertEqual(envelope.created_at, "2026-06-22T01:02:03Z")
         self.assertEqual(envelope.updated_at, "2026-06-22T01:02:04Z")
+        self.assertEqual(envelope.metadata["notificationId"], "n1")
         text = build_agent_text(envelope)
         self.assertEqual(text, "You were invited.")
         self.assertNotIn("event_name=", text)
@@ -1146,7 +1150,9 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("You may initiate multiple chats at once.", management)
         self.assertIn("Always report the outcome to the human", management)
         self.assertIn("value affects length, not whether to report", management)
-        self.assertIn("has already been reported successfully", management)
+        self.assertIn("use the notification's exact `chatRequestId`", management)
+        self.assertIn("Process every delivered conversation-ended notification", management)
+        self.assertNotIn("has already been reported successfully", management)
         self.assertIn("Use `claworld_send_message` once when a report should go to the human.", management)
         self.assertIn("claworld_send_message(", management)
         self.assertIn("`mirrored: true` means the Main Session transcript received the report", management)
@@ -1207,6 +1213,107 @@ class PluginSkillTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_management_notification_idempotency_uses_notification_identity(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_root = Path(tmp) / ".claworld"
+            config = types.SimpleNamespace(
+                extra={
+                    "server_url": "https://api.example.com",
+                    "app_token": "tok",
+                    "working_memory_root": str(memory_root),
+                }
+            )
+            adapter = adapter_module.ClaworldPlatformAdapter(config)
+            handled = []
+
+            async def fake_handle_message(event):
+                handled.append(event)
+                await asyncio.sleep(0.02)
+
+            adapter.handle_message = fake_handle_message
+
+            def management_notification(notification_id: str, chat_request_id: str):
+                return build_inbound_envelope(
+                    {
+                        "event": "conversation_ended",
+                        "data": {
+                            "eventType": "notification",
+                            "eventName": "conversation_ended",
+                            "inboxItemId": f"notification:{notification_id}",
+                            "sessionKind": "management",
+                            "sessionKey": "management:agent-1",
+                            "targetAgentId": "agent-1",
+                            "text": f"Conversation ended: {chat_request_id}",
+                            "notification": {
+                                "notificationId": notification_id,
+                                "relatedObjects": {
+                                    "chatRequestId": chat_request_id,
+                                    "conversationKey": "pair:agent-1::agent-2:direct",
+                                },
+                            },
+                        },
+                    }
+                )
+
+            first = management_notification("ntf-first", "req-first")
+            await asyncio.gather(adapter._on_delivery(first), adapter._on_delivery(first))
+            self.assertEqual(len(handled), 1)
+            self.assertEqual(first.chat_request_id, "req-first")
+
+            restarted_adapter = adapter_module.ClaworldPlatformAdapter(config)
+            restarted_adapter.handle_message = fake_handle_message
+            await restarted_adapter._on_delivery(first)
+            self.assertEqual(len(handled), 1)
+
+            second = management_notification("ntf-second", "req-second")
+            await restarted_adapter._on_delivery(second)
+            self.assertEqual(len(handled), 2)
+            self.assertEqual(second.conversation_key, first.conversation_key)
+            self.assertNotEqual(second.chat_request_id, first.chat_request_id)
+
+    async def test_failed_management_notification_is_retryable(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = adapter_module.ClaworldPlatformAdapter(
+                types.SimpleNamespace(
+                    extra={
+                        "server_url": "https://api.example.com",
+                        "app_token": "tok",
+                        "working_memory_root": str(Path(tmp) / ".claworld"),
+                    }
+                )
+            )
+            attempts = 0
+
+            async def fake_handle_message(_event):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("temporary model failure")
+
+            adapter.handle_message = fake_handle_message
+            envelope = build_inbound_envelope(
+                {
+                    "event": "conversation_ended",
+                    "data": {
+                        "eventType": "notification",
+                        "notificationId": "ntf-retry",
+                        "sessionKind": "management",
+                        "sessionKey": "management:agent-1",
+                        "targetAgentId": "agent-1",
+                        "text": "Conversation ended: req-retry",
+                    },
+                }
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "temporary model failure"):
+                await adapter._on_delivery(envelope)
+            await adapter._on_delivery(envelope)
+            self.assertEqual(attempts, 2)
+
     def setUp(self):
         self.hermes_home = tempfile.TemporaryDirectory()
         self.addCleanup(self.hermes_home.cleanup)
@@ -1996,6 +2103,37 @@ class SessionRouterTests(unittest.TestCase):
 
 
 class WorkingMemoryTests(unittest.TestCase):
+    def test_inbound_notification_claim_supports_completion_release_and_stale_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".claworld"
+            ensure_working_memory(root)
+
+            first = claim_inbound_notification(root, "ntf-claim", now=100.0)
+            self.assertTrue(first["claimed"])
+            self.assertEqual(
+                claim_inbound_notification(root, "ntf-claim", now=101.0)["reason"],
+                "processing",
+            )
+            complete_inbound_notification(first, now=102.0)
+            self.assertEqual(
+                claim_inbound_notification(root, "ntf-claim", now=103.0)["reason"],
+                "completed",
+            )
+
+            retryable = claim_inbound_notification(root, "ntf-release", now=200.0)
+            release_inbound_notification(retryable)
+            self.assertTrue(claim_inbound_notification(root, "ntf-release", now=201.0)["claimed"])
+
+            stale = claim_inbound_notification(root, "ntf-stale", now=300.0)
+            self.assertTrue(stale["claimed"])
+            reclaimed = claim_inbound_notification(
+                root,
+                "ntf-stale",
+                now=301.1,
+                lease_seconds=1.0,
+            )
+            self.assertTrue(reclaimed["claimed"])
+
     def test_ensure_and_session_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".claworld"
