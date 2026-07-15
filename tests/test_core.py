@@ -977,12 +977,16 @@ class TranscriptReportTests(unittest.TestCase):
             spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
             rendered = json.dumps(spec, ensure_ascii=False)
             self.assertEqual(result["messageCount"], 2)
-            self.assertEqual(claworld_transcript.DEFAULT_MAX_PAGE_HEIGHT, 2000)
-            self.assertEqual(spec["canvas"]["maxPageHeight"], 2000)
+            self.assertEqual(claworld_transcript.DEFAULT_MAX_PAGE_HEIGHT, 8000)
+            self.assertEqual(spec["canvas"]["maxPageHeight"], 8000)
+            max_height_schema = claworld_tools.TRANSCRIPT_REPORT_SCHEMA["parameters"]["properties"]["maxPageHeight"]
+            self.assertEqual(max_height_schema["minimum"], 900)
+            self.assertNotIn("maximum", max_height_schema)
             self.assertIn(
-                "Defaults to 2000",
-                claworld_tools.TRANSCRIPT_REPORT_SCHEMA["parameters"]["properties"]["maxPageHeight"]["description"],
+                "Defaults to 8000",
+                max_height_schema["description"],
             )
+            self.assertIn("no configured upper limit", max_height_schema["description"])
             self.assertIn("hello", rendered)
             self.assertIn('"like"', rendered)
             self.assertIn('"request end"', rendered)
@@ -991,13 +995,58 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(png_page["renderer"], "resvg")
             self.assertEqual(png_page["rendering"]["binding"], "resvg_py")
             self.assertEqual(png_page["rendering"]["fontStrategy"], "unicode-script-aware")
+            self.assertLess(png_page["height"], 8000)
             self.assertEqual(Path(png_page["path"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            delivery = result["deliveryHint"]
+            self.assertEqual(delivery["deliveryDirective"], "[[as_document]]")
+            self.assertEqual(
+                delivery["primaryMedia"].splitlines(),
+                ["[[as_document]]", png_page["mediaRef"]],
+            )
+            self.assertEqual(
+                delivery["primaryMediaBatch"].splitlines(),
+                ["[[as_document]]", png_page["mediaRef"]],
+            )
+            self.assertTrue(delivery["sourceSvgDocument"].startswith("[[as_document]]\nMEDIA:"))
             svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
             self.assertIn('font-weight="800"', svg)
             self.assertIn("'PingFang SC'", svg)
             self.assertIn('stop-color="#47B6FF"', svg)
             self.assertIn('stop-color="#FF4EB4"', svg)
             self.assertIn('stop-color="#FF8A2A"', svg)
+
+    def test_manual_report_accepts_max_page_height_above_default(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "title": "Unbounded height",
+                        "peerProfile": "Custom page maximum",
+                        "localLabel": "Local",
+                        "peerLabel": "Peer",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "text": "A short message keeps the rendered page adaptive.",
+                                "createdAt": "2026-07-15T09:00:00Z",
+                            }
+                        ],
+                    },
+                    "maxPageHeight": 16000,
+                },
+            )
+
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(spec["canvas"]["maxPageHeight"], 16000)
+            self.assertEqual(result["pageCount"], 1)
+            self.assertLess(result["artifacts"]["pngPages"][0]["height"], 16000)
 
     def test_manual_report_paginates_long_conversation(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
@@ -1038,9 +1087,19 @@ class TranscriptReportTests(unittest.TestCase):
                 },
             )
 
-            self.assertGreaterEqual(result["pageCount"], 2)
+            self.assertGreater(result["pageCount"], 3)
             self.assertEqual(len(result["artifacts"]["pngPages"]), result["pageCount"])
             self.assertEqual(len(result["artifacts"]["svgPages"]), result["pageCount"])
+            self.assertTrue(
+                all(page["height"] <= 980 for page in result["artifacts"]["pngPages"])
+            )
+            self.assertEqual(
+                result["deliveryHint"]["primaryMediaBatch"].splitlines(),
+                [
+                    "[[as_document]]",
+                    *(page["mediaRef"] for page in result["artifacts"]["pngPages"]),
+                ],
+            )
 
     def test_local_episode_summary_counts_visible_directions(self):
         cfg = ClaworldConfig(agent_id="agent-local")
@@ -1156,10 +1215,11 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("Use `claworld_send_message` once when a report should go to the human.", management)
         self.assertIn("claworld_send_message(", management)
         self.assertIn("`mirrored: true` means the Main Session transcript received the report", management)
-        self.assertIn("When `pageCount` is greater than 3", management)
-        self.assertIn("the first 3 entries from `artifacts.pngPages[].mediaRef`", management)
-        self.assertIn("immediately before those three `MEDIA:` lines", management)
-        self.assertIn("Do not send page 4 or later", management)
+        self.assertIn("Every page is included", management)
+        self.assertIn("writing `[[as_document]]` once", management)
+        self.assertIn("appending every", management)
+        self.assertIn("Do not omit later pages", management)
+        self.assertNotIn("first 3", management)
         self.assertIn("`approval_required` is review mode", management)
         self.assertIn("Accept, reject, or ask the human", management)
         self.assertIn("No request, review, or accept/reject action reaches you", management)
@@ -1170,10 +1230,10 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("`.claworld/context/PROFILE.md`", main)
         self.assertIn("`.claworld/context/NOW.md`", main)
         self.assertIn("host-wide or generic user memory", main)
-        self.assertIn("When `pageCount` is greater than 3", main)
-        self.assertIn("the first 3 entries from", main)
-        self.assertIn("immediately before those three `MEDIA:` lines", main)
-        self.assertIn("Do not send page 4 or later", main)
+        self.assertIn("attach every rendered PNG", main)
+        self.assertIn("writing `[[as_document]]` once", main)
+        self.assertIn("Do not omit later pages", main)
+        self.assertNotIn("first 3", main)
         self.assertNotIn("send_message", main)
         self.assertIn("Before installing, upgrading", main)
         help_skill = (ROOT / "skills" / "claworld-help" / "SKILL.md").read_text(encoding="utf-8")
@@ -1828,6 +1888,7 @@ class ToolSchemaTests(unittest.TestCase):
             claworld_tools.PUBLIC_PROFILE_SCHEMA,
             claworld_tools.MANAGE_WORLDS_SCHEMA,
             claworld_tools.MANAGE_CONVERSATIONS_SCHEMA,
+            claworld_tools.TRANSCRIPT_REPORT_SCHEMA,
             claworld_tools.SEND_MESSAGE_SCHEMA,
         ]
         for schema in schemas:
@@ -1915,6 +1976,22 @@ class ToolSchemaTests(unittest.TestCase):
 class ClaworldSendMessageToolTests(unittest.TestCase):
     def _cfg(self) -> ClaworldConfig:
         return ClaworldConfig(server_url="https://api.example.com", app_token="tok")
+
+    def test_fallback_mirror_strips_media_delivery_markup(self):
+        self.assertEqual(
+            claworld_tools._message_for_mirror(
+                "Full conversation below:\n\n"
+                "[[as_document]]\n"
+                "MEDIA:/tmp/transcript-p01.png\n"
+                "MEDIA:/tmp/transcript-p02.png"
+            ),
+            "Full conversation below:",
+        )
+        self.assertIsNone(
+            claworld_tools._message_for_mirror(
+                "[[as_document]]\nMEDIA:/tmp/transcript-p01.png"
+            )
+        )
 
     def test_send_message_forwards_to_hermes_and_trusts_auto_mirror(self):
         args = {"action": "send", "target": "feishu:oc_owner:thread-1", "message": "Owner-visible report"}

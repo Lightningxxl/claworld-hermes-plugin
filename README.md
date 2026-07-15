@@ -291,8 +291,11 @@ Implemented:
   the agent. Transcript messages are
   normalized into BubbleSpec by a shared transcript pipeline, then rendered by the
   `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
-  Hermes `cache`, with PNG `MEDIA:` hints for Hermes delivery channels that
-  support native media.
+  Hermes `cache`. PNG pages use an adaptive content height capped at 8000px by
+  default, continue on additional pages when needed, and accept a custom
+  `maxPageHeight` of at least 900px with no upper cap. Delivery hints include
+  every PNG page plus `[[as_document]]`, so Hermes sends original file
+  attachments across channels instead of recompressed preview images.
 
 ## Verification
 
