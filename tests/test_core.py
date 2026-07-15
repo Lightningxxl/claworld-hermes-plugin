@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import asyncio
+import hashlib
 import inspect
 import io
 import json
@@ -15,6 +16,8 @@ import types
 import unittest
 import xml.etree.ElementTree as ET
 import zlib
+from dataclasses import replace
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from unittest.mock import patch
@@ -435,6 +438,82 @@ class TranscriptReportTests(unittest.TestCase):
         )
         self.assertEqual(claworld_stylekit.text_runs("© ©️"), [("© ", "default"), ("©️", "emoji")])
         self.assertEqual(claworld_stylekit.text_runs("क्‍ष"), [("क्‍ष", "devanagari")])
+
+    def test_manual_report_artifact_id_is_unique_within_same_second(self):
+        class FixedDatetime(datetime):
+            calls = 0
+
+            @classmethod
+            def now(cls, tz=None):
+                cls.calls += 1
+                return cls(2026, 7, 15, 12, 34, 56, cls.calls, tzinfo=tz)
+
+        def write_test_png(_svg_path, png_path, _page):
+            png_path.write_bytes(b"test-png")
+            return {"renderer": "test"}
+
+        style = claworld_transcript.resolve_report_style("claworld-comic-grid")
+        test_style = replace(style, write_png=write_test_png)
+        base_args = {
+            "mode": "manual",
+            "manual": {
+                "title": "Fixed clock transcript",
+                "peerProfile": "Peer profile",
+                "localLabel": "Local",
+                "peerLabel": "Peer",
+                "messages": [
+                    {
+                        "from": "peer",
+                        "text": "first visible message",
+                        "createdAt": "2026-07-15T12:34:00Z",
+                    }
+                ],
+            },
+        }
+        changed_args = json.loads(json.dumps(base_args))
+        changed_args["manual"]["messages"][0]["text"] = "different visible message"
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ), patch.object(
+            claworld_transcript,
+            "datetime",
+            FixedDatetime,
+        ), patch.object(
+            claworld_transcript,
+            "resolve_report_style",
+            return_value=test_style,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            first = claworld_transcript.render_transcript_report(cfg, base_args)
+            changed = claworld_transcript.render_transcript_report(cfg, changed_args)
+            repeated = claworld_transcript.render_transcript_report(cfg, base_args)
+
+            results = [first, changed, repeated]
+            self.assertEqual(len({result["artifactId"] for result in results}), len(results))
+            spec_paths = [Path(result["artifacts"]["bubbleSpec"]["path"]) for result in results]
+            self.assertEqual(len(set(spec_paths)), len(results))
+            for result, spec_path in zip(results, spec_paths):
+                self.assertEqual(
+                    result["artifacts"]["bubbleSpec"]["sha256"],
+                    hashlib.sha256(spec_path.read_bytes()).hexdigest(),
+                )
+
+            first_spec = json.loads(spec_paths[0].read_text(encoding="utf-8"))
+            changed_spec = json.loads(spec_paths[1].read_text(encoding="utf-8"))
+            repeated_spec = json.loads(spec_paths[2].read_text(encoding="utf-8"))
+            first_message = next(item for item in first_spec["messages"] if item["kind"] == "text")
+            changed_message = next(item for item in changed_spec["messages"] if item["kind"] == "text")
+            repeated_message = next(item for item in repeated_spec["messages"] if item["kind"] == "text")
+            self.assertEqual(first_message["text"], "first visible message")
+            self.assertEqual(changed_message["text"], "different visible message")
+            self.assertEqual(repeated_message["text"], "first visible message")
+            self.assertNotEqual(
+                first_spec["scene"]["generatedAt"],
+                repeated_spec["scene"]["generatedAt"],
+            )
 
     def test_manual_report_renders_inline_color_emoji_runs(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
