@@ -19,7 +19,8 @@ from .working_memory import append_journal, atomic_write_text, read_session_inde
 
 
 DEFAULT_WIDTH = 720
-DEFAULT_MAX_PAGE_HEIGHT = 2000
+DEFAULT_MAX_PAGE_HEIGHT = 8000
+DOCUMENT_DELIVERY_DIRECTIVE = "[[as_document]]"
 
 TIME_SPLIT_SECONDS = 5 * 60
 
@@ -46,7 +47,7 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     selection = _selection_summary(request, len(selected))
 
     width = DEFAULT_WIDTH
-    max_page_height = _int(render_args.get("maxPageHeight"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900, maximum=8000)
+    max_page_height = _int(render_args.get("maxPageHeight"), DEFAULT_MAX_PAGE_HEIGHT, minimum=900)
     style = resolve_report_style(_report_style_name(render_args))
     participants = _participants(selected)
     title, subtitle = _header_text(render_args, selected, header_context)
@@ -127,6 +128,8 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     source_svgs = [item["path"] for item in files if item["format"] == "svg"]
     png_pages = [_artifact_page(item) for item in files if item["format"] == "png"]
     svg_pages = [_artifact_page(item) for item in files if item["format"] == "svg"]
+    primary_media = _document_media_block(primary_pngs[:1])
+    primary_media_batch = _document_media_block(primary_pngs)
     result = {
         "status": "ok",
         "mode": request["mode"],
@@ -145,9 +148,10 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
             "svgPages": svg_pages,
         },
         "deliveryHint": {
-            "primaryMedia": f"MEDIA:{primary_pngs[0]}" if primary_pngs else None,
-            "primaryMediaBatch": "\n".join(f"MEDIA:{path}" for path in primary_pngs),
-            "sourceSvgDocument": f"[[as_document]]\nMEDIA:{source_svgs[0]}" if source_svgs else None,
+            "deliveryDirective": DOCUMENT_DELIVERY_DIRECTIVE,
+            "primaryMedia": primary_media,
+            "primaryMediaBatch": primary_media_batch,
+            "sourceSvgDocument": _document_media_block(source_svgs[:1]),
             "reportOwnerArgs": {
                 "media_path": primary_pngs[0] if primary_pngs else None,
                 "media_paths": primary_pngs,
@@ -171,6 +175,12 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
         },
     )
     return result
+
+
+def _document_media_block(paths: list[str]) -> str | None:
+    if not paths:
+        return None
+    return "\n".join([DOCUMENT_DELIVERY_DIRECTIVE, *(f"MEDIA:{path}" for path in paths)])
 
 
 def _artifact_page(item: dict) -> dict:

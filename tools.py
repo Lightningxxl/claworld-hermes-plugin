@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -111,13 +112,20 @@ MANAGE_CONVERSATIONS_DESCRIPTION = (
 SEND_MESSAGE_DESCRIPTION = (
     "Use from Claworld Management Session to send a human-facing message through "
     "Hermes native send_message delivery. This wrapper preserves Hermes delivery "
-    "semantics and retries transcript mirror when delivery succeeds without "
+    "semantics, including [[as_document]] for original-file media delivery across "
+    "channels, and retries transcript mirror when delivery succeeds without "
     "mirrored=true."
 )
 
 TRANSCRIPT_REPORT_DESCRIPTION = (
     "Render a Claworld conversation transcript into BubbleSpec, SVG, and "
-    "user-friendly PNG artifacts. When you need to show the user the concrete "
+    "user-friendly PNG artifacts. PNG pages grow only as tall as their content, "
+    "use an 8000px maximum page height by default, and continue on additional "
+    "pages when needed. maxPageHeight may set any custom maximum of at least "
+    "900px, with no upper cap. Delivery hints include every PNG page and "
+    "[[as_document]] so "
+    "Hermes sends the original files without image-channel recompression. "
+    "When you need to show the user the concrete "
     "content of a Claworld A2A chat, prefer this tool instead of sending raw "
     "transcript text. To render the full text of one complete chat, use "
     "mode=stored and provide that chat's chatRequestId. Stored reports derive "
@@ -327,7 +335,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The exact human-facing text to send and mirror into Main Session context.",
+                "description": "The exact human-facing text to send and mirror into Main Session context. Keep [[as_document]] in transcript-report messages so every PNG MEDIA attachment is sent as an original file across Hermes channels.",
             },
             "text": {
                 "type": "string",
@@ -407,7 +415,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
                 "additionalProperties": False,
             },
             "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},
-            "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": 8000, "description": "Optional. Max page height in pixels. Defaults to 2000."},
+            "maxPageHeight": {"type": "integer", "minimum": 900, "description": "Optional maximum page height in pixels. Defaults to 8000. Pages remain content-height when shorter, continue on additional pages when taller, and have no configured upper limit. Higher values increase rendering memory and time."},
         },
         "required": ["mode"],
         "additionalProperties": False,
@@ -1236,7 +1244,7 @@ def _send_succeeded(send_result: Any) -> bool:
 
 
 def _fallback_mirror_send_message(args: dict) -> dict:
-    message = _text(args.get("message"))
+    message = _message_for_mirror(_text(args.get("message")))
     target = _parse_send_target_for_mirror(args)
     platform = _text(target.get("platform")) or ""
     chat_id = _text(target.get("chatId")) or ""
@@ -1282,6 +1290,15 @@ def _fallback_mirror_send_message(args: dict) -> dict:
         return {"attempted": True, "success": True, "method": "session_db", "sessionId": session_id, "messageId": message_id}
     except Exception as exc:
         return {"attempted": True, "success": False, "method": "session_db", "sessionId": session_id, "error": str(exc)}
+
+
+def _message_for_mirror(message: str | None) -> str | None:
+    if not message:
+        return None
+    cleaned = str(message).replace("[[as_document]]", "").replace("[[audio_as_voice]]", "")
+    cleaned = re.sub(r"(?m)^[ \t]*MEDIA:[^\r\n]*[ \t]*$", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned or None
 
 
 def _parse_send_target_for_mirror(args: dict) -> dict:
