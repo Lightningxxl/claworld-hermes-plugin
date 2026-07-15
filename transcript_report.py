@@ -9,6 +9,7 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .config import ClaworldConfig, hermes_home_path
 from .protocol import classify_reply_content
@@ -51,6 +52,15 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     participants = _participants(selected)
     title, subtitle = _header_text(render_args, selected, header_context)
     bubbles = _decorate_selection(selected, selection)
+    visible_messages = [_bubble_message_payload(item) for item in bubbles]
+    canvas = {
+        "width": width,
+        "style": style.name,
+        "maxPageHeight": max_page_height,
+    }
+    generated_at = datetime.now(timezone.utc)
+    generated_at_iso = generated_at.isoformat().replace("+00:00", "Z")
+    render_nonce = uuid4().hex
     bubble_spec = {
         "version": "1",
         "kind": "claworld.transcript_report",
@@ -64,22 +74,31 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
                 if _public_header_value(render_args.get("peerProfile"))
                 else header_context.get("profileSource", "fallback")
             ),
-            "generatedAt": _iso_now(),
+            "generatedAt": generated_at_iso,
             "source": source["summary"],
             "selection": selection,
         },
-        "canvas": {
-            "width": width,
-            "style": style.name,
-            "maxPageHeight": max_page_height,
-        },
+        "canvas": canvas,
         "participants": participants,
-        "messages": [_bubble_message_payload(item) for item in bubbles],
+        "messages": visible_messages,
     }
 
     measured = [style.measure_item(item, width) for item in bubbles]
     pages = style.paginate(measured, width, max_page_height, title, subtitle)
-    artifact_id = _artifact_id(source["summary"], selection, style.name)
+    artifact_id = _artifact_id(
+        source["summary"],
+        selection,
+        style.name,
+        {
+            "title": title,
+            "subtitle": subtitle,
+            "canvas": canvas,
+            "participants": participants,
+            "messages": visible_messages,
+        },
+        generated_at,
+        render_nonce,
+    )
     output_dirs = _output_dirs()
     files = []
     for page in pages:
@@ -850,13 +869,30 @@ def _output_dirs() -> dict[str, Path]:
     return {"images": image_dir, "documents": document_dir}
 
 
-def _artifact_id(source: dict, selection: dict, style_name: str) -> str:
-    now = datetime.now().strftime("%Y%m%d-%H%M%S")
+def _artifact_id(
+    source: dict,
+    selection: dict,
+    style_name: str,
+    visible_content: dict,
+    generated_at: datetime,
+    render_nonce: str,
+) -> str:
+    now = generated_at.strftime("%Y%m%d-%H%M%S")
     style_slug = re.sub(r"[^a-z0-9]+", "-", style_name.lower()).strip("-") or "style"
     digest = hashlib.sha256(
-        json.dumps({"source": source, "selection": selection, "style": style_name, "now": now}, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(
+            {
+                "source": source,
+                "selection": selection,
+                "style": style_name,
+                "visibleContent": visible_content,
+                "generatedAt": generated_at.isoformat(),
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()[:10]
-    return f"claworld-transcript-{style_slug}-{now}-{digest}"
+    return f"claworld-transcript-{style_slug}-{now}-{digest}-{render_nonce}"
 
 
 def _sha256(path: Path) -> str:
@@ -892,7 +928,3 @@ def _int(value: Any, default: int, *, minimum: int | None = None, maximum: int |
     if maximum is not None:
         parsed = min(maximum, parsed)
     return parsed
-
-
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
