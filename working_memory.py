@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +14,9 @@ CONTEXT_DIR = "context"
 JOURNAL_DIR = "journal"
 REPORTS_DIR = "reports"
 SESSIONS_DIR = "sessions"
+RUNTIME_DIR = "runtime"
+INBOUND_NOTIFICATIONS_DIR = "inbound-notifications"
+DEFAULT_INBOUND_NOTIFICATION_LEASE_SECONDS = 30 * 60
 
 FILES = {
     "index": "INDEX.md",
@@ -131,7 +136,15 @@ This directory is the private working memory for Claworld.
 
 def ensure_working_memory(root: Path) -> dict:
     root = root.expanduser()
-    for relative in ("", CONTEXT_DIR, JOURNAL_DIR, REPORTS_DIR, SESSIONS_DIR):
+    for relative in (
+        "",
+        CONTEXT_DIR,
+        JOURNAL_DIR,
+        REPORTS_DIR,
+        SESSIONS_DIR,
+        RUNTIME_DIR,
+        f"{RUNTIME_DIR}/{INBOUND_NOTIFICATIONS_DIR}",
+    ):
         (root / relative).mkdir(parents=True, exist_ok=True)
 
     created: list[str] = []
@@ -168,6 +181,119 @@ def atomic_write_text(path: Path, content: str) -> None:
 
 def atomic_write_json(path: Path, payload: dict) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _inbound_notification_state_paths(root: Path, key: str) -> tuple[Path, Path]:
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    state_root = root / RUNTIME_DIR / INBOUND_NOTIFICATIONS_DIR
+    state_root.mkdir(parents=True, exist_ok=True)
+    return (
+        state_root / f"{digest}.processing.json",
+        state_root / f"{digest}.completed.json",
+    )
+
+
+def claim_inbound_notification(
+    root: Path,
+    key: str,
+    *,
+    now: float | None = None,
+    lease_seconds: float = DEFAULT_INBOUND_NOTIFICATION_LEASE_SECONDS,
+) -> dict:
+    normalized_key = _text(key)
+    if not normalized_key:
+        raise ValueError("inbound notification idempotency requires a key")
+    now_value = float(time.time() if now is None else now)
+    processing_path, completed_path = _inbound_notification_state_paths(root, normalized_key)
+
+    for _attempt in range(4):
+        if completed_path.exists():
+            return {
+                "claimed": False,
+                "reason": "completed",
+                "key": normalized_key,
+                "processingPath": processing_path,
+                "completedPath": completed_path,
+            }
+        try:
+            descriptor = os.open(processing_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema": "claworld.inbound-notification.v1",
+                        "key": normalized_key,
+                        "status": "processing",
+                        "startedAtEpoch": now_value,
+                    },
+                    handle,
+                    indent=2,
+                    sort_keys=True,
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if completed_path.exists():
+                processing_path.unlink(missing_ok=True)
+                return {
+                    "claimed": False,
+                    "reason": "completed",
+                    "key": normalized_key,
+                    "processingPath": processing_path,
+                    "completedPath": completed_path,
+                }
+            return {
+                "claimed": True,
+                "reason": "claimed",
+                "key": normalized_key,
+                "processingPath": processing_path,
+                "completedPath": completed_path,
+            }
+        except FileExistsError:
+            try:
+                processing = json.loads(processing_path.read_text(encoding="utf-8"))
+                started_at = float(processing.get("startedAtEpoch"))
+            except FileNotFoundError:
+                continue
+            except Exception:
+                try:
+                    started_at = processing_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+            if now_value - started_at < max(float(lease_seconds), 0.001):
+                return {
+                    "claimed": False,
+                    "reason": "processing",
+                    "key": normalized_key,
+                    "processingPath": processing_path,
+                    "completedPath": completed_path,
+                }
+            processing_path.unlink(missing_ok=True)
+    raise RuntimeError("unable to claim inbound notification")
+
+
+def complete_inbound_notification(claim: dict, *, now: float | None = None) -> bool:
+    if not claim.get("claimed"):
+        return False
+    processing_path = Path(claim["processingPath"])
+    completed_path = Path(claim["completedPath"])
+    atomic_write_json(
+        completed_path,
+        {
+            "schema": "claworld.inbound-notification.v1",
+            "key": claim["key"],
+            "status": "completed",
+            "completedAtEpoch": float(time.time() if now is None else now),
+        },
+    )
+    processing_path.unlink(missing_ok=True)
+    return True
+
+
+def release_inbound_notification(claim: dict) -> bool:
+    if not claim.get("claimed"):
+        return False
+    Path(claim["processingPath"]).unlink(missing_ok=True)
+    return True
 
 
 def empty_session_index() -> dict:
