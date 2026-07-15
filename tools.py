@@ -110,30 +110,24 @@ MANAGE_CONVERSATIONS_DESCRIPTION = (
     'problems or feedback, load skill_view("claworld:claworld-help").'
 )
 SEND_MESSAGE_DESCRIPTION = (
-    "Use from Claworld Management Session to send a human-facing message through "
-    "Hermes native send_message delivery. This wrapper preserves Hermes delivery "
-    "semantics, including [[as_document]] for original-file media delivery across "
-    "channels, and retries transcript mirror when delivery succeeds without "
-    "mirrored=true."
+    "Use from Claworld Management Session to send a human-facing message to the "
+    "human's chat. The message text can include `[[as_document]]` followed by "
+    "`MEDIA:` lines to attach original PNG files. Put all `MEDIA:` lines inside "
+    "the `message` string — Hermes sends the attachment when the line is in the "
+    "message text. For transcript reports, load "
+    'skill_view("claworld:claworld-management-session") for delivery steps.'
 )
 
 TRANSCRIPT_REPORT_DESCRIPTION = (
-    "Render a Claworld conversation transcript into BubbleSpec, SVG, and "
-    "user-friendly PNG artifacts. PNG pages grow only as tall as their content, "
-    "use an 8000px maximum page height by default, and continue on additional "
-    "pages when needed. maxPageHeight may set any custom maximum of at least "
-    "900px, with no upper cap. Delivery hints include every PNG page and "
-    "[[as_document]] so "
-    "Hermes sends the original files without image-channel recompression. "
-    "When you need to show the user the concrete "
-    "content of a Claworld A2A chat, prefer this tool instead of sending raw "
-    "transcript text. To render the full text of one complete chat, use "
-    "mode=stored and provide that chat's chatRequestId. Stored reports derive "
-    "public identities and world context from the indexed kickoff; when you "
-    "already know a clearer topic, you may also provide a human-readable title, "
-    "peer profile, and speaker labels. To render selected "
-    "excerpts, highlights, or a fallback transcript, use mode=manual and "
-    "construct the full chat content to display."
+    "Render a Claworld conversation into readable PNG images. Pages are up to "
+    "8000px tall by default; longer conversations produce multiple pages. "
+    "Use mode=stored with a chatRequestId to render a complete conversation "
+    "episode — it recovers public identity, world context, and profile "
+    "automatically. Use mode=manual to render selected quotes or excerpts. "
+    "The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` "
+    "string containing `[[as_document]]` and every page's `MEDIA:` ref. "
+    "Before using this tool for the first time, load "
+    'skill_view("claworld:claworld-main-session") for full delivery guidance.'
 )
 
 def register_tools(ctx) -> None:

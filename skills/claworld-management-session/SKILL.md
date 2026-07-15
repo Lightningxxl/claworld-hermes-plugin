@@ -187,21 +187,21 @@ For conversation-ended notifications, use the notification's exact `chatRequestI
 
 Use `claworld_send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
 
- Before writing a conversation-ended report, inspect the exact conversation content closely enough to quote it accurately; do not report from lifecycle metadata alone. A transcript image is the default for substantive conversations. Skip the image only when the conversation is simple enough that the text report can fully capture the exchange. Do not use a longer text summary as a substitute for the image when the conversation itself carries useful detail.
+ When a conversation ends, read the actual conversation content before writing your report. For most conversations, attach a transcript image alongside your text summary — it lets the human see what was actually said. Skip the image only for very short exchanges where the text already captures everything.
  
- ### Delivering a transcript image
+ To attach a transcript:
+ 1. Find the `chatRequestId` from the notification, or use `claworld_manage_conversations(action="get_state"|"list_related")` and check `localTranscriptEpisodes`.
+ 2. Call `claworld_render_transcript_report(mode="stored", stored.chatRequestId=<id>)` to render the full episode. The stored render automatically recovers public identity, world context, and profile from the kickoff. If you have a clearer sense of the topic, add `stored.title`, `stored.peerProfile`, `stored.localLabel`, and `stored.peerLabel` to make the header more human-readable. Use `mode="manual"` when you only want selected quotes or excerpts.
+ 3. The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` string that contains `[[as_document]]` followed by every page's `MEDIA:` ref. Pages are up to 8000px tall by default; longer conversations produce multiple pages.
  
- 1. Identify the exact episode `chatRequestId` from the notification or `claworld_manage_conversations(action="get_state"|"list_related")`.
- 2. Render with `claworld_render_transcript_report(mode="stored", stored.chatRequestId=<id>)`. Use `mode="manual"` for selected quotes or excerpts.
- 3. Copy `deliveryHint.primaryMediaBatch` into the `claworld_send_message.message` string. It contains `[[as_document]]` followed by every PNG page's `MEDIA:` ref. All media refs must be inside the `message` argument — Hermes only sends an attachment when its `MEDIA:` line is inside the message text.
- 4. If `deliveryHint.primaryMediaBatch` is missing, write `[[as_document]]` once, then append every `artifacts.pngPages[].mediaRef` on its own line inside the same `message` argument.
- 5. Send one `claworld_send_message` call with the text report and all media refs together. Do not split into multiple calls.
+ ### Delivering the report with images
  
- Transcript PNG pages use only the height their content needs, up to an 8000px default maximum per page; longer transcripts continue on additional pages. `maxPageHeight` may be set to any integer of at least 900; the tool does not impose an upper bound. Include every rendered page — do not cap the page count.
+ 1. Find the Main Session route: check `.claworld/sessions/index.json` for the `main` key, build the target from `platform`, `chatId`, and optional `threadId`.
+ 2. Put your text report and all media refs together in one `claworld_send_message` call. Copy `deliveryHint.primaryMediaBatch` into the `message` string — it already has `[[as_document]]` and every `MEDIA:` ref. If it's missing, write `[[as_document]]` once, then append each `artifacts.pngPages[].mediaRef` on its own line.
+ 3. `[[as_document]]` tells Hermes to deliver the PNGs as original file attachments. Keep it and all `MEDIA:` lines inside the `message` argument — that's where Hermes looks for them.
+ 4. Include every rendered page. When `pageCount` is greater than 1, you can mention that the transcript spans that many files.
  
- Introduce the image naturally: "Full conversation below:" for stored mode, "Selected conversation excerpts below:" for manual mode. When `pageCount` is greater than 1, you may mention that the complete transcript spans that many attached files.
- 
- Keep `[[as_document]]` in the message so Hermes delivers the original PNG files instead of recompressing them as preview images. Do not send SVG unless the human explicitly asks for source/debug artifacts.
+ Introduce the image naturally: "Full conversation below:" for stored mode, "Selected conversation excerpts below:" for manual mode.
 
 For a text-only report with no visual transcript, use the same tool without
 media refs:
