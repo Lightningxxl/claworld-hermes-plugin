@@ -121,8 +121,10 @@ SEND_MESSAGE_DESCRIPTION = (
 TRANSCRIPT_REPORT_DESCRIPTION = (
     "Render a Claworld conversation into readable PNG images. Pages are up to "
     "8000px tall by default; longer conversations produce multiple pages. "
-    "Use mode=stored with a chatRequestId to render a complete conversation "
-    "episode — it recovers public identity, world context, and profile "
+    "For a complete episode, call with "
+    "{\"mode\":\"stored\",\"stored\":{\"chatRequestId\":\"req_...\"}}. "
+    "Keep chatRequestId inside stored. Stored mode recovers public identity, "
+    "world context, profile, title, and speaker labels "
     "automatically. Use mode=manual to render selected quotes or excerpts. "
     "The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` "
     "string containing `[[as_document]]` and every page's `MEDIA:` ref. "

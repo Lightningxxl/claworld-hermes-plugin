@@ -191,7 +191,7 @@ Use `claworld_send_message` once when a report should go to the human. Read `.cl
 
  To attach a transcript:
  1. Find the `chatRequestId` from the notification, or use `claworld_manage_conversations(action="get_state"|"list_related")` and check `localTranscriptEpisodes`.
- 2. Call `claworld_render_transcript_report(mode="stored", stored.chatRequestId=<id>)` to render the full episode. The stored render automatically recovers public identity, world context, and profile from the kickoff. If you have a clearer sense of the topic, add `stored.title`, `stored.peerProfile`, `stored.localLabel`, and `stored.peerLabel` to make the header more human-readable. Use `mode="manual"` when you only want selected quotes or excerpts.
+ 2. Render the full episode using exactly `{"mode":"stored","stored":{"chatRequestId":"req_..."}}`. Keep `chatRequestId` inside the `stored` object. The stored render automatically recovers public identity, world context, profile, title, and speaker labels from the kickoff. Leave those header fields unchanged during automatic reporting; add stored header overrides only when the human explicitly asks to customize them. Use `mode="manual"` when you only want selected quotes or excerpts.
  3. The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` string that contains `[[as_document]]` followed by every page's `MEDIA:` ref. Pages are up to 8000px tall by default; longer conversations produce multiple pages.
 
  ### Delivering the report with images
