@@ -2048,6 +2048,18 @@ class ToolSchemaTests(unittest.TestCase):
             self.assertEqual(schema["parameters"]["type"], "object")
             self.assertIn("properties", schema["parameters"])
 
+    def test_conversation_schema_exposes_only_canonical_target_fields(self):
+        parameters = claworld_tools.MANAGE_CONVERSATIONS_SCHEMA["parameters"]
+        properties = parameters["properties"]
+
+        self.assertFalse(parameters["additionalProperties"])
+        self.assertIn("displayName", properties)
+        self.assertIn("agentCode", properties)
+        self.assertNotIn("identity", properties)
+        self.assertNotIn("targetAgentId", properties)
+        self.assertNotIn("targetId", properties)
+        self.assertNotIn("agentId", properties)
+
     def test_register_tools_passes_function_schema_shape(self):
         registered = []
 
@@ -2414,7 +2426,6 @@ class ToolRoutingTests(unittest.TestCase):
                 self.cfg,
                 {
                     "action": "request",
-                    "targetAgentId": "agent-peer",
                     "displayName": "Peer",
                     "agentCode": "ABC",
                     "kickoffBrief": {"text": "context for sender", "source": "direct_lookup"},
@@ -2431,7 +2442,7 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["method"], "POST")
         self.assertEqual(calls[0]["endpoint"], "/v1/chat-requests")
         self.assertEqual(calls[0]["body"]["fromAgentId"], "agent-1")
-        self.assertEqual(calls[0]["body"]["targetAgentId"], "agent-peer")
+        self.assertNotIn("targetAgentId", calls[0]["body"])
         self.assertEqual(calls[0]["body"]["kickoffBrief"]["text"], "context for sender")
         self.assertEqual(calls[0]["body"]["openingPayload"]["source"], "test")
         self.assertEqual(calls[0]["body"]["requestContext"]["followUp"]["sessionKey"], "main:owner")
@@ -2441,6 +2452,37 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["body"]["clientRequestId"], "client-1")
         self.assertEqual(calls[0]["timeout"], 60.0)
         self.assertEqual(result["action"], "request")
+
+    def test_conversation_request_rejects_noncanonical_target_fields(self):
+        for field, value in (
+            ("identity", "Peer#ABC"),
+            ("targetAgentId", "agent-peer"),
+            ("targetId", "agent-peer"),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "use displayName and agentCode"):
+                    claworld_tools._manage_conversations(
+                        self.cfg,
+                        {
+                            "action": "request",
+                            field: value,
+                            "displayName": "Peer",
+                            "agentCode": "ABC",
+                            "openingMessage": "hi",
+                        },
+                    )
+
+    def test_conversation_request_requires_public_name_and_code(self):
+        with self.assertRaisesRegex(ValueError, "displayName is required"):
+            claworld_tools._manage_conversations(
+                self.cfg,
+                {"action": "request", "agentCode": "ABC", "openingMessage": "hi"},
+            )
+        with self.assertRaisesRegex(ValueError, "agentCode is required"):
+            claworld_tools._manage_conversations(
+                self.cfg,
+                {"action": "request", "displayName": "Peer", "openingMessage": "hi"},
+            )
 
     def test_conversation_request_adds_hermes_followup_session_key(self):
         calls = []
@@ -2935,6 +2977,8 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(result["action"], "get_state")
 
     def test_list_related_rejects_request_and_top_level_filter_fields(self):
+        with self.assertRaisesRegex(ValueError, "identity is not supported"):
+            claworld_tools._manage_conversations(self.cfg, {"action": "list_related", "identity": "Peer#ABC"})
         with self.assertRaisesRegex(ValueError, "displayName is only supported"):
             claworld_tools._manage_conversations(self.cfg, {"action": "list_related", "displayName": "Peer"})
         with self.assertRaisesRegex(ValueError, "worldId must be passed as filters.worldId"):
