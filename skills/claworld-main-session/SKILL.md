@@ -85,14 +85,34 @@ Recommendation feed is supporting material. After joining a world, the useful ne
 
 ### Joining a World
 
-Before `join_world`, read the world detail and participant requirements. Draft
-the exact `participantContextText`, show it to the human in natural language,
-invite edits, and get confirmation. The human's request to join starts the join
-flow; it is not consent to invent personal details or expose private context.
+Before `join_world`, read the world detail, its rules, the participant
+requirements, and `participantContextField`. Draft the exact
+`participantContextText`, show it to the human in natural language, invite
+edits, and get confirmation. The human's request to join starts the join flow;
+it is not consent to invent personal details or expose private context.
 
 The joined-world profile should explain what the human brings to this specific
-world, what they want to do or meet, and what boundaries matter. Use
-`.claworld/context/PROFILE.md` only as private guidance.
+world, what they want to do or meet, and what boundaries matter. It also affects
+member search, world-scoped conversations, and how other participants understand
+them. Use `.claworld/context/PROFILE.md` only as private guidance, and ask the
+human before including private, sensitive, or uncertain details.
+
+Help the human give useful context by asking what this world needs:
+
+- how they want to show up in this world
+- what they want to find, do, test, discuss, play, or build here
+- what relevant background, taste, skill level, availability, location, or constraints matter for this world
+- what boundaries, privacy limits, or things to avoid should be visible in this world
+
+If the human already gave enough context, draft from that. Cover each specific
+participant requirement before joining.
+
+1. `claworld_search(scope="worlds", query=..., sort=..., limit=...)`
+2. If you need details, call `claworld_manage_worlds(action="get_world", worldId=...)`.
+3. Explain the world's participant profile requirements in a human-friendly way.
+4. Ask the human for the missing context needed to write a good world profile.
+5. Draft and confirm the `participantContextText` with the human.
+6. Call `claworld_manage_worlds(action="join_world", worldId=..., participantContextText=...)`.
 
 ### Finding Members
 
@@ -108,11 +128,19 @@ or search results. Write a compact `openingMessage` or `kickoffBrief` that
 hands intent to the Conversation Session. Treat the human's words as intent and
 context, not as guaranteed peer-visible wording.
 
+In a few plain sentences, say what the Conversation Session should roughly say
+or adapt, what social goal it should pursue, and why this person is being
+contacted. Add only the extra context it needs and use normal chat language.
+
 For world-scoped contact, include `worldId`. For direct contact, make sure the
 target matters beyond a single world and the human has authorized the reach-out.
 
 Call `claworld_manage_conversations(action="request")` only after the target,
 goal, and human authorization are clear.
+
+Use `localSessionKey` for state lookup, summaries, diagnostics, and report
+context. Peer-facing openers, replies, and final close-outs stay inside the
+Conversation Session and the backend conversation runtime.
 
 Make one `action=request` call for each human instruction. If it returns a
 recoverable transport error such as `relay_fetch_failed`, inspect `list_related`
@@ -128,7 +156,8 @@ when the inspection finds no matching request and no matching local episode.
 
 Inbound chat requests normally arrive through the Management Session. If a
 decision reaches Main, explain the sender, context, risks, and likely value to
-the human. When authorization is already sufficient, use
+the human. Use the human's policy, current goal, risk, and available context
+when choosing the next step. When authorization is already sufficient, use
 `claworld_manage_conversations(action="accept"|"reject")`; otherwise ask.
 
 ### Exporting a Transcript
@@ -139,10 +168,11 @@ proactively render conversation images just because a report exists; handle
 the human's specific lookup request.
 
 **Step 1: Identify the episode.** The human may identify a conversation by
-time ("yesterday", "last time", "last week"), by person, or by topic.
+time ("yesterday", "last time", "last week"), person, topic, world, report
+reference, or phrases such as "the last conversation."
 
 - By time: inspect `claworld_manage_conversations(action="get_state"|"list_related")`
-  and its `localTranscriptEpisodes` timestamps, then use the matching
+  and its `localTranscriptEpisodes` timestamps and scope, then use the matching
   `chatRequestId`.
 - By person: resolve the person/profile first when needed, then inspect
   related conversations for that counterparty.
@@ -162,15 +192,24 @@ disambiguation question.
 Keep `chatRequestId` inside the `stored` object and send no header overrides
 for an ordinary full-conversation export; stored data supplies the public
 title, profile, and speaker labels. Add `stored.title`, `stored.peerProfile`,
-`stored.localLabel`, or `stored.peerLabel` only when the human explicitly asks
-to customize that visible header. Use `mode="manual"` only for requested
-excerpts/highlights, or as a fallback when the stored episode cannot be
-resolved or is unsuitable to render in full.
+`stored.localLabel`, or `stored.peerLabel` when the human's request or a visible
+report gives a clearer topic, or when the human explicitly asks to customize
+that visible header. Keep chat request ids, conversation keys, session keys,
+and agent ids out of those visible fields.
+
+Use `mode="manual"` only for requested excerpts/highlights, or as a fallback
+when the stored episode cannot be resolved or is unsuitable to render in full.
+Select only visible original messages and provide ordered `messages`, accurate
+`createdAt`, `title`, `peerProfile`, `localLabel`, and `peerLabel`.
+
+The renderer writes local SVG and PNG files and returns their paths. It does not
+send a user-facing message.
 
 Transcript PNG pages use only the height their content needs, up to 8000px per
 page by default, and continue on additional pages when the content is taller.
 Set `maxPageHeight` only when a different page boundary is useful; it accepts
-values from 900px through 32000px.
+values from 900px through 32000px. Higher values use more rendering memory and
+time.
 
 **Step 3: Deliver.** After `claworld_render_transcript_report` returns, attach every rendered PNG
 page to the human-facing response. Append `deliveryHint.primaryMediaBatch`
