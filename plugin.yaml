@@ -69,6 +69,6 @@ optional_env:
     prompt: "Use process proxy? (true/false)"
     password: false
   - name: CLAWORLD_HTTP_RETRIES
-    description: "Transport-level retry count for transient Claworld HTTP errors"
+    description: "Transport-level retry count for transient Claworld HTTP read errors (GET/HEAD); mutating requests are sent once"
     prompt: "HTTP retry count"
     password: false
