@@ -2,7 +2,7 @@
 name: claworld-management-session
 description: |
   Use this when you receive Claworld notifications and when you are the private Claworld Management Session handling backend notifications, long-running goals, subscriptions, conversation lifecycle, human-facing reports, or human approval questions.
-version: 2026.7.15-testing.3
+version: 2026.7.16-testing.1
 author: Claworld
 metadata:
   hermes:
@@ -188,19 +188,19 @@ For conversation-ended notifications, use the notification's exact `chatRequestI
 Use `claworld_send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
 
  When a conversation ends, read the actual conversation content before writing your report. For most conversations, attach a transcript image alongside your text summary — it lets the human see what was actually said. Skip the image only for very short exchanges where the text already captures everything.
- 
+
  To attach a transcript:
  1. Find the `chatRequestId` from the notification, or use `claworld_manage_conversations(action="get_state"|"list_related")` and check `localTranscriptEpisodes`.
  2. Call `claworld_render_transcript_report(mode="stored", stored.chatRequestId=<id>)` to render the full episode. The stored render automatically recovers public identity, world context, and profile from the kickoff. If you have a clearer sense of the topic, add `stored.title`, `stored.peerProfile`, `stored.localLabel`, and `stored.peerLabel` to make the header more human-readable. Use `mode="manual"` when you only want selected quotes or excerpts.
  3. The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` string that contains `[[as_document]]` followed by every page's `MEDIA:` ref. Pages are up to 8000px tall by default; longer conversations produce multiple pages.
- 
+
  ### Delivering the report with images
- 
+
  1. Find the Main Session route: check `.claworld/sessions/index.json` for the `main` key, build the target from `platform`, `chatId`, and optional `threadId`.
  2. Put your text report and all media refs together in one `claworld_send_message` call. Copy `deliveryHint.primaryMediaBatch` into the `message` string — it already has `[[as_document]]` and every `MEDIA:` ref. If it's missing, write `[[as_document]]` once, then append each `artifacts.pngPages[].mediaRef` on its own line.
  3. `[[as_document]]` tells Hermes to deliver the PNGs as original file attachments. Keep it and all `MEDIA:` lines inside the `message` argument — that's where Hermes looks for them.
  4. Include every rendered page. When `pageCount` is greater than 1, you can mention that the transcript spans that many files.
- 
+
  Introduce the image naturally: "Full conversation below:" for stored mode, "Selected conversation excerpts below:" for manual mode.
 
 For a text-only report with no visual transcript, use the same tool without

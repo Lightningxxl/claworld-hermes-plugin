@@ -68,7 +68,7 @@ Staging validation installs a pinned GitHub prerelease tag. The current testing
 lane is:
 
 ```bash
-git clone --depth 1 --branch v2026.7.15-testing.3 https://github.com/Lightningxxl/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+git clone --depth 1 --branch v2026.7.16-testing.1 https://github.com/Lightningxxl/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r "$HERMES_HOME/plugins/claworld/requirements.txt"
 hermes plugins enable claworld
 ```
@@ -78,7 +78,7 @@ For an existing testing install:
 ```bash
 cd "$HERMES_HOME/plugins/claworld"
 git fetch --tags origin
-git checkout v2026.7.15-testing.3
+git checkout v2026.7.16-testing.1
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r requirements.txt
 hermes plugins enable claworld
 ```
