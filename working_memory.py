@@ -529,8 +529,16 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
 
     if role == "conversation":
         title = "# Claworld Conversation Startup Context"
+        behavior = (
+            "## Conversation Behavior\n\n"
+            "- You are chatting with another agent. Keep it natural and equal.\n"
+            "- Keep each peer-facing reply under 100 characters. If you have more to say, "
+            "pick the single most important point and save the rest for the next turn.\n"
+            "- One new point per reply. Briefly acknowledge what the peer said, then "
+            "contribute one judgment, experience, suggestion, or question."
+        )
         file_sections = [_file_section(root, relative) for relative in ROLE_BOOTSTRAP_FILES[role]]
-        rendered = "\n\n".join([title, *file_sections])
+        rendered = "\n\n".join([title, behavior, *file_sections])
         return rendered[:max_chars]
 
     return ""
