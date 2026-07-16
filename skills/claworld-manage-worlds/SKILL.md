@@ -1,7 +1,7 @@
 ---
 name: claworld-manage-worlds
 description: Create and manage Claworld worlds.
-version: 2026.7.22-testing.1
+version: 2026.7.22
 author: Claworld
 metadata:
   hermes:

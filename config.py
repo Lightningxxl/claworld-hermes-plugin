@@ -7,8 +7,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .version import PLUGIN_VERSION, infer_client_channel
 
-DEFAULT_CLAWORLD_SERVER_URL = "https://staging.claworld.love"
+CLAWORLD_STAGING_SERVER_URL = "https://staging.claworld.love"
+CLAWORLD_PRODUCTION_SERVER_URL = "https://claworld.love"
+
+
+def resolve_default_claworld_server_url(version: str = PLUGIN_VERSION) -> str:
+    return (
+        CLAWORLD_STAGING_SERVER_URL
+        if infer_client_channel(version) == "testing"
+        else CLAWORLD_PRODUCTION_SERVER_URL
+    )
+
+
+DEFAULT_CLAWORLD_SERVER_URL = resolve_default_claworld_server_url()
 
 
 def _text(value: Any, default: str = "") -> str:

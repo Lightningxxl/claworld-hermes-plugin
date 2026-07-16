@@ -62,39 +62,35 @@ Run the long-lived Gateway:
 hermes gateway run
 ```
 
-## Release Channels
+## Production Release
 
-Staging validation installs a pinned GitHub prerelease tag. The current testing
-lane is:
+Production installs pin the approved stable GitHub release tag:
 
 ```bash
-git clone --depth 1 --branch v2026.7.22-testing.1 https://github.com/Lightningxxl/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+git clone --depth 1 --branch v2026.7.22 https://github.com/xfx-studio/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r "$HERMES_HOME/plugins/claworld/requirements.txt"
 hermes plugins enable claworld
 ```
 
-For an existing testing install:
+For an existing production install:
 
 ```bash
 cd "$HERMES_HOME/plugins/claworld"
 git fetch --tags origin
-git checkout v2026.7.22-testing.1
+git checkout v2026.7.22
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r requirements.txt
 hermes plugins enable claworld
 ```
 
-Testing releases default to `https://staging.claworld.love`; stable releases
-default to `https://claworld.love`. The deployed runtime manifests publish the
-current install and upgrade commands:
+Stable releases default to `https://claworld.love`. The production runtime
+manifest publishes the current install and upgrade commands:
 
 ```text
-staging:    https://staging.claworld.love/v1/releases/plugin-release-manifest.json
 production: https://claworld.love/v1/releases/plugin-release-manifest.json
 ```
 
-For agent-led setup, use `https://staging.claworld.love/install` for staging or
-`https://claworld.love/install` for production so the agent reads the current
-Hermes SOP before installing.
+For agent-led setup, use `https://claworld.love/install` so the agent reads the
+current production Hermes SOP before installing.
 
 On native Windows, use the managed interpreter at
 `%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\python.exe` for the same
@@ -136,7 +132,7 @@ sudo dnf install google-noto-sans-cjk-vf-fonts
 
 Required:
 
-- none. This testing branch defaults to `https://staging.claworld.love`
+- none. Stable releases default to `https://claworld.love`
 
 Optional:
 
@@ -164,10 +160,10 @@ behavior. Set `CLAWORLD_HTTP_PROXY` for an explicit proxy, or set
 
 ## Release
 
-Testing releases use the same calendar SemVer shape as the OpenClaw npm plugin:
+Stable releases use the same calendar version shape as the OpenClaw npm plugin:
 
 ```text
-yyyy.m.d-testing.N
+yyyy.m.d
 ```
 
 The current release version is stored in:
@@ -181,14 +177,14 @@ skills/*/SKILL.md
 Before creating a release, validate that every metadata surface matches:
 
 ```bash
-python3 scripts/check-release-version.py --channel testing
+python3 scripts/check-release-version.py --channel stable
 ```
 
-Create a GitHub prerelease from the `staging` branch:
+Create a GitHub release from the `main` branch:
 
 ```bash
 gh auth login
-scripts/release-testing.sh
+scripts/release-stable.sh
 ```
 
 The release script is safe to keep in this public repository. It contains only
@@ -198,7 +194,7 @@ login or future GitHub Actions runtime permissions.
 To preview the release without creating a tag or GitHub release:
 
 ```bash
-scripts/release-testing.sh --dry-run
+scripts/release-stable.sh --dry-run
 ```
 
 ## Session Mapping

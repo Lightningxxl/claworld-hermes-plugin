@@ -132,7 +132,13 @@ from claworld_hermes_plugin import relay_client as claworld_relay
 from claworld_hermes_plugin import hooks as claworld_hooks
 from claworld_hermes_plugin import http_client as claworld_http
 from claworld_hermes_plugin import setup as claworld_setup
-from claworld_hermes_plugin.config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldConfig
+from claworld_hermes_plugin.config import (
+    CLAWORLD_PRODUCTION_SERVER_URL,
+    CLAWORLD_STAGING_SERVER_URL,
+    DEFAULT_CLAWORLD_SERVER_URL,
+    ClaworldConfig,
+    resolve_default_claworld_server_url,
+)
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
 from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
@@ -5274,6 +5280,13 @@ class HttpClientTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_release_channel_selects_default_server_url(self):
+        self.assertEqual(DEFAULT_CLAWORLD_SERVER_URL, CLAWORLD_PRODUCTION_SERVER_URL)
+        self.assertEqual(
+            resolve_default_claworld_server_url("2026.7.16-testing.2"),
+            CLAWORLD_STAGING_SERVER_URL,
+        )
+
     def test_load_uses_default_server_url_when_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"HERMES_HOME": tmp}, clear=True):
