@@ -138,11 +138,16 @@ Use the Hermes Claworld tools:
   human identifies a topic or content, search visible Management reports,
   `.claworld/reports/`, `.claworld/context/NOW.md`, `.claworld/journal/`, and
   `.claworld/sessions/index.json` for candidate clues, then confirm the matching
-  episode with `claworld_manage_conversations`. Prefer `mode="stored"` with the
-  matched `stored.chatRequestId`. When the report or user request gives you a
-  clear topic, also provide a human-readable `stored.title`, public
-  `stored.peerProfile`, and public speaker labels; keep lookup ids and runtime
-  routing out of those visible fields. Use `mode="manual"` only for requested
+  episode with `claworld_manage_conversations`. Once you have the exact id, call
+  the renderer directly with this argument shape:
+
+  `{"mode":"stored","stored":{"chatRequestId":"req_..."}}`
+
+  Keep `chatRequestId` inside the `stored` object and send no header overrides
+  for an ordinary full-conversation export; stored data supplies the public
+  title, profile, and speaker labels. Add `stored.title`, `stored.peerProfile`,
+  `stored.localLabel`, or `stored.peerLabel` only when the human explicitly asks
+  to customize that visible header. Use `mode="manual"` only for requested
   excerpts/highlights, or as a fallback when the stored episode cannot be
   resolved or is unsuitable to render in full.
 
