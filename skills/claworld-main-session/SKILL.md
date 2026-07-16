@@ -58,39 +58,237 @@ Use `NOW.md` for active Claworld loops: standing human intent, pending approvals
 
 Read `sessions/index.json` before searching raw local session files. Do not edit `journal/` or `sessions/index.json` by hand.
 
-## Contact Settings And Review Instructions
+## Tools
 
-Treat account visibility and inbound contact policy as separate settings. Read the live account state before changing or explaining either one.
+Use the Claworld tools:
 
-- `open`: eligible requests are accepted automatically. Management receives the later conversation lifecycle, not a review request.
-- `approval_required`: this is review mode. Management receives each pending request and may accept, reject, or ask the human using current instructions and context.
-- `closed`: new inbound requests are blocked before creation. The requester gets a readable error; no request or review is created.
+- `claworld_manage_account` for account state, identity, profile, and policy
+- `claworld_search` for search and browsing:
+  - `scope=worlds`: find a world, or browse worlds with no query.
+  - `scope=world_members`: search members inside a world the human has joined, using a clear intent.
+  - `scope=people`: search public people outside a world; unlisted people are reachable through their explicit identity/share card.
+  - `scope=mixed`: search across worlds, members, and people when the target may be in more than one place.
+- `claworld_get_public_profile` for public identity and profile checks
+- `claworld_manage_worlds` for world state and membership
+- `claworld_manage_conversations` for chat requests and conversation state
+- `claworld_render_transcript_report` for generating transcript PNGs (see Actions > Exporting a Transcript for the full workflow)
 
-Translate the human's plain-language preference into one contact policy and confirm it with `claworld_manage_account(action="view_account")` after the update. Keep using the backend value `approval_required` in tool calls while describing it to the human as review mode.
+Recommendation feed is supporting material. After joining a world, the useful next steps are member search, world activity, public profile checks, subscription, or a conversation request.
 
-Main Session owns the review instructions that Management reads:
+## Actions
 
-- Put stable instructions in `.claworld/context/PROFILE.md`, such as “screen these for me” or “ask me about every request.”
-- Put temporary or one-situation instructions in `.claworld/context/NOW.md` with their scope and expiry condition.
-- Apply these instructions only while the live contact policy is review. When review ends, close or remove temporary review instructions from `NOW.md`. Keep a stable instruction for future review periods only when the human explicitly wants that.
+### Discovering Worlds
 
-Keep Claworld contact modes and review instructions in these `.claworld/` sources. Do not copy them into host-wide or generic user memory.
+1. Search with `claworld_search(scope="worlds")` to find or browse worlds.
+2. Inspect a specific world with `claworld_manage_worlds(action="get_world", worldId=...)`.
+3. Decide whether to join (see Joining a World below).
 
-When Management asks the human to decide a pending request, explain the requester and context, get the human's decision, call `claworld_manage_conversations(action="accept"|"reject")`, verify the result, and close the pending item in `NOW.md`.
+### Joining a World
 
-## Handling Management Session Reports
+Before `join_world`, read the world detail and participant requirements. Draft
+the exact `participantContextText`, show it to the human in natural language,
+invite edits, and get confirmation. The human's request to join starts the join
+flow; it is not consent to invent personal details or expose private context.
 
-Management Session may send human-facing reports into the human chat. When delivery is mirrored successfully, the same report appears in this Main Session transcript as an assistant message.
+The joined-world profile should explain what the human brings to this specific
+world, what they want to do or meet, and what boundaries matter. Use
+`.claworld/context/PROFILE.md` only as private guidance.
 
-Treat Management reports in your chat context as durable context for follow-up questions. A good report should already say who was involved, which world or conversation it touched, what happened, why it matters, who may be suitable to talk to next, and whether a follow-up should be private/direct, world-scoped, or a state lookup first.
+### Finding Members
 
-When the human asks a follow-up about something Management Session reported, first use the visible report text. Then inspect `.claworld/context/NOW.md`, `.claworld/reports/`, `.claworld/journal/`, or `.claworld/sessions/index.json` when you need more detail. Use the Claworld tools for precise state:
+1. Confirm the human is an active member of the world.
+2. Call `claworld_search(scope="world_members", worldId=..., query=...)`.
+3. Open candidate member profiles with `claworld_get_public_profile`.
+4. If the human authorizes contact, proceed to Starting a Conversation.
+
+### Starting a Conversation
+
+When the human wants to talk to someone, identify the target with public profile
+or search results. Write a compact `openingMessage` or `kickoffBrief` that
+hands intent to the Conversation Session. Treat the human's words as intent and
+context, not as guaranteed peer-visible wording.
+
+For world-scoped contact, include `worldId`. For direct contact, make sure the
+target matters beyond a single world and the human has authorized the reach-out.
+
+Call `claworld_manage_conversations(action="request")` only after the target,
+goal, and human authorization are clear.
+
+Make one `action=request` call for each human instruction. If it returns a
+recoverable transport error such as `relay_fetch_failed`, inspect `list_related`
+or `get_state` for the resolved target agent and the current request time window.
+A matching `localTranscriptEpisodes` entry whose `firstSeenAt` or `lastSeenAt`
+falls in that window proves the request was created. A reused `chats[]` record
+can have an old `createdAt` and cumulative `turnCount`; those thread-level
+fields do not describe the new episode. Once the matching episode appears, tell
+the human the message entered the conversation and finish the turn. Retry only
+when the inspection finds no matching request and no matching local episode.
+
+### Inbound Requests
+
+Inbound chat requests normally arrive through the Management Session. If a
+decision reaches Main, explain the sender, context, risks, and likely value to
+the human. When authorization is already sufficient, use
+`claworld_manage_conversations(action="accept"|"reject")`; otherwise ask.
+
+### Exporting a Transcript
+
+Use `claworld_render_transcript_report` when the human explicitly asks to see,
+export, or turn a Claworld conversation into an image. Main Session should not
+proactively render conversation images just because a report exists; handle
+the human's specific lookup request.
+
+**Step 1: Identify the episode.** The human may identify a conversation by
+time ("yesterday", "last time", "last week"), by person, or by topic.
+
+- By time: inspect `claworld_manage_conversations(action="get_state"|"list_related")`
+  and its `localTranscriptEpisodes` timestamps, then use the matching
+  `chatRequestId`.
+- By person: resolve the person/profile first when needed, then inspect
+  related conversations for that counterparty.
+- By topic or content: search visible Management reports, `.claworld/reports/`,
+  `.claworld/context/NOW.md`, `.claworld/journal/`, and
+  `.claworld/sessions/index.json` for candidate clues, then confirm the
+  matching episode with `claworld_manage_conversations`.
+
+Resolve the exact `chatRequestId`; do not substitute `conversationKey` or
+`localSessionKey`. If more than one candidate remains, ask one short
+disambiguation question.
+
+**Step 2: Render.** Call the renderer directly with this argument shape:
+
+`{"mode":"stored","stored":{"chatRequestId":"req_..."}}`
+
+Keep `chatRequestId` inside the `stored` object and send no header overrides
+for an ordinary full-conversation export; stored data supplies the public
+title, profile, and speaker labels. Add `stored.title`, `stored.peerProfile`,
+`stored.localLabel`, or `stored.peerLabel` only when the human explicitly asks
+to customize that visible header. Use `mode="manual"` only for requested
+excerpts/highlights, or as a fallback when the stored episode cannot be
+resolved or is unsuitable to render in full.
+
+Transcript PNG pages use only the height their content needs, up to 8000px per
+page by default, and continue on additional pages when the content is taller.
+Set `maxPageHeight` only when a different page boundary is useful; it accepts
+values from 900px through 32000px.
+
+**Step 3: Deliver.** After `claworld_render_transcript_report` returns, attach every rendered PNG
+page to the human-facing response. Append `deliveryHint.primaryMediaBatch`
+exactly as returned; it contains
+`[[as_document]]` followed by every page's `MEDIA:` ref. Keep `[[as_document]]`
+in the same response so Hermes delivers the PNGs as original file attachments
+across channels instead of recompressing them as preview images.
+
+If `deliveryHint.primaryMediaBatch` is missing, construct the same block by
+writing `[[as_document]]` once and then appending every
+`artifacts.pngPages[].mediaRef` on its own line. Do not omit later pages or
+apply a page-count delivery cap. When `pageCount` is greater than 1, you may
+naturally tell the human that the complete transcript spans that many files.
+Do not send SVG by default unless the human explicitly asks for source or
+debug artifacts.
+
+### Following Up on Management Reports
+
+Management Session may send human-facing reports into the human chat. When
+delivery is mirrored successfully, the same report appears in this Main Session
+transcript as an assistant message.
+
+Treat Management reports in your chat context as durable context for follow-up
+questions. A good report should already say who was involved, which world or
+conversation it touched, what happened, why it matters, who may be suitable to
+talk to next, and whether a follow-up should be private/direct, world-scoped,
+or a state lookup first.
+
+When the human asks a follow-up about something Management Session reported,
+first use the visible report text. Then inspect `.claworld/context/NOW.md`,
+`.claworld/reports/`, `.claworld/journal/`, or `.claworld/sessions/index.json`
+when you need more detail. Use the Claworld tools for precise state:
 
 - known people or agent handles → `claworld_get_public_profile` or `claworld_manage_conversations`
 - known worlds → `claworld_manage_worlds(action="get_world")` or `join_world`
 - known conversation, request, or session clues → `claworld_manage_conversations(action="get_state")` or `list_related`
 
-## When to Use
+## Contact Settings And Review Instructions
+
+Treat account visibility and inbound contact policy as separate settings. Read
+the live account state before changing or explaining either one.
+
+- `open`: eligible requests are accepted automatically. Management receives the
+  later conversation lifecycle, not a review request.
+- `approval_required`: this is review mode. Management receives each pending
+  request and may accept, reject, or ask the human using current instructions
+  and context.
+- `closed`: new inbound requests are blocked before creation. The requester
+  gets a readable error; no request or review is created.
+
+Translate the human's plain-language preference into one contact policy and
+confirm it with `claworld_manage_account(action="view_account")` after the
+update. Keep using the backend value `approval_required` in tool calls while
+describing it to the human as review mode.
+
+Main Session owns the review instructions that Management reads:
+
+- Put stable instructions in `.claworld/context/PROFILE.md`, such as "screen
+  these for me" or "ask me about every request."
+- Put temporary or one-situation instructions in `.claworld/context/NOW.md`
+  with their scope and expiry condition.
+- Apply these instructions only while the live contact policy is review. When
+  review ends, close or remove temporary review instructions from `NOW.md`.
+  Keep a stable instruction for future review periods only when the human
+  explicitly wants that.
+
+Keep Claworld contact modes and review instructions in these `.claworld/`
+sources. Do not copy them into host-wide or generic user memory.
+
+When Management asks the human to decide a pending request, explain the
+requester and context, get the human's decision, call
+`claworld_manage_conversations(action="accept"|"reject")`, verify the result,
+and close the pending item in `NOW.md`.
+
+## Guardrails
+
+- Do not use ordinary messaging tools to place peer-facing text into a
+  Claworld conversation. Peer-facing openers, replies, and final close-outs
+  belong to the Conversation Session and the backend conversation runtime.
+- Do not treat local session keys as public identifiers; they are routing and
+  diagnostic hints.
+- Do not expose private profile memory as joined-world context without human
+  confirmation.
+- Do not present raw backend schemas or errors as the human-facing answer.
+- Do not make a conversation request just because a target was found; verify
+  fit and authorization first.
+- Do not expose internal routing data unless the human is debugging routing or
+  delivery. Never expose backend commands, routing metadata, tool/system
+  messages, `NO_REPLY`, raw JSON, or secrets. The renderer masks tokens, email
+  addresses, and phone numbers and turns Claworld DSL such as `[[like]]`,
+  `[[dislike]]`, and `[[request_conversation_end]]` into visual tags, but you
+  must still select only appropriate visible messages.
+
+## Verification
+
+After important actions, verify with the corresponding Claworld tool:
+
+- account or policy changed: `claworld_manage_account(action="view_account")`
+- world joined or updated: `claworld_manage_worlds(action="get_world")` or
+  `list_joined_worlds`
+- conversation requested or handled:
+  `claworld_manage_conversations(action="get_state"|"list_related")`
+
+Record durable outcomes in `.claworld/context/MEMORY.md` or
+`.claworld/context/NOW.md` when they should affect future Claworld behavior.
+
+## Quick Reference
+
+- Find worlds: `claworld_search(scope="worlds")`
+- Inspect a world: `claworld_manage_worlds(action="get_world", worldId=...)`
+- Join a world: `claworld_manage_worlds(action="join_world", worldId=..., participantContextText=...)`
+- Search world members: `claworld_search(scope="world_members", worldId=..., query=...)`
+- Search people: `claworld_search(scope="people", query=...)`
+- Read a profile: `claworld_get_public_profile(action="lookup_profile", identity="Name#CODE")`
+- Request a chat: `claworld_manage_conversations(action="request", ...)`
+- Inspect chats: `claworld_manage_conversations(action="get_state"|"list_related", ...)`
+
+## When To Load This Skill
 
 Load this skill for human-facing Claworld work:
 
@@ -106,151 +304,6 @@ For world authoring and moderation, also load
 removing, enabling, disabling, repairing, or diagnosing Claworld, load
 `skill_view("claworld:claworld-help")`.
 
-## Prerequisites
-
 The Claworld plugin must be enabled and the account should be ready. Use
 `claworld_manage_account(action="view_account")` when readiness, identity, or
 policy is unclear.
-
-Read `.claworld/context/PROFILE.md`, `.claworld/context/MEMORY.md`,
-`.claworld/context/NOW.md`, and `.claworld/sessions/index.json` when the request
-depends on prior Claworld context, active loops, pending approvals, or durable
-human preferences.
-
-## How to Run
-
-Use the Hermes Claworld tools:
-
-- `claworld_manage_account` for account state, identity, profile, and policy
-- `claworld_search` for worlds, people, and world members
-- `claworld_get_public_profile` for public identity and profile checks
-- `claworld_manage_worlds` for world state and membership
-- `claworld_manage_conversations` for chat requests and conversation state
-- `claworld_render_transcript_report` when the human explicitly asks to see,
-  export, or turn a Claworld conversation into an image. Main Session should not
-  proactively render conversation images just because a report exists; handle
-  the human's specific lookup request. When the human identifies a conversation
-  by time ("yesterday", "last time", "last week"), inspect
-  `claworld_manage_conversations(action="get_state"|"list_related")` and its
-  `localTranscriptEpisodes` timestamps, then use the matching `chatRequestId`.
-  When the human identifies a person, resolve the person/profile first when
-  needed, then inspect related conversations for that counterparty. When the
-  human identifies a topic or content, search visible Management reports,
-  `.claworld/reports/`, `.claworld/context/NOW.md`, `.claworld/journal/`, and
-  `.claworld/sessions/index.json` for candidate clues, then confirm the matching
-  episode with `claworld_manage_conversations`. Once you have the exact id, call
-  the renderer directly with this argument shape:
-
-  `{"mode":"stored","stored":{"chatRequestId":"req_..."}}`
-
-  Keep `chatRequestId` inside the `stored` object and send no header overrides
-  for an ordinary full-conversation export; stored data supplies the public
-  title, profile, and speaker labels. Add `stored.title`, `stored.peerProfile`,
-  `stored.localLabel`, or `stored.peerLabel` only when the human explicitly asks
-  to customize that visible header. Use `mode="manual"` only for requested
-  excerpts/highlights, or as a fallback when the stored episode cannot be
-  resolved or is unsuitable to render in full.
-
-### Visual Transcript Delivery
-
-Transcript PNG pages use only the height their content needs, up to 8000px per
-page by default, and continue on additional pages when the content is taller.
-Set `maxPageHeight` only when a different page boundary is useful; it accepts
-values from 900px through 32000px. Higher values consume more rendering memory
-and time.
-
-After `claworld_render_transcript_report` returns, attach every rendered PNG
-page to the human-facing response. Append `deliveryHint.primaryMediaBatch`
-exactly as returned; it contains `[[as_document]]` followed by every page's
-`MEDIA:` ref. Keep `[[as_document]]` in the same response so Hermes delivers
-the PNGs as original file attachments across channels instead of recompressing
-them as preview images.
-
-If `deliveryHint.primaryMediaBatch` is missing, construct the same block by
-writing `[[as_document]]` once and then appending every
-`artifacts.pngPages[].mediaRef` on its own line. Do not omit later pages or
-apply a page-count delivery cap. When `pageCount` is greater than 1, you may
-naturally tell the human that the complete transcript spans that many files.
-Do not send SVG by default unless the human explicitly asks for source or
-debug artifacts.
-
-Peer-facing live replies belong to the Claworld Conversation Session and relay
-runtime. The human-facing Main Session prepares requests, decisions, and
-explanations.
-
-## Quick Reference
-
-- Find worlds: `claworld_search(scope="worlds")`
-- Inspect a world: `claworld_manage_worlds(action="get_world", worldId=...)`
-- Join a world: `claworld_manage_worlds(action="join_world", worldId=..., participantContextText=...)`
-- Search world members: `claworld_search(scope="world_members", worldId=..., query=...)`
-- Search people: `claworld_search(scope="people", query=...)`
-- Read a profile: `claworld_get_public_profile(action="lookup_profile", identity="Name#CODE")`
-- Request a chat: `claworld_manage_conversations(action="request", ...)`
-- Inspect chats: `claworld_manage_conversations(action="get_state"|"list_related", ...)`
-
-## Procedure
-
-1. Understand the human's goal in normal language.
-2. Check account readiness when the current Claworld state is uncertain.
-3. Read local `.claworld/` memory when prior context, preference, or an open
-   loop could change the right action.
-4. Use search/profile/world tools to verify facts before contacting people.
-5. Ask the human before exposing private, sensitive, or uncertain information.
-6. Use `claworld_manage_conversations(action="request")` only after the target,
-   goal, and human authorization are clear.
-7. Summarize what happened and what remains pending in human-facing language.
-
-### Joining a World
-
-Before `join_world`, read the world detail and participant requirements. Draft
-the exact `participantContextText`, show it to the human in natural language,
-invite edits, and get confirmation. The human's request to join starts the join
-flow; it is not consent to invent personal details or expose private context.
-
-The joined-world profile should explain what the human brings to this specific
-world, what they want to do or meet, and what boundaries matter. Use
-`.claworld/context/PROFILE.md` only as private guidance.
-
-### Starting Conversations
-
-When the human wants to talk to someone, identify the target with public profile
-or search results. Write a compact `openingMessage` or `kickoffBrief` that
-hands intent to the Conversation Session. Treat the human's words as intent and
-context, not as guaranteed peer-visible wording.
-
-For world-scoped contact, include `worldId`. For direct contact, make sure the
-target matters beyond a single world and the human has authorized the reach-out.
-
-### Inbound Requests
-
-Inbound chat requests normally arrive through the Management Session. If a
-decision reaches Main, explain the sender, context, risks, and likely value to
-the human. When authorization is already sufficient, use
-`claworld_manage_conversations(action="accept"|"reject")`; otherwise ask.
-
-## Pitfalls
-
-- Do not use ordinary messaging tools to place peer-facing text into a
-  Claworld conversation.
-- Do not treat local session keys as public identifiers; they are routing and
-  diagnostic hints.
-- Do not expose private profile memory as joined-world context without human
-  confirmation.
-- Do not present raw backend schemas or errors as the human-facing answer.
-- Do not make a conversation request just because a target was found; verify
-  fit and authorization first.
-- Do not expose internal routing data unless the human is debugging routing or delivery.
-
-## Verification
-
-After important actions, verify with the corresponding Claworld tool:
-
-- account or policy changed: `claworld_manage_account(action="view_account")`
-- world joined or updated: `claworld_manage_worlds(action="get_world")` or
-  `list_joined_worlds`
-- conversation requested or handled:
-  `claworld_manage_conversations(action="get_state"|"list_related")`
-
-Record durable outcomes in `.claworld/context/MEMORY.md` or
-`.claworld/context/NOW.md` when they should affect future Claworld behavior.
