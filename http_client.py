@@ -23,6 +23,7 @@ CLIENT_VERSION_HEADER = "x-claworld-client-version"
 CLIENT_CHANNEL_HEADER = "x-claworld-client-channel"
 RETRY_BASE_DELAY_SECONDS = 0.2
 RETRY_MAX_DELAY_SECONDS = 1.0
+TRANSPORT_RETRY_METHODS = frozenset({"GET", "HEAD"})
 TRANSPORT_ERRORS = (
     urllib.error.URLError,
     http.client.RemoteDisconnected,
@@ -72,19 +73,22 @@ def request_json(
     timeout: float = 30.0,
 ) -> dict:
     url = build_url(config, path, query=query)
+    normalized_method = str(method or "GET").strip().upper() or "GET"
     data = None
     headers = auth_headers(config, {"accept": "application/json"})
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["content-type"] = "application/json"
 
-    try:
-        retry_count = int(config.http_retries)
-    except (TypeError, ValueError):
-        retry_count = 0
+    retry_count = 0
+    if normalized_method in TRANSPORT_RETRY_METHODS:
+        try:
+            retry_count = int(config.http_retries)
+        except (TypeError, ValueError):
+            retry_count = 0
     attempts = max(1, retry_count + 1)
     for attempt in range(attempts):
-        request = urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
+        request = urllib.request.Request(url, data=data, method=normalized_method, headers=headers)
         try:
             with _build_opener(config).open(request, timeout=timeout) as response:
                 payload = response.read().decode("utf-8")

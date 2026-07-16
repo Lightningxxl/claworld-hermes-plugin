@@ -950,6 +950,7 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
             cfg,
             "POST",
             "/v1/chat-requests",
+            timeout=60.0,
             body=_drop_empty(
                 {
                     "fromAgentId": agent_id,

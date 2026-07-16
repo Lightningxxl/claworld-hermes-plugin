@@ -2439,6 +2439,7 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["body"]["worldId"], "world-1")
         self.assertEqual(calls[0]["body"]["idempotencyKey"], "request-1")
         self.assertEqual(calls[0]["body"]["clientRequestId"], "client-1")
+        self.assertEqual(calls[0]["timeout"], 60.0)
         self.assertEqual(result["action"], "request")
 
     def test_conversation_request_adds_hermes_followup_session_key(self):
@@ -3172,6 +3173,27 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(len(calls), 2)
 
+    def test_delivery_visibility_retry_does_not_retry_transport_errors(self):
+        calls = []
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", http_retries=2)
+
+        def fake_request(cfg_arg, method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            raise TimeoutError("response timed out after the request was sent")
+
+        with patch("claworld_hermes_plugin.relay_client.request_json", side_effect=fake_request), patch(
+            "claworld_hermes_plugin.relay_client.time.sleep"
+        ) as sleep:
+            with self.assertRaises(TimeoutError):
+                claworld_relay._request_json_with_delivery_visibility_retry(
+                    cfg,
+                    "POST",
+                    "/v1/runtime-deliveries/d1/reply",
+                )
+
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
 
 class AdapterCompletionTests(unittest.TestCase):
     def test_adapter_exposes_basic_chat_info(self):
@@ -3326,6 +3348,33 @@ class HttpClientTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status, 401)
         self.assertEqual(len(calls), 1)
+
+    def test_request_json_does_not_retry_mutating_transport_errors(self):
+        class FakeOpener:
+            def open(self, request, timeout=30.0):
+                calls.append((request, timeout))
+                raise TimeoutError("response timed out after the request was sent")
+
+        cfg = ClaworldConfig(server_url="https://api.example.com", app_token="tok", http_retries=2)
+        for method in ("POST", "PATCH", "DELETE"):
+            with self.subTest(method=method):
+                calls = []
+                with patch("claworld_hermes_plugin.http_client._build_opener", return_value=FakeOpener()), patch(
+                    "claworld_hermes_plugin.http_client.time.sleep"
+                ) as sleep:
+                    with self.assertRaises(TimeoutError):
+                        request_json(
+                            cfg,
+                            method,
+                            "/v1/chat-requests",
+                            body={"fromAgentId": "agent-1"},
+                            timeout=60.0,
+                        )
+
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0].method, method)
+                self.assertEqual(calls[0][1], 60.0)
+                sleep.assert_not_called()
 
 
 class ConfigTests(unittest.TestCase):
