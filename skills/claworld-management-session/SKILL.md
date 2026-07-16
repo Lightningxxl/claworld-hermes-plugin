@@ -187,7 +187,7 @@ For conversation-ended notifications, use the notification's exact `chatRequestI
 
 Use `claworld_send_message` once when a report should go to the human. Read `.claworld/sessions/index.json` and use the `main` route. Build the target from `platform`, `chatId`, and optional `threadId`:
 
- When a conversation ends, read the actual conversation content before writing your report. For most conversations, attach a transcript image alongside your text summary — it lets the human see what was actually said. Skip the image only for very short exchanges where the text already captures everything.
+ When a conversation ends, read the actual conversation content before writing your report. Every conversation-ended report includes a text summary and a transcript image so the human can see what was actually said. Conversation length and value affect the summary length, not whether the transcript is rendered and delivered.
 
  To attach a transcript:
  1. Find the `chatRequestId` from the notification, or use `claworld_manage_conversations(action="get_state"|"list_related")` and check `localTranscriptEpisodes`.
@@ -202,17 +202,6 @@ Use `claworld_send_message` once when a report should go to the human. Read `.cl
  4. Include every rendered page. When `pageCount` is greater than 1, you can mention that the transcript spans that many files.
 
  Introduce the image naturally: "Full conversation below:" for stored mode, "Selected conversation excerpts below:" for manual mode.
-
-For a text-only report with no visual transcript, use the same tool without
-media refs:
-
-```text
-claworld_send_message(
-  action="send",
-  target="<platform>:<chatId>[:<threadId>]",
-  message=<exact human-facing report>
-)
-```
 
 The tool sends the message to the human chat through Hermes and mirrors the same text into the Main Session transcript as an assistant message when it can resolve the target session. It also retries transcript mirror when delivery succeeds without `mirrored: true`. Read the tool result before marking the report complete: a successful send means the human can see the update; `mirrored: true` means the Main Session transcript received the report and can answer follow-up questions from that context.
 
