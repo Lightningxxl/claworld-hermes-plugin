@@ -122,8 +122,8 @@ TRANSCRIPT_REPORT_DESCRIPTION = (
     "Render a Claworld conversation into readable PNG images. Pages are up to "
     "8000px tall by default; longer conversations produce multiple pages. "
     "For a complete episode, call with "
-    "{\"mode\":\"stored\",\"stored\":{\"chatRequestId\":\"req_...\"}}. "
-    "Keep chatRequestId inside stored. Stored mode recovers public identity, "
+    "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\"}. "
+    "Keep chatRequestId at the top level. Stored mode recovers public identity, "
     "world context, profile, title, and speaker labels "
     "automatically. Use mode=manual to render selected quotes or excerpts. "
     "The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` "
@@ -356,33 +356,25 @@ TRANSCRIPT_REPORT_SCHEMA = {
                 "enum": ["stored", "manual"],
                 "description": "Required. Use stored to render one indexed local Claworld episode by chatRequestId. Use manual to render exactly the messages supplied in manual.messages.",
             },
-            "stored": {
-                "type": "object",
-                "description": "Stored transcript selector. Provide only when mode=stored.",
-                "properties": {
-                    "chatRequestId": {
-                        "type": "string",
-                        "description": "Required for mode=stored. The Claworld chat request / episode id.",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Optional human-readable report title, such as 'Moza — 老友重逢聊搭桥'. Defaults to public peer/world context from the stored kickoff.",
-                    },
-                    "peerProfile": {
-                        "type": "string",
-                        "description": "Optional public subtitle/profile. Defaults to public peer identity and the applicable world/global profile from the stored kickoff.",
-                    },
-                    "localLabel": {
-                        "type": "string",
-                        "description": "Optional public speaker label for local/right-side messages.",
-                    },
-                    "peerLabel": {
-                        "type": "string",
-                        "description": "Optional public speaker label for peer/left-side messages.",
-                    },
-                },
-                "required": ["chatRequestId"],
-                "additionalProperties": False,
+            "chatRequestId": {
+                "type": "string",
+                "description": "Required for mode=stored. Top-level Claworld chat request / episode id.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Optional stored-mode report title. Defaults to public peer/world context from the stored kickoff.",
+            },
+            "peerProfile": {
+                "type": "string",
+                "description": "Optional stored-mode subtitle/profile. Defaults to public peer identity and the applicable world/global profile from the stored kickoff.",
+            },
+            "localLabel": {
+                "type": "string",
+                "description": "Optional stored-mode speaker label for local/right-side messages.",
+            },
+            "peerLabel": {
+                "type": "string",
+                "description": "Optional stored-mode speaker label for peer/left-side messages.",
             },
             "manual": {
                 "type": "object",
