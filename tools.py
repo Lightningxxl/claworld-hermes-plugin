@@ -106,7 +106,9 @@ MANAGE_CONVERSATIONS_DESCRIPTION = (
     "and the request appears Claworld-related. Before creating requests that "
     'depend on the human\'s preferences or goals, load '
     'skill_view("claworld:claworld-main-session"). Peer-facing opener/reply/'
-    "final text belongs to the Claworld conversation runtime. For Claworld "
+    "final text belongs to the Claworld conversation runtime. For action=request, "
+    "copy the target displayName and agentCode from Claworld search/profile "
+    "results; identity and agent ids are not request target fields. For Claworld "
     'problems or feedback, load skill_view("claworld:claworld-help").'
 )
 SEND_MESSAGE_DESCRIPTION = (
@@ -211,8 +213,19 @@ BASE_PROPERTIES = {
 }
 
 
-def _schema(action_values: tuple[str, ...] | None = None, extra: dict[str, Any] | None = None, *, description: str = "") -> dict:
-    properties = dict(BASE_PROPERTIES)
+def _schema(
+    action_values: tuple[str, ...] | None = None,
+    extra: dict[str, Any] | None = None,
+    *,
+    description: str = "",
+    base_property_names: tuple[str, ...] | None = None,
+    additional_properties: bool = True,
+) -> dict:
+    properties = (
+        dict(BASE_PROPERTIES)
+        if base_property_names is None
+        else {name: dict(BASE_PROPERTIES[name]) for name in base_property_names}
+    )
     if action_values:
         properties["action"] = {"type": "string", "enum": list(action_values)}
     else:
@@ -220,7 +233,11 @@ def _schema(action_values: tuple[str, ...] | None = None, extra: dict[str, Any] 
     properties.update(extra or {})
     return {
         "description": description,
-        "parameters": {"type": "object", "properties": properties, "additionalProperties": True},
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": additional_properties,
+        },
     }
 
 
@@ -304,17 +321,33 @@ MANAGE_WORLDS_SCHEMA = _schema(
 MANAGE_CONVERSATIONS_SCHEMA = _schema(
     CONVERSATION_ACTIONS,
     {
-        "openingMessage": {"type": "string"},
+        "displayName": {
+            "type": "string",
+            "description": "Required with agentCode for action=request. Copy the target public display name from Claworld search or profile results.",
+        },
+        "agentCode": {
+            "type": "string",
+            "description": "Required with displayName for action=request. Copy the target public agent code from Claworld search or profile results.",
+        },
+        "openingMessage": {"type": "string", "description": "Peer-facing opener for action=request."},
+        "message": {"type": "string", "description": "Alias for openingMessage on action=request."},
         "kickoffBrief": {"type": "object"},
         "openingPayload": {"type": "object"},
         "requestContext": {"type": "object"},
         "source": {"type": "string"},
         "idempotencyKey": {"type": "string"},
         "dedupeKey": {"type": "string"},
+        "clientRequestId": {"type": "string"},
+        "worldId": {"type": "string", "description": "World scope for action=request, or use filters.worldId when reading state."},
         "direction": {"type": "string", "enum": ["inbound", "outbound"]},
         "filters": {"type": "object"},
+        "chatRequestId": {"type": "string"},
+        "conversationKey": {"type": "string"},
+        "localSessionKey": {"type": "string"},
     },
     description=MANAGE_CONVERSATIONS_DESCRIPTION,
+    base_property_names=(),
+    additional_properties=False,
 )
 SEND_MESSAGE_SCHEMA = {
     "description": SEND_MESSAGE_DESCRIPTION,
@@ -944,7 +977,7 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
     action = _normalize_conversation_action(args)
     agent_id = _agent_id(cfg, args)
     if action == "request":
-        target_agent_id = _text(args.get("targetAgentId"), _text(args.get("targetId")))
+        _validate_conversation_request_args(args)
         request_context = _conversation_request_context(cfg, args)
         payload = request_json(
             cfg,
@@ -954,7 +987,6 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
             body=_drop_empty(
                 {
                     "fromAgentId": agent_id,
-                    "targetAgentId": target_agent_id,
                     "displayName": args.get("displayName"),
                     "agentCode": args.get("agentCode"),
                     "kickoffBrief": args.get("kickoffBrief"),
@@ -1475,6 +1507,21 @@ CONVERSATION_FILTER_KEYS = {
     "counterpartyAgentId",
 }
 
+LEGACY_CONVERSATION_TARGET_FIELDS = ("identity", "targetAgentId", "targetId")
+
+
+def _validate_conversation_request_args(args: dict) -> None:
+    for key in LEGACY_CONVERSATION_TARGET_FIELDS:
+        if _provided(args, key):
+            raise ValueError(
+                f"{key} is not supported for action=request; use displayName and agentCode from Claworld search/profile results"
+            )
+    _require(args.get("displayName"), "displayName is required for action=request")
+    _require(args.get("agentCode"), "agentCode is required for action=request")
+    for key in ("filters", "direction", "chatRequestId", "conversationKey", "localSessionKey"):
+        if _provided(args, key):
+            raise ValueError(f"{key} is only supported for action=list_related/get_state")
+
 
 def _validate_conversation_query_args(args: dict, action: str) -> None:
     filters = args.get("filters")
@@ -1483,6 +1530,11 @@ def _validate_conversation_query_args(args: dict, action: str) -> None:
     for key in (filters or {}):
         if key not in CONVERSATION_FILTER_KEYS:
             raise ValueError(f"filters.{key} is not supported for action={action}")
+    for key in LEGACY_CONVERSATION_TARGET_FIELDS:
+        if _provided(args, key):
+            raise ValueError(
+                f"{key} is not supported for action={action}; use documented conversation filters"
+            )
     for key in (
         "displayName",
         "agentCode",
