@@ -192,12 +192,12 @@ disambiguation question.
 
 **Step 2: Render.** Call the renderer directly with this argument shape:
 
-`{"mode":"stored","stored":{"chatRequestId":"req_..."}}`
+`{"mode":"stored","chatRequestId":"req_..."}`
 
-Keep `chatRequestId` inside the `stored` object and send no header overrides
+Keep `chatRequestId` at the top level and send no header overrides
 for an ordinary full-conversation export; stored data supplies the public
-title, profile, and speaker labels. Add `stored.title`, `stored.peerProfile`,
-`stored.localLabel`, or `stored.peerLabel` when the human's request or a visible
+title, profile, and speaker labels. Add top-level `title`, `peerProfile`,
+`localLabel`, or `peerLabel` when the human's request or a visible
 report gives a clearer topic, or when the human explicitly asks to customize
 that visible header. Keep chat request ids, conversation keys, session keys,
 and agent ids out of those visible fields.

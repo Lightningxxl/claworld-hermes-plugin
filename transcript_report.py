@@ -25,10 +25,10 @@ DOCUMENT_DELIVERY_DIRECTIVE = "[[as_document]]"
 
 TIME_SPLIT_SECONDS = 5 * 60
 
-TOP_LEVEL_RENDER_FIELDS = {"mode", "stored", "manual", "style", "maxPageHeight"}
+STORED_RENDER_FIELDS = {"chatRequestId", "title", "peerProfile", "localLabel", "peerLabel"}
+TOP_LEVEL_RENDER_FIELDS = {"mode", "manual", "style", "maxPageHeight", *STORED_RENDER_FIELDS}
 MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
 REQUIRED_MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
-STORED_RENDER_FIELDS = {"chatRequestId", "title", "peerProfile", "localLabel", "peerLabel"}
 MANUAL_MESSAGE_FIELDS = {"from", "text", "createdAt"}
 
 
@@ -226,23 +226,22 @@ def _normalize_render_request(args: dict) -> dict:
     if mode == "stored":
         if args.get("manual") is not None:
             raise ValueError("manual must not be provided when mode=stored")
-        stored = args.get("stored")
-        if not isinstance(stored, dict):
-            raise ValueError("stored must be an object when mode=stored")
-        _reject_unknown_nested("stored", stored, STORED_RENDER_FIELDS)
-        chat_request_id = _text(stored.get("chatRequestId"))
+        chat_request_id = _text(args.get("chatRequestId"))
         if not chat_request_id:
-            raise ValueError("stored.chatRequestId is required when mode=stored")
+            raise ValueError("chatRequestId is required when mode=stored")
         for key in ("title", "peerProfile", "localLabel", "peerLabel"):
-            render_args[key] = stored.get(key)
+            render_args[key] = args.get(key)
         return {
             "mode": mode,
             "chatRequestId": chat_request_id,
             "renderArgs": render_args,
         }
 
-    if args.get("stored") is not None:
-        raise ValueError("stored must not be provided when mode=manual")
+    stored_only = sorted(key for key in STORED_RENDER_FIELDS if args.get(key) is not None)
+    if stored_only:
+        raise ValueError(
+            f"{', '.join(stored_only)} must not be provided at top level when mode=manual"
+        )
     manual = args.get("manual")
     if not isinstance(manual, dict):
         raise ValueError("manual must be an object when mode=manual")

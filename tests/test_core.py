@@ -402,6 +402,23 @@ class ProtocolTests(unittest.TestCase):
 
 
 class TranscriptReportTests(unittest.TestCase):
+    def test_stored_renderer_contract_is_flat(self):
+        properties = claworld_tools.TRANSCRIPT_REPORT_SCHEMA["parameters"]["properties"]
+        self.assertIn("chatRequestId", properties)
+        self.assertNotIn("stored", properties)
+        self.assertIn(
+            '{"mode":"stored","chatRequestId":"req_..."}',
+            claworld_tools.TRANSCRIPT_REPORT_DESCRIPTION,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"unsupported transcript render parameter\(s\): stored",
+        ):
+            claworld_transcript._normalize_render_request(
+                {"mode": "stored", "stored": {"chatRequestId": "req-legacy"}}
+            )
+
     def test_system_font_policy_prefers_bold_script_families(self):
         expected = {
             "中文": "'PingFang SC'",
@@ -805,7 +822,7 @@ class TranscriptReportTests(unittest.TestCase):
 
             result = claworld_transcript.render_transcript_report(
                 cfg,
-                {"mode": "stored", "stored": {"chatRequestId": "req-new"}},
+                {"mode": "stored", "chatRequestId": "req-new"},
             )
 
             self.assertEqual(result["mode"], "stored")
@@ -874,13 +891,11 @@ class TranscriptReportTests(unittest.TestCase):
                 cfg,
                 {
                     "mode": "stored",
-                    "stored": {
-                        "chatRequestId": "req-custom",
-                        "title": "Moza — 老友重逢聊搭桥",
-                        "peerProfile": "Moza#Z99TMV · 帮 rx 打理 Claworld",
-                        "localLabel": "Mira",
-                        "peerLabel": "Moza",
-                    },
+                    "chatRequestId": "req-custom",
+                    "title": "Moza — 老友重逢聊搭桥",
+                    "peerProfile": "Moza#Z99TMV · 帮 rx 打理 Claworld",
+                    "localLabel": "Mira",
+                    "peerLabel": "Moza",
                 },
             )
 
@@ -929,13 +944,11 @@ class TranscriptReportTests(unittest.TestCase):
                 cfg,
                 {
                     "mode": "stored",
-                    "stored": {
-                        "chatRequestId": "req-fallback",
-                        "title": "req-fallback",
-                        "peerProfile": "conversation-private",
-                        "localLabel": "agt_internal",
-                        "peerLabel": "agt_peer",
-                    },
+                    "chatRequestId": "req-fallback",
+                    "title": "req-fallback",
+                    "peerProfile": "conversation-private",
+                    "localLabel": "agt_internal",
+                    "peerLabel": "agt_peer",
                 },
             )
 
@@ -1273,9 +1286,9 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("what social goal it should pursue", main)
         self.assertIn("Select only visible original messages", main)
         self.assertIn("writes local SVG and PNG files", main)
-        self.assertIn('{"mode":"stored","stored":{"chatRequestId":"req_..."}}', main)
+        self.assertIn('{"mode":"stored","chatRequestId":"req_..."}', main)
         self.assertIn("send no header overrides", main)
-        self.assertIn('{"mode":"stored","stored":{"chatRequestId":"req_..."}}', management)
+        self.assertIn('{"mode":"stored","chatRequestId":"req_..."}', management)
         self.assertIn("Leave those header fields unchanged", management)
         self.assertIn("`.claworld/context/PROFILE.md`", main)
         self.assertIn("`.claworld/context/NOW.md`", main)
