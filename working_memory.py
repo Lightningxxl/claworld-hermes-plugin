@@ -334,6 +334,28 @@ def write_session_index(root: Path, data: dict) -> None:
     atomic_write_json(root / SESSIONS_DIR / "index.json", data)
 
 
+def record_chat_request_direction(root: Path, chat_request_id: str, direction: str) -> bool:
+    """Persist the backend-authored request direction for a transcript episode."""
+
+    request_id = _text(chat_request_id)
+    normalized_direction = _text(direction).lower()
+    if not request_id or normalized_direction not in {"inbound", "outbound"}:
+        return False
+
+    data = read_session_index(root)
+    episodes = data.setdefault("conversationEpisodes", {})
+    previous = episodes.get(request_id) if isinstance(episodes.get(request_id), dict) else {}
+    if _text(previous.get("requestDirection")).lower() == normalized_direction:
+        return False
+    episodes[request_id] = {
+        **previous,
+        "chatRequestId": previous.get("chatRequestId") or request_id,
+        "requestDirection": normalized_direction,
+    }
+    write_session_index(root, data)
+    return True
+
+
 def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) -> None:
     data = read_session_index(root)
     now = iso_now()

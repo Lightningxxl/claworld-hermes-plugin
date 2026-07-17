@@ -150,6 +150,7 @@ from claworld_hermes_plugin.working_memory import (
     ensure_working_memory,
     read_session_index,
     record_claworld_route,
+    record_chat_request_direction,
     record_outbound_reply,
     release_inbound_notification,
     write_session_index,
@@ -894,6 +895,76 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(trusted.initiated_by, "local")
             self.assertEqual(legacy.initiated_by, "peer")
             self.assertEqual(unknown.initiated_by, "")
+
+    def test_queued_turn_background_exposes_structured_world_header_context(self):
+        wrapped = "\n".join(
+            [
+                "# Live Turn",
+                "",
+                "## Earlier Queued Turns",
+                "",
+                "### Queued Turn 1",
+                "",
+                "````text",
+                "# Background",
+                "",
+                "## Conversation Facts",
+                "- Mode: `world`",
+                "- World: 问号剧场 (`wld-1`)",
+                "",
+                "## World Facts",
+                "### World Context",
+                "```text",
+                "只使用问句完成即兴对决。",
+                "```",
+                "",
+                "## You",
+                "- Identity: `伊索尔德#LOCAL1`",
+                "",
+                "## Peer",
+                "- Identity: `墨砚#PEER01`",
+                "### World Membership Profile",
+                "```text",
+                "偏好中文和荒诞喜剧。",
+                "```",
+                "````",
+                "",
+                "## Current Turn",
+                "The raw incoming message follows.",
+            ]
+        )
+
+        parsed = claworld_transcript._parse_header_context_candidate(wrapped, "contextText")
+
+        self.assertEqual(parsed["conversationMode"], "world")
+        self.assertEqual(parsed["worldName"], "问号剧场")
+        self.assertEqual(parsed["worldId"], "wld-1")
+        self.assertEqual(parsed["localIdentity"], "伊索尔德#LOCAL1")
+        self.assertEqual(parsed["peerIdentity"], "墨砚#PEER01")
+        self.assertEqual(parsed["worldProfile"], "偏好中文和荒诞喜剧。")
+        self.assertEqual(parsed["worldContext"], "只使用问句完成即兴对决。")
+
+    def test_arbitrary_fenced_background_is_not_unwrapped(self):
+        wrapped = "\n".join(
+            [
+                "# Notes",
+                "````text",
+                "# Background",
+                "## Conversation Facts",
+                "- Mode: `world`",
+                "## You",
+                "- Identity: `Wrong#LOCAL1`",
+                "## Peer",
+                "- Identity: `Wrong#PEER01`",
+                "````",
+            ]
+        )
+
+        parsed = claworld_transcript._parse_header_context_candidate(wrapped, "contextText")
+
+        self.assertEqual(parsed["conversationMode"], "world")
+        self.assertNotIn("localIdentity", parsed)
+        self.assertNotIn("peerIdentity", parsed)
 
     def test_comic_grid_keeps_public_code_in_header_but_not_bubble_label(self):
         self.assertEqual(claworld_comic_grid._label_text("Moza#Z99TMV"), "MOZA")
@@ -3354,6 +3425,94 @@ class ToolRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0]["timeout"], 60.0)
         self.assertEqual(result["action"], "request")
 
+    def test_stored_render_hydrates_and_persists_direction_internally(self):
+        root = self.cfg.memory_root_path()
+        data = read_session_index(root)
+        data["conversationEpisodes"] = {
+            "req-render": {
+                "chatRequestId": "req-render",
+                "deliveries": [
+                    {
+                        "deliveryId": "delivery-1",
+                        "direction": "inbound",
+                        "deliveryType": "turn",
+                        "commandText": "hello",
+                    }
+                ],
+            }
+        }
+        write_session_index(root, data)
+        calls = []
+
+        def fake_request(cfg, method, endpoint, body=None, query=None, timeout=None):
+            calls.append({"method": method, "endpoint": endpoint, "query": query})
+            return {
+                "chats": [
+                    {
+                        "chatRequestId": "req-render",
+                        "direction": "outbound",
+                    }
+                ]
+            }
+
+        def fake_render(cfg, args):
+            episode = read_session_index(root)["conversationEpisodes"]["req-render"]
+            self.assertEqual(episode["requestDirection"], "outbound")
+            self.assertEqual(args["initiatedBy"], "local")
+            return {"rendered": True}
+
+        with patch("claworld_hermes_plugin.tools.request_json", side_effect=fake_request), patch(
+            "claworld_hermes_plugin.tools.render_transcript_report_artifact",
+            side_effect=fake_render,
+        ):
+            result = claworld_tools._render_transcript_report(
+                self.cfg,
+                {"mode": "stored", "chatRequestId": "req-render", "topic": "Test"},
+            )
+
+        self.assertEqual(result, {"rendered": True})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["method"], "GET")
+        self.assertEqual(calls[0]["endpoint"], "/v1/chat-requests")
+        self.assertEqual(calls[0]["query"]["chatRequestId"], "req-render")
+        self.assertEqual(calls[0]["query"]["agentId"], "agent-1")
+
+    def test_stored_render_uses_local_direction_without_backend_call(self):
+        root = self.cfg.memory_root_path()
+        record_chat_request_direction(root, "req-local", "inbound")
+
+        with patch("claworld_hermes_plugin.tools.request_json") as request, patch(
+            "claworld_hermes_plugin.tools.render_transcript_report_artifact",
+            return_value={"rendered": True},
+        ):
+            result = claworld_tools._render_transcript_report(
+                self.cfg,
+                {"mode": "stored", "chatRequestId": "req-local", "topic": "Test"},
+            )
+
+        self.assertEqual(result, {"rendered": True})
+        request.assert_not_called()
+
+    def test_stored_render_backend_failure_does_not_block_rendering(self):
+        with patch(
+            "claworld_hermes_plugin.tools.request_json",
+            side_effect=RuntimeError("offline"),
+        ), patch(
+            "claworld_hermes_plugin.tools.render_transcript_report_artifact",
+            return_value={"rendered": True},
+        ):
+            result = claworld_tools._render_transcript_report(
+                self.cfg,
+                {
+                    "mode": "stored",
+                    "chatRequestId": "req-offline",
+                    "topic": "Test",
+                    "initiatedBy": "peer",
+                },
+            )
+
+        self.assertEqual(result, {"rendered": True})
+
     def test_conversation_request_rejects_noncanonical_target_fields(self):
         for field, value in (
             ("identity", "Peer#ABC"),
@@ -3876,6 +4035,26 @@ class ToolRoutingTests(unittest.TestCase):
 
         self.assertEqual(calls[0]["query"]["conversationKey"], "pair:a::b")
         self.assertEqual(result["action"], "get_state")
+
+    def test_get_state_persists_structured_request_direction_for_later_rendering(self):
+        with patch(
+            "claworld_hermes_plugin.tools.request_json",
+            return_value={
+                "chats": [
+                    {
+                        "chatRequestId": "req-cached",
+                        "direction": "inbound",
+                    }
+                ]
+            },
+        ):
+            claworld_tools._manage_conversations(
+                self.cfg,
+                {"action": "get_state", "chatRequestId": "req-cached"},
+            )
+
+        episode = read_session_index(self.cfg.memory_root_path())["conversationEpisodes"]["req-cached"]
+        self.assertEqual(episode["requestDirection"], "inbound")
 
     def test_list_related_rejects_request_and_top_level_filter_fields(self):
         with self.assertRaisesRegex(ValueError, "identity is not supported"):

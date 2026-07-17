@@ -13,7 +13,7 @@ from .http_client import download_share_card, public_error_payload, request_json
 from .protocol import classify_reply_content
 from .transcript_report import MAX_PAGE_HEIGHT, render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
-from .working_memory import read_session_index, record_owner_route_from_context
+from .working_memory import read_session_index, record_chat_request_direction, record_owner_route_from_context
 
 TOOLSET = "claworld"
 
@@ -1097,6 +1097,7 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
         )
     else:
         raise ValueError(f"unsupported conversation action: {action}")
+    _persist_conversation_directions(cfg, payload)
     return _action_result("claworld_manage_conversations", action, payload)
 
 
@@ -1243,7 +1244,88 @@ def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
 
 
 def _render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
-    return render_transcript_report_artifact(cfg, args)
+    request_direction = _hydrate_stored_transcript_direction(cfg, args)
+    render_args = dict(args)
+    if request_direction:
+        render_args["initiatedBy"] = {
+            "inbound": "peer",
+            "outbound": "local",
+        }[request_direction]
+    return render_transcript_report_artifact(cfg, render_args)
+
+
+def _hydrate_stored_transcript_direction(cfg: ClaworldConfig, args: dict) -> str:
+    """Best-effort direction hydration so stored rendering remains one tool call."""
+
+    if _text(args.get("mode")) != "stored":
+        return ""
+    chat_request_id = _text(args.get("chatRequestId"))
+    if not chat_request_id:
+        return ""
+
+    root = cfg.memory_root_path()
+    index = read_session_index(root)
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    episode = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+    local_direction = _normalized_request_direction(
+        episode.get("requestDirection") or episode.get("direction")
+    )
+    if local_direction:
+        return local_direction
+
+    try:
+        payload = request_json(
+            cfg,
+            "GET",
+            "/v1/chat-requests",
+            query=_drop_empty(
+                {
+                    "agentId": _agent_id(cfg, {}),
+                    "chatRequestId": chat_request_id,
+                }
+            ),
+        )
+    except Exception:
+        return ""
+
+    directions = _persist_conversation_directions(cfg, payload)
+    return directions.get(chat_request_id, "")
+
+
+def _persist_conversation_directions(cfg: ClaworldConfig, payload: Any) -> dict[str, str]:
+    """Persist structured directions returned by chat-request APIs."""
+
+    directions = _conversation_directions(payload)
+    root = cfg.memory_root_path()
+    for chat_request_id, direction in directions.items():
+        try:
+            record_chat_request_direction(root, chat_request_id, direction)
+        except Exception:
+            # API results remain usable even if a local cache write is unavailable.
+            continue
+    return directions
+
+
+def _conversation_directions(payload: Any) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    candidates = [payload]
+    for key in ("chats", "items"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            candidates.extend(item for item in values if isinstance(item, dict))
+    directions: dict[str, str] = {}
+    for item in candidates:
+        chat_request_id = _text(item.get("chatRequestId"))
+        direction = _normalized_request_direction(item.get("direction"))
+        if chat_request_id and direction:
+            directions[chat_request_id] = direction
+    return directions
+
+
+def _normalized_request_direction(value: Any) -> str:
+    direction = (_text(value) or "").lower()
+    return direction if direction in {"inbound", "outbound"} else ""
 
 
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:
