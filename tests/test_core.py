@@ -5166,7 +5166,7 @@ class HttpClientTests(unittest.TestCase):
         self.assertIn(f"claworld-hermes-plugin/{PLUGIN_VERSION}", headers["User-Agent"])
         self.assertEqual(headers["x-claworld-client"], "hermes-plugin")
         self.assertEqual(headers["x-claworld-client-version"], PLUGIN_VERSION)
-        self.assertEqual(headers["x-claworld-client-channel"], "testing")
+        self.assertEqual(headers["x-claworld-client-channel"], "stable")
         self.assertNotIn("x-claworld-plugin-version", headers)
         self.assertEqual(headers["authorization"], "Bearer tok")
         self.assertEqual(headers["x-claworld-app-token"], "tok")
