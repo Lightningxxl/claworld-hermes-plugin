@@ -121,16 +121,28 @@ SEND_MESSAGE_DESCRIPTION = (
 )
 
 TRANSCRIPT_REPORT_DESCRIPTION = (
-    "Render a Claworld conversation into readable PNG images. Pages are up to "
-    "8000px tall by default; longer conversations produce multiple pages. "
-    "For a complete episode, call with "
-    "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\"}. "
-    "Keep chatRequestId at the top level. Stored mode recovers public identity, "
-    "world context, profile, title, and speaker labels "
-    "automatically. Use mode=manual to render selected quotes or excerpts. "
-    "The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` "
-    "string containing `[[as_document]]` and every page's `MEDIA:` ref. "
-    "Before using this tool for the first time, load "
+    "Render a Claworld conversation transcript into BubbleSpec, SVG, and "
+    "readable PNG artifacts. Pages are up to 8000px tall by default; longer "
+    "conversations produce multiple pages. When you need to show the user the "
+    "concrete content of a Claworld A2A chat, prefer this tool instead of "
+    "sending raw transcript text. To render one complete chat, use "
+    "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\",\"topic\":\"...\"}; "
+    "keep chatRequestId, topic, and any stored-mode fallback fields at the top "
+    "level. The topic is Agent-written "
+    "concise topic based on the actual conversation. Stored reports derive "
+    "public identities, direct/world mode, world name, request initiator, the "
+    "Direct Peer Global Profile or World Peer Membership Profile plus World "
+    "Context, date, message count, and full-report status from the indexed "
+    "episode. For every new Agent call, topic is the main card title and must be "
+    "provided in both stored and manual mode; omission remains accepted only for "
+    "legacy callers. Do not invent missing structural facts. To render selected excerpts, "
+    "highlights, or a fallback transcript, use mode=manual and provide the exact "
+    "messages to display plus a concise topic. Manual structural header fields "
+    "and message timestamps remain optional: supply chatMode, worldName, "
+    "initiatedBy, reportType, localIdentity, peerIdentity, peerProfile, or worldContext "
+    "under manual only when known. The tool returns PNG page paths and a "
+    "`deliveryHint.primaryMediaBatch` string containing `[[as_document]]` and "
+    "every page's `MEDIA:` ref. Before using this tool for the first time, load "
     'skill_view("claworld:claworld-main-session") for full delivery guidance.'
 )
 
@@ -393,25 +405,56 @@ TRANSCRIPT_REPORT_SCHEMA = {
                 "type": "string",
                 "description": "Required for mode=stored. Top-level Claworld chat request / episode id.",
             },
+            "chatMode": {
+                "type": "string",
+                "enum": ["direct", "world"],
+                "description": "Optional top-level fallback only when an older stored episode has no trusted mode context. Parsed stored context wins.",
+            },
+            "worldName": {
+                "type": "string",
+                "description": "Optional top-level public World-name fallback for an older stored World episode. Parsed stored context wins; omit for Direct.",
+            },
+            "initiatedBy": {
+                "type": "string",
+                "enum": ["local", "peer"],
+                "description": "Optional top-level fallback for an older stored episode with no request direction. Trusted stored requestDirection wins.",
+            },
+            "topic": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Required for every new Agent call: a concise, human-readable title written after reading the actual conversation. Stored Kickoff data never overrides it.",
+            },
             "title": {
                 "type": "string",
-                "description": "Optional stored-mode report title. Defaults to public peer/world context from the stored kickoff.",
+                "description": "Top-level compatibility alias for topic. Prefer topic for new stored calls.",
             },
             "peerProfile": {
                 "type": "string",
-                "description": "Optional stored-mode subtitle/profile. Defaults to public peer identity and the applicable world/global profile from the stored kickoff.",
+                "description": "Optional top-level public profile fallback. Direct uses the Peer Global Profile; World uses the Peer World Membership Profile. Parsed stored context wins.",
+            },
+            "worldContext": {
+                "type": "string",
+                "description": "Optional top-level public World Context fallback for an older stored World episode. Parsed stored context wins; omit for Direct.",
+            },
+            "localIdentity": {
+                "type": "string",
+                "description": "Optional top-level public local/right-side identity fallback, preferably Name#CODE. Parsed stored identity wins.",
+            },
+            "peerIdentity": {
+                "type": "string",
+                "description": "Optional top-level public peer/left-side identity fallback, preferably Name#CODE. Parsed stored identity wins.",
             },
             "localLabel": {
                 "type": "string",
-                "description": "Optional stored-mode speaker label for local/right-side messages.",
+                "description": "Top-level compatibility alias for localIdentity. Prefer localIdentity for new calls.",
             },
             "peerLabel": {
                 "type": "string",
-                "description": "Optional stored-mode speaker label for peer/left-side messages.",
+                "description": "Top-level compatibility alias for peerIdentity. Prefer peerIdentity for new calls.",
             },
             "manual": {
                 "type": "object",
-                "description": "Manual transcript content. Provide only when mode=manual.",
+                "description": "Manual transcript content. New Agent calls must provide messages and topic; other public header fields are supplied when known.",
                 "properties": {
                     "messages": {
                         "type": "array",
@@ -421,18 +464,45 @@ TRANSCRIPT_REPORT_SCHEMA = {
                             "properties": {
                                 "from": {"type": "string", "enum": ["peer", "local"], "description": "peer=left; local=right."},
                                 "text": {"type": "string", "description": "Visible message text."},
-                                "createdAt": {"type": "string", "description": "Message timestamp, preferably ISO 8601."},
+                                "createdAt": {"type": "string", "description": "Optional real message timestamp, preferably ISO 8601. Omit rather than inventing one."},
                             },
-                            "required": ["from", "text", "createdAt"],
+                            "required": ["from", "text"],
                             "additionalProperties": False,
                         },
                     },
-                    "title": {"type": "string", "description": "Report header title."},
-                    "peerProfile": {"type": "string", "description": "Report header subtitle/profile."},
-                    "localLabel": {"type": "string", "description": "Speaker label for local/right-side messages."},
-                    "peerLabel": {"type": "string", "description": "Speaker label for peer/left-side messages."},
+                    "chatMode": {
+                        "type": "string",
+                        "enum": ["direct", "world"],
+                        "description": "Optional known chat context. Omit when unknown; the renderer will use a neutral chat badge.",
+                    },
+                    "worldName": {
+                        "type": "string",
+                        "description": "Optional public World name. Providing it without chatMode implies world; do not provide it for direct chats.",
+                    },
+                    "initiatedBy": {
+                        "type": "string",
+                        "enum": ["local", "peer"],
+                        "description": "Optional known request initiator. local means the local agent initiated the conversation; peer means the peer did. Omit when unknown.",
+                    },
+                    "reportType": {
+                        "type": "string",
+                        "enum": ["full", "excerpt"],
+                        "description": "Optional coverage claim. Use full only for the complete conversation and excerpt for a selected subset; omit when uncertain.",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Required for every new Agent call: a concise, human-readable title faithful to the supplied messages.",
+                    },
+                    "title": {"type": "string", "description": "Compatibility alias for topic. Prefer topic for new calls."},
+                    "peerProfile": {"type": "string", "description": "Optional public Peer Global Profile for Direct, or Peer World Membership Profile for World. Never include private/internal identifiers."},
+                    "worldContext": {"type": "string", "description": "Optional public World Context for World chat. Omit for Direct and when unavailable."},
+                    "localIdentity": {"type": "string", "description": "Optional public local/right-side identity, preferably Name#CODE when that public code is known."},
+                    "peerIdentity": {"type": "string", "description": "Optional public peer/left-side identity, preferably Name#CODE when that public code is known."},
+                    "localLabel": {"type": "string", "description": "Compatibility alias for localIdentity. Prefer localIdentity for new calls."},
+                    "peerLabel": {"type": "string", "description": "Compatibility alias for peerIdentity. Prefer peerIdentity for new calls."},
                 },
-                "required": ["messages", "title", "peerProfile", "localLabel", "peerLabel"],
+                "required": ["messages"],
                 "additionalProperties": False,
             },
             "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},

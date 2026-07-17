@@ -138,6 +138,7 @@ from claworld_hermes_plugin import skill_registration as claworld_skills
 from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin import transcript_report as claworld_transcript
 from claworld_hermes_plugin import transcript_report_stylekit as claworld_stylekit
+from claworld_hermes_plugin.transcript_report_styles import comic_grid as claworld_comic_grid
 from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, classify_reply_content, normalize_http_base_url, normalize_ws_url, reply_message
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
@@ -407,7 +408,7 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertIn("chatRequestId", properties)
         self.assertNotIn("stored", properties)
         self.assertIn(
-            '{"mode":"stored","chatRequestId":"req_..."}',
+            '{"mode":"stored","chatRequestId":"req_...","topic":"..."}',
             claworld_tools.TRANSCRIPT_REPORT_DESCRIPTION,
         )
 
@@ -417,6 +418,422 @@ class TranscriptReportTests(unittest.TestCase):
         ):
             claworld_transcript._normalize_render_request(
                 {"mode": "stored", "stored": {"chatRequestId": "req-legacy"}}
+            )
+
+    def test_transcript_report_schema_requires_topic_for_new_agents_with_legacy_compatibility(self):
+        schema = claworld_tools.TRANSCRIPT_REPORT_SCHEMA["parameters"]
+        properties = schema["properties"]
+        manual = properties["manual"]
+        manual_message = manual["properties"]["messages"]["items"]
+
+        self.assertEqual(schema["required"], ["mode"])
+        self.assertNotIn("stored", properties)
+        self.assertIn("chatRequestId", properties)
+        self.assertEqual(manual["required"], ["messages"])
+        self.assertEqual(manual_message["required"], ["from", "text"])
+        self.assertEqual(
+            properties["chatMode"]["enum"],
+            ["direct", "world"],
+        )
+        self.assertEqual(
+            manual["properties"]["reportType"]["enum"],
+            ["full", "excerpt"],
+        )
+        for key in (
+            "chatMode",
+            "worldName",
+            "initiatedBy",
+            "topic",
+            "localIdentity",
+            "peerIdentity",
+            "localLabel",
+            "peerLabel",
+            "peerProfile",
+            "worldContext",
+        ):
+            self.assertIn(key, properties)
+            self.assertIn(key, manual["properties"])
+        self.assertEqual(properties["topic"]["minLength"], 1)
+        self.assertEqual(manual["properties"]["topic"]["minLength"], 1)
+        self.assertIn("Required for every new Agent call", properties["topic"]["description"])
+        self.assertIn("Required for every new Agent call", manual["properties"]["topic"]["description"])
+        self.assertIn("must be provided in both stored and manual mode", claworld_tools.TRANSCRIPT_REPORT_DESCRIPTION)
+        self.assertEqual(properties["initiatedBy"]["enum"], ["local", "peer"])
+        self.assertEqual(manual["properties"]["initiatedBy"]["enum"], ["local", "peer"])
+        self.assertNotIn("initiatedBy", schema["required"])
+        self.assertNotIn("initiatedBy", manual["required"])
+        self.assertNotIn("reportType", properties)
+        self.assertIn("reportType", manual["properties"])
+
+        with self.assertRaisesRegex(ValueError, "chatRequestId is required"):
+            claworld_transcript._normalize_render_request({"mode": "stored"})
+        legacy = claworld_transcript._normalize_render_request(
+            {"mode": "stored", "chatRequestId": "req-legacy"}
+        )
+        self.assertIsNone(legacy["renderArgs"].get("topic"))
+
+    def test_manual_world_agent_fields_build_complete_passport_header(self):
+        normalized = claworld_transcript._normalize_render_request(
+            {
+                "mode": "manual",
+                "manual": {
+                    "messages": [
+                        {"from": "peer", "text": "我们继续推进这个实验。"},
+                        {"from": "local", "text": "好，先确认下一步。"},
+                    ],
+                    "topic": "推进下一步产品实验",
+                    "title": "Legacy title must lose",
+                    "chatMode": "world",
+                    "worldName": "夜航工坊",
+                    "initiatedBy": "peer",
+                    "reportType": "excerpt",
+                    "localIdentity": "米拉#LOCAL01",
+                    "peerIdentity": "墨砚#Z99TMV",
+                    "peerProfile": "连接互补的开发者。",
+                    "worldContext": "一个分享产品实验的社区。",
+                },
+            }
+        )
+        render_args = normalized["renderArgs"]
+        messages = claworld_transcript._normalize_messages(
+            normalized["messages"],
+            ClaworldConfig(agent_id="agt-local", working_memory_root="/tmp/not-used"),
+            render_args,
+            {},
+        )
+        self.assertEqual([message.participant_label for message in messages], ["墨砚#Z99TMV", "米拉#LOCAL01"])
+        title, _subtitle = claworld_transcript._header_text(render_args, messages, {})
+        header = claworld_transcript._transcript_header(
+            render_args,
+            messages,
+            {},
+            title=title,
+        )
+
+        self.assertEqual(title, "推进下一步产品实验")
+        self.assertEqual(header.topic, "推进下一步产品实验")
+        self.assertEqual(header.chat_mode, "world")
+        self.assertEqual(header.world_name, "夜航工坊")
+        self.assertEqual(header.initiated_by, "peer")
+        self.assertEqual(header.report_type, "excerpt")
+        self.assertEqual(header.local_identity, "米拉#LOCAL01")
+        self.assertEqual(header.peer_identity, "墨砚#Z99TMV")
+        self.assertEqual(
+            [block.as_dict() for block in header.context_blocks],
+            [
+                {
+                    "kind": "peerWorldMembershipProfile",
+                    "label": "Peer · World",
+                    "text": "连接互补的开发者。",
+                    "source": "explicit",
+                },
+                {
+                    "kind": "worldContext",
+                    "label": "World Context",
+                    "text": "一个分享产品实验的社区。",
+                    "source": "explicit",
+                },
+            ],
+        )
+
+        fallback_title, _subtitle = claworld_transcript._header_text(
+            {"mode": "manual", "worldName": "夜航工坊"},
+            [],
+            {},
+        )
+        self.assertEqual(fallback_title, "夜航工坊")
+
+    def test_kickoff_context_parser_keeps_mode_specific_peer_profile_and_world_context(self):
+        direct_text = "\n".join(
+            [
+                "# Background",
+                "## Conversation Facts",
+                "- Mode: `direct`",
+                "## Participant Facts",
+                "## You",
+                "- Identity: `Mira#LOCAL01`",
+                "## Peer",
+                "- Identity: `Rin#PEER01`",
+                "### Global Profile",
+                "```text",
+                "Peer global profile from kickoff.",
+                "```",
+            ]
+        )
+        direct_context = claworld_transcript._extract_transcript_header_context(
+            [
+                {
+                    "deliveryType": "kickoff",
+                    "commandText": direct_text,
+                    "untrustedContext": "A short untrusted summary must not replace the named kickoff profile.",
+                }
+            ]
+        )
+        direct_header = claworld_transcript._transcript_header(
+            {"mode": "stored"},
+            [],
+            direct_context,
+            title="Direct chat",
+        )
+
+        self.assertEqual(direct_context["peerGlobalProfile"], "Peer global profile from kickoff.")
+        self.assertNotIn("worldContext", direct_context)
+        self.assertEqual(
+            [block.as_dict() for block in direct_header.context_blocks],
+            [
+                {
+                    "kind": "peerGlobalProfile",
+                    "label": "Peer · Profile",
+                    "text": "Peer global profile from kickoff.",
+                    "source": "rawKickoffText",
+                }
+            ],
+        )
+
+        world_text = "\n".join(
+            [
+                "# Background",
+                "## Request Brief",
+                "```text",
+                "## World Facts",
+                "### World Context",
+                "This fake heading is outside World Facts.",
+                "```",
+                "## Conversation Facts",
+                "- Mode: `world`",
+                "- World: Archive (`wld-private-01`)",
+                "## World Facts",
+                "### World Context",
+                "```text",
+                "The real public world context.",
+                "```",
+                "## Participant Facts",
+                "## You",
+                "- Identity: `Mira#LOCAL01`",
+                "## Peer",
+                "- Identity: `Rin#PEER01`",
+                "### Global Profile",
+                "```text",
+                "Peer global profile that World must not display.",
+                "```",
+                "### World Membership Profile",
+                "```text",
+                "Peer membership profile for this world.",
+                "```",
+            ]
+        )
+        world_context = claworld_transcript._extract_transcript_header_context(
+            [{"deliveryType": "kickoff", "commandText": world_text}]
+        )
+        world_header = claworld_transcript._transcript_header(
+            {"mode": "stored"},
+            [],
+            world_context,
+            title="World chat",
+        )
+
+        self.assertEqual(world_context["worldContext"], "The real public world context.")
+        self.assertEqual(
+            [block.kind for block in world_header.context_blocks],
+            ["peerWorldMembershipProfile", "worldContext"],
+        )
+        self.assertEqual(world_header.context_blocks[0].text, "Peer membership profile for this world.")
+        self.assertEqual(world_header.context_blocks[1].text, "The real public world context.")
+
+    def test_context_cards_bound_long_copy_and_use_dynamic_first_page_height(self):
+        short_lines = claworld_comic_grid._bounded_context_lines("Short public profile.", 430)
+        long_lines = claworld_comic_grid._bounded_context_lines(
+            "World context with 中文、emoji 👨‍👩‍👧‍👦 and enough repeated detail " * 20,
+            430,
+        )
+
+        self.assertEqual(short_lines, ["Short public profile."])
+        self.assertEqual(len(long_lines), 2)
+        self.assertTrue(long_lines[-1].endswith("…"))
+        self.assertLessEqual(
+            claworld_stylekit.text_units(long_lines[-1]),
+            430 / claworld_comic_grid.CONTEXT_TEXT_FONT_SIZE,
+        )
+        self.assertLess(
+            claworld_comic_grid._full_header_card_height([]),
+            claworld_comic_grid._full_header_card_height(
+                [{"kind": "peerGlobalProfile", "label": "Peer · Profile", "text": "Profile"}]
+            ),
+        )
+        self.assertLess(
+            claworld_comic_grid._full_header_card_height(
+                [{"kind": "peerGlobalProfile", "label": "Peer · Profile", "text": "Profile"}]
+            ),
+            claworld_comic_grid._full_header_card_height(
+                [
+                    {"kind": "peerWorldMembershipProfile", "label": "Peer · World", "text": "Profile"},
+                    {"kind": "worldContext", "label": "World Context", "text": "Context"},
+                ]
+            ),
+        )
+        self.assertEqual(
+            claworld_comic_grid._context_field_label_lines("peerGlobalProfile", "Peer · Profile"),
+            ["PEER", "PROFILE"],
+        )
+        self.assertEqual(
+            claworld_comic_grid._context_field_label_lines("peerWorldMembershipProfile", "Peer · World"),
+            ["PEER", "WORLD"],
+        )
+        self.assertEqual(
+            claworld_comic_grid._context_field_label_lines("worldContext", "World Context"),
+            ["WORLD", "CONTEXT"],
+        )
+
+        single_line_svg = ET.fromstring(
+            "<svg>"
+            + claworld_comic_grid._render_context_card(
+                0,
+                0,
+                586,
+                {"kind": "worldContext", "label": "World Context", "text": "Short context."},
+            )
+            + "</svg>"
+        )
+        two_line_svg = ET.fromstring(
+            "<svg>"
+            + claworld_comic_grid._render_context_card(
+                0,
+                0,
+                586,
+                {
+                    "kind": "worldContext",
+                    "label": "World Context",
+                    "text": "A deliberately longer context sentence that wraps onto a second visible line.",
+                },
+            )
+            + "</svg>"
+        )
+
+        def context_baselines(svg):
+            return [
+                float(node.attrib["y"])
+                for node in svg.iter("text")
+                if "conversation-context" in node.attrib.get("class", "").split()
+            ]
+
+        self.assertEqual(context_baselines(single_line_svg), [31.0])
+        self.assertEqual(context_baselines(two_line_svg), [22.0, 40.0])
+
+    def test_full_header_titles_center_and_wrap_with_emblem_clearance(self):
+        max_units = 17.84
+        cases = {
+            "Project Lantern": 1,
+            "午夜档案室": 1,
+            "Matching two complementary builders": 2,
+            "连接独立开发者与互补项目并确定下一步协作方向": 2,
+        }
+        for topic, expected_lines in cases.items():
+            with self.subTest(topic=topic):
+                lines = claworld_comic_grid._topic_lines(topic, max_units=max_units)
+                self.assertEqual(len(lines), expected_lines)
+                self.assertTrue(
+                    all(claworld_comic_grid._topic_render_units(line) <= max_units for line in lines)
+                )
+
+        long_english = claworld_comic_grid._topic_lines(
+            "Coordinate product experiments across independent builder communities "
+            "and choose the next collaboration milestone",
+            max_units=max_units,
+        )
+        long_chinese = claworld_comic_grid._topic_lines(
+            "围绕产品实验连接独立开发者并确定下一步协作方向，同时同步所有关键决策与后续行动",
+            max_units=max_units,
+        )
+        self.assertEqual(len(long_english), 2)
+        self.assertEqual(len(long_chinese), 2)
+        self.assertTrue(long_english[-1].endswith("…"))
+        self.assertTrue(long_chinese[-1].endswith("…"))
+        self.assertTrue(
+            all(
+                claworld_comic_grid._topic_render_units(line) <= max_units
+                for line in [*long_english, *long_chinese]
+            )
+        )
+
+        secondary = claworld_comic_grid._secondary_badge_svg(100, 20, 200, "Night Shift Builders")
+        self.assertIn('x="200.0"', secondary)
+        self.assertIn('text-anchor="middle"', secondary)
+
+    def test_mode_emblems_have_shadows_and_split_world_orbit_depth(self):
+        def emblem_group(mode):
+            root = ET.fromstring(
+                "<svg>" + claworld_comic_grid._mode_emblem_svg(50, 50, mode) + "</svg>"
+            )
+            return next(
+                node
+                for node in root
+                if "mode-emblem" in node.attrib.get("class", "").split()
+            )
+
+        direct_group = emblem_group("direct")
+        direct_layers = [set(child.attrib.get("class", "").split()) for child in direct_group]
+        self.assertEqual(sum("mode-emblem-shadow" in classes for classes in direct_layers), 1)
+        direct_shadow = next(
+            child
+            for child in direct_group
+            if "mode-emblem-shadow" in child.attrib.get("class", "").split()
+        )
+        self.assertEqual(direct_shadow.tag, "g")
+        self.assertEqual(len(direct_shadow), 2)
+        self.assertEqual(direct_group.attrib.get("transform"), "translate(18.0 24.0)")
+        self.assertTrue(all("transform" not in child.attrib for child in direct_shadow))
+        self.assertTrue(
+            all(child.attrib.get("fill") == claworld_comic_grid.BLACK for child in direct_shadow)
+        )
+        self.assertEqual(
+            sum(
+                "mode-emblem-chat-bubble" in child.attrib.get("class", "").split()
+                for child in direct_group
+            ),
+            2,
+        )
+
+        world_layers = [set(child.attrib.get("class", "").split()) for child in emblem_group("world")]
+        required = (
+            "mode-emblem-orbit-back",
+            "mode-emblem-shadow",
+            "mode-emblem-globe",
+            "mode-emblem-orbit-front",
+        )
+        indices = {}
+        for class_name in required:
+            matching = [
+                index
+                for index, classes in enumerate(world_layers)
+                if class_name in classes
+            ]
+            self.assertEqual(len(matching), 1, class_name)
+            indices[class_name] = matching[0]
+        self.assertLess(indices["mode-emblem-shadow"], indices["mode-emblem-orbit-back"])
+        self.assertLess(indices["mode-emblem-orbit-back"], indices["mode-emblem-globe"])
+        self.assertLess(indices["mode-emblem-globe"], indices["mode-emblem-orbit-front"])
+
+        world_orbits = [
+            child
+            for child in emblem_group("world")
+            if "mode-emblem-orbit" in child.attrib.get("class", "").split()
+        ]
+        self.assertEqual(len(world_orbits), 2)
+        self.assertTrue(
+            all(orbit.attrib.get("stroke") == "url(#modeOrbitGradient)" for orbit in world_orbits)
+        )
+
+    def test_direct_manual_report_rejects_world_context(self):
+        with self.assertRaisesRegex(ValueError, "manual.worldContext"):
+            claworld_transcript._normalize_render_request(
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "chatMode": "direct",
+                        "worldContext": "World-only context",
+                        "messages": [{"from": "peer", "text": "Hello"}],
+                    },
+                }
             )
 
     def test_system_font_policy_prefers_bold_script_families(self):
@@ -430,6 +847,190 @@ class TranscriptReportTests(unittest.TestCase):
         for text, family in expected.items():
             with self.subTest(text=text):
                 self.assertTrue(claworld_stylekit.font_family_for_text(text).startswith(family))
+
+    def test_transcript_header_initiator_uses_stored_direction_before_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".claworld"
+            data = read_session_index(root)
+            data["conversationEpisodes"] = {
+                "req-direction": {
+                    "chatRequestId": "req-direction",
+                    "direction": "outbound",
+                    "deliveries": [
+                        {
+                            "direction": "outbound",
+                            "deliveryType": "reply",
+                            "commandText": "hello",
+                        }
+                    ],
+                }
+            }
+            write_session_index(root, data)
+
+            source = claworld_transcript._load_source_messages(
+                {"mode": "stored", "chatRequestId": "req-direction"},
+                root,
+            )
+            self.assertEqual(source["summary"]["requestDirection"], "outbound")
+            trusted = claworld_transcript._transcript_header(
+                {"mode": "stored", "initiatedBy": "peer"},
+                [],
+                title="Conversation",
+                source_summary=source["summary"],
+            )
+            legacy = claworld_transcript._transcript_header(
+                {"mode": "stored", "initiatedBy": "peer"},
+                [],
+                title="Conversation",
+                source_summary={},
+            )
+            unknown = claworld_transcript._transcript_header(
+                {"mode": "stored"},
+                [],
+                title="Conversation",
+                source_summary={},
+            )
+
+            self.assertEqual(trusted.initiated_by, "local")
+            self.assertEqual(legacy.initiated_by, "peer")
+            self.assertEqual(unknown.initiated_by, "")
+
+    def test_comic_grid_keeps_public_code_in_header_but_not_bubble_label(self):
+        self.assertEqual(claworld_comic_grid._label_text("Moza#Z99TMV"), "MOZA")
+        self.assertEqual(claworld_comic_grid._label_text("米拉#LOCAL01"), "米拉")
+        self.assertEqual(claworld_comic_grid._label_text("Agent"), "AGENT")
+        truncated = claworld_comic_grid._ellipsize_identity(
+            "Extremely long public display name#Z99TMV",
+            11.5,
+        )
+        self.assertIn("…", truncated)
+        self.assertTrue(truncated.endswith("#Z99TMV"))
+        self.assertLessEqual(claworld_stylekit.text_units(truncated), 11.5)
+        visible_name, visible_code = claworld_comic_grid._ellipsize_identity_parts(
+            "Extremely long public display name#Z99TMV",
+            150,
+            name_font_size=22,
+            code_font_size=16,
+        )
+        self.assertTrue(visible_name.endswith("…"))
+        self.assertEqual(visible_code, "#Z99TMV")
+        self.assertLessEqual(
+            claworld_stylekit.text_units(visible_name) * 22
+            + claworld_stylekit.text_units(visible_code) * 16,
+            150,
+        )
+
+        short_identity = ET.fromstring(
+            "<svg>"
+            + claworld_comic_grid._identity_label_svg(
+                0,
+                0,
+                250,
+                "Rin#R07",
+                dot_fill="#62E69D",
+                class_name="identity-peer",
+                compact=False,
+            )
+            + "</svg>"
+        )
+        long_identity = ET.fromstring(
+            "<svg>"
+            + claworld_comic_grid._identity_label_svg(
+                0,
+                0,
+                250,
+                "Extremely long public display name#Z99TMV",
+                dot_fill="#62E69D",
+                class_name="identity-peer",
+                compact=False,
+            )
+            + "</svg>"
+        )
+        compact_identity = ET.fromstring(
+            "<svg>"
+            + claworld_comic_grid._identity_label_svg(
+                0,
+                0,
+                250,
+                "Rin#R07",
+                dot_fill="#62E69D",
+                class_name="identity-peer",
+                compact=True,
+            )
+            + "</svg>"
+        )
+        short_circle = next(node for node in short_identity.iter() if node.tag == "circle")
+        long_circle = next(node for node in long_identity.iter() if node.tag == "circle")
+        short_name = next(
+            node
+            for node in short_identity.iter()
+            if "identity-name" in node.attrib.get("class", "").split()
+        )
+        short_code = next(
+            node
+            for node in short_identity.iter()
+            if "identity-code" in node.attrib.get("class", "").split()
+        )
+        long_name = next(
+            node
+            for node in long_identity.iter()
+            if "identity-name" in node.attrib.get("class", "").split()
+        )
+        long_code = next(
+            node
+            for node in long_identity.iter()
+            if "identity-code" in node.attrib.get("class", "").split()
+        )
+        compact_name = next(
+            node
+            for node in compact_identity.iter()
+            if "identity-name" in node.attrib.get("class", "").split()
+        )
+        compact_code = next(
+            node
+            for node in compact_identity.iter()
+            if "identity-code" in node.attrib.get("class", "").split()
+        )
+        self.assertEqual(short_name.attrib["font-size"], str(claworld_comic_grid.IDENTITY_NAME_FONT_SIZE))
+        self.assertEqual(short_code.attrib["font-size"], str(claworld_comic_grid.IDENTITY_CODE_FONT_SIZE))
+        self.assertEqual(
+            compact_name.attrib["font-size"],
+            str(claworld_comic_grid.IDENTITY_COMPACT_NAME_FONT_SIZE),
+        )
+        self.assertEqual(
+            compact_code.attrib["font-size"],
+            str(claworld_comic_grid.IDENTITY_COMPACT_CODE_FONT_SIZE),
+        )
+        self.assertEqual(short_name.attrib["text-anchor"], "end")
+        self.assertEqual(long_name.attrib["text-anchor"], "end")
+        self.assertAlmostEqual(
+            float(short_code.attrib["x"]) - float(short_name.attrib["x"]),
+            claworld_comic_grid.IDENTITY_CODE_GAP,
+        )
+        self.assertAlmostEqual(
+            float(long_code.attrib["x"]) - float(long_name.attrib["x"]),
+            claworld_comic_grid.IDENTITY_CODE_GAP,
+        )
+
+        def calculated_dot_gap(circle, name):
+            estimated_name_left = float(name.attrib["x"]) - (
+                claworld_comic_grid._identity_name_render_width(
+                    name.text or "",
+                    int(name.attrib["font-size"]),
+                )
+            )
+            circle_right = float(circle.attrib["cx"]) + float(circle.attrib["r"])
+            return estimated_name_left - circle_right
+
+        short_dot_gap = calculated_dot_gap(short_circle, short_name)
+        long_dot_gap = calculated_dot_gap(long_circle, long_name)
+        self.assertGreater(short_dot_gap, 0)
+        self.assertGreater(long_dot_gap, 0)
+        self.assertLess(
+            abs(short_dot_gap - long_dot_gap),
+            min(short_dot_gap, long_dot_gap) * 0.1,
+        )
+        self.assertLess(float(long_circle.attrib["cx"]), float(short_circle.attrib["cx"]))
 
     def test_emoji_runs_keep_composed_graphemes_atomic(self):
         value = "文字👍🏽与👨‍👩‍👧‍👦、🏳️‍🌈和🇨🇳混排"
@@ -700,6 +1301,44 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(len(normalized), 1)
         self.assertEqual(normalized[0].text, "这里是实际的对话回复。")
 
+    def test_minimal_manual_report_does_not_invent_header_facts_or_timestamps(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "messages": [
+                            {"from": "peer", "text": "A visible quote."},
+                            {"from": "local", "text": "A visible reply."},
+                        ]
+                    },
+                },
+            )
+
+            spec = json.loads(Path(result["artifacts"]["bubbleSpec"]["path"]).read_text(encoding="utf-8"))
+            header = spec["scene"]["header"]
+            self.assertEqual(header["chatMode"], "")
+            self.assertEqual(header["reportType"], "")
+            self.assertEqual(header["worldName"], "")
+            self.assertEqual(header["initiatedBy"], "")
+            self.assertEqual(header["dateLabel"], "")
+            self.assertEqual(header["messageCount"], 2)
+            self.assertEqual([item["createdAt"] for item in spec["messages"] if item["kind"] == "text"], ["", ""])
+            svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
+            self.assertIn("CHAT · 1:1", svg)
+            self.assertNotIn("DIRECT · 1:1", svg)
+            self.assertNotIn('class="report-type-badge', svg)
+            self.assertIn('class="message-count-badge"', svg)
+            self.assertIn(">2 MSGS</text>", svg)
+            self.assertIn(">↔</text>", svg)
+            self.assertNotIn("STARTED", svg)
+
     def test_stored_report_reads_exact_structured_episode_with_both_directions(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ,
@@ -722,6 +1361,15 @@ class TranscriptReportTests(unittest.TestCase):
                     "## Conversation Facts",
                     "- Mode: `world`",
                     "- World: 暮色档案室-0710 (`wld-private-01`)",
+                    "",
+                    "## World Facts",
+                    "- World Name: 暮色档案室-0710",
+                    "- World ID: `wld-private-01`",
+                    "",
+                    "### World Context",
+                    "```text",
+                    "A focused archive world for organizing evidence, coordinating members, and connecting related clues across long-running investigations.",
+                    "```",
                     "",
                     "## Participant Facts",
                     "",
@@ -766,6 +1414,7 @@ class TranscriptReportTests(unittest.TestCase):
                     "chatRequestId": "req-new",
                     "chatId": "conversation-1",
                     "conversationKey": "pair:a::b:direct",
+                    "requestDirection": "inbound",
                     "deliveries": [
                         {
                             "deliveryId": "new-kickoff",
@@ -822,7 +1471,11 @@ class TranscriptReportTests(unittest.TestCase):
 
             result = claworld_transcript.render_transcript_report(
                 cfg,
-                {"mode": "stored", "chatRequestId": "req-new"},
+                {
+                    "mode": "stored",
+                    "chatRequestId": "req-new",
+                    "initiatedBy": "local",
+                },
             )
 
             self.assertEqual(result["mode"], "stored")
@@ -845,11 +1498,59 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(spec["scene"]["title"], "Peer Direct — 暮色档案室-0710")
             self.assertEqual(spec["scene"]["subtitle"], "Peer Direct#PEER01 · structured world profile")
             self.assertEqual(spec["scene"]["peerProfileSource"], "rawKickoffText")
+            self.assertEqual(
+                spec["scene"]["header"],
+                {
+                    "chatMode": "world",
+                    "reportType": "full",
+                    "initiatedBy": "peer",
+                    "topic": "Peer Direct — 暮色档案室-0710",
+                    "worldName": "暮色档案室-0710",
+                    "localIdentity": "Mira#LOCAL01",
+                    "peerIdentity": "Peer Direct#PEER01",
+                    "contextLabel": "Peer · World",
+                    "contextText": "structured world profile",
+                    "contextSource": "rawKickoffText",
+                    "contextBlocks": [
+                        {
+                            "kind": "peerWorldMembershipProfile",
+                            "label": "Peer · World",
+                            "text": "structured world profile",
+                            "source": "rawKickoffText",
+                        },
+                        {
+                            "kind": "worldContext",
+                            "label": "World Context",
+                            "text": "A focused archive world for organizing evidence, coordinating members, and connecting related clues across long-running investigations.",
+                            "source": "rawKickoffText",
+                        },
+                    ],
+                    "dateLabel": "07-09",
+                    "messageCount": 4,
+                },
+            )
             visible_svg = "\n".join(
                 Path(page["path"]).read_text(encoding="utf-8")
                 for page in result["artifacts"]["svgPages"]
             )
-            for internal_value in ("req-new", "conversation-1", "pair:a::b:direct", "agent-local"):
+            self.assertIn('class="conversation-passport conversation-passport-full"', visible_svg)
+            self.assertIn("WORLD · 1:1", visible_svg)
+            self.assertIn("PEER · WORLD", visible_svg)
+            self.assertIn("WORLD CONTEXT", visible_svg)
+            self.assertIn("context-peerworldmembershipprofile", visible_svg)
+            self.assertIn("context-worldcontext", visible_svg)
+            self.assertEqual(visible_svg.count("context-icon-profile"), 1)
+            self.assertEqual(visible_svg.count("context-icon-world"), 1)
+            self.assertIn(">PEER</text>", visible_svg)
+            self.assertIn(">WORLD</text>", visible_svg)
+            self.assertIn(">CONTEXT</text>", visible_svg)
+            for internal_value in (
+                "req-new",
+                "conversation-1",
+                "pair:a::b:direct",
+                "wld-private-01",
+                "agent-local",
+            ):
                 self.assertNotIn(internal_value, visible_svg)
 
     def test_stored_report_accepts_public_header_overrides(self):
@@ -975,10 +1676,14 @@ class TranscriptReportTests(unittest.TestCase):
                 {
                     "mode": "manual",
                     "manual": {
+                        "chatMode": "direct",
+                        "reportType": "excerpt",
+                        "initiatedBy": "local",
+                        "topic": "安全字段与控制标签",
                         "title": "Transcript",
                         "peerProfile": "Peer profile",
-                        "localLabel": "local-agent",
-                        "peerLabel": "peer-agent",
+                        "localLabel": "local-agent#LOCAL01",
+                        "peerLabel": "peer-agent#PEER01",
                         "messages": [
                             {"from": "peer", "text": "hello [like]", "createdAt": "2026-07-09T17:00:00Z"},
                             {
@@ -1008,6 +1713,10 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertIn('"like"', rendered)
             self.assertIn('"request end"', rendered)
             self.assertNotIn("secret-value", rendered)
+            self.assertEqual(spec["scene"]["header"]["chatMode"], "direct")
+            self.assertEqual(spec["scene"]["header"]["reportType"], "excerpt")
+            self.assertEqual(spec["scene"]["header"]["initiatedBy"], "local")
+            self.assertEqual(spec["scene"]["header"]["topic"], "安全字段与控制标签")
             png_page = result["artifacts"]["pngPages"][0]
             self.assertEqual(png_page["renderer"], "resvg")
             self.assertEqual(png_page["rendering"]["binding"], "resvg_py")
@@ -1026,6 +1735,95 @@ class TranscriptReportTests(unittest.TestCase):
             )
             self.assertTrue(delivery["sourceSvgDocument"].startswith("[[as_document]]\nMEDIA:"))
             svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
+            self.assertIn("DIRECT · 1:1", svg)
+            self.assertIn("PEER · PROFILE", svg)
+            self.assertIn("context-peerglobalprofile", svg)
+            self.assertEqual(svg.count("context-icon-profile"), 1)
+            self.assertIn(">PEER</text>", svg)
+            self.assertIn(">PROFILE</text>", svg)
+            topic_nodes = [line for line in svg.splitlines() if 'class="conversation-topic' in line]
+            self.assertTrue(topic_nodes)
+            self.assertTrue(all('x="360.0"' in line for line in topic_nodes))
+            self.assertTrue(all('text-anchor="middle"' in line for line in topic_nodes))
+            self.assertNotIn("WORLD CONTEXT", svg)
+            self.assertIn(">2 MSGS</text>", svg)
+            self.assertNotIn("FULL", svg)
+            self.assertNotIn("EXCERPT", svg)
+            self.assertNotIn("完整", svg)
+            self.assertNotIn("精选", svg)
+            self.assertIn('class="conversation-relation relation-local"', svg)
+            self.assertIn(">←</text>", svg)
+            self.assertNotIn("STARTED", svg)
+            self.assertIn("<title>peer-agent#PEER01</title>", svg)
+            self.assertIn(">#PEER01</text>", svg)
+            self.assertIn(">#LOCAL01</text>", svg)
+            self.assertNotIn("<tspan", svg)
+            self.assertIn(">PEER-AGENT</text>", svg)
+            self.assertIn(">LOCAL-AGENT</text>", svg)
+            self.assertNotIn(">PEER-AGENT#PEER01</text>", svg)
+            self.assertNotIn(">LOCAL-AGENT#LOCAL01</text>", svg)
+            self.assertNotIn("identity-peer-role", svg)
+            self.assertNotIn("identity-local-role", svg)
+            self.assertNotIn("conversation-meta", svg)
+            svg_root = ET.fromstring(svg)
+            passport = next(
+                node
+                for node in svg_root.iter()
+                if "conversation-passport" in node.attrib.get("class", "").split()
+            )
+            passport_text = " ".join(
+                node.text or ""
+                for node in passport.iter()
+                if node.tag.rsplit("}", 1)[-1] == "text"
+            )
+            identity_groups = [
+                node
+                for node in passport.iter()
+                if "identity-label" in node.attrib.get("class", "").split()
+            ]
+            self.assertEqual(len(identity_groups), 2)
+            for identity_group in identity_groups:
+                child_tags = {
+                    node.tag.rsplit("}", 1)[-1]
+                    for node in identity_group.iter()
+                    if node is not identity_group
+                }
+                self.assertIn("circle", child_tags)
+                self.assertIn("text", child_tags)
+                self.assertNotIn("rect", child_tags)
+            identity_names = [
+                node
+                for node in passport.iter()
+                if "identity-name" in node.attrib.get("class", "").split()
+            ]
+            identity_codes = [
+                node
+                for node in passport.iter()
+                if "identity-code" in node.attrib.get("class", "").split()
+            ]
+            self.assertEqual(len(identity_names), 2)
+            self.assertEqual(len(identity_codes), 2)
+            self.assertTrue(any((node.text or "").startswith("peer-") for node in identity_names))
+            self.assertTrue(any((node.text or "").startswith("loc") for node in identity_names))
+            self.assertTrue(
+                all(
+                    node.attrib["font-size"] == str(claworld_comic_grid.IDENTITY_NAME_FONT_SIZE)
+                    and node.attrib["font-weight"] == "900"
+                    and node.attrib["fill"] == "#090909"
+                    for node in identity_names
+                )
+            )
+            self.assertTrue(
+                all(
+                    node.attrib["font-size"] == str(claworld_comic_grid.IDENTITY_CODE_FONT_SIZE)
+                    and node.attrib["font-weight"] == "800"
+                    and node.attrib["fill"] == "#68645F"
+                    for node in identity_codes
+                )
+            )
+            self.assertIn("2 MSGS", passport_text)
+            self.assertNotIn("条", passport_text)
+            self.assertNotIn("07-", passport_text)
             self.assertIn('font-weight="800"', svg)
             self.assertIn("'PingFang SC'", svg)
             self.assertIn('stop-color="#47B6FF"', svg)
@@ -1127,10 +1925,15 @@ class TranscriptReportTests(unittest.TestCase):
                 {
                     "mode": "manual",
                     "manual": {
+                        "chatMode": "world",
+                        "worldName": "分页测试世界",
+                        "reportType": "full",
+                        "initiatedBy": "peer",
+                        "topic": "长对话分页",
                         "title": "Paging test",
                         "peerProfile": "Peer profile",
-                        "localLabel": "local-agent",
-                        "peerLabel": "peer-agent",
+                        "localLabel": "local-agent#LOCAL01",
+                        "peerLabel": "peer-agent#PEER01",
                         "messages": messages,
                     },
                     "maxPageHeight": 980,
@@ -1150,6 +1953,67 @@ class TranscriptReportTests(unittest.TestCase):
                     *(page["mediaRef"] for page in result["artifacts"]["pngPages"]),
                 ],
             )
+            svg_pages = [
+                Path(page["path"]).read_text(encoding="utf-8")
+                for page in result["artifacts"]["svgPages"]
+            ]
+            self.assertIn('class="conversation-passport conversation-passport-full"', svg_pages[0])
+            self.assertNotIn("conversation-passport-compact", svg_pages[0])
+            self.assertEqual(svg_pages[0].count('class="passport-context-field'), 1)
+            self.assertIn("PEER · WORLD", svg_pages[0])
+            self.assertNotIn("WORLD CONTEXT", svg_pages[0])
+            self.assertIn(">24 MSGS</text>", svg_pages[0])
+            self.assertIn('class="conversation-relation relation-peer"', svg_pages[0])
+            self.assertIn(">→</text>", svg_pages[0])
+            self.assertNotIn("STARTED", svg_pages[0])
+            self.assertIn(">PEER-AGENT</text>", "\n".join(svg_pages))
+            self.assertIn(">LOCAL-AGENT</text>", "\n".join(svg_pages))
+            self.assertNotIn(">PEER-AGENT#PEER01</text>", "\n".join(svg_pages))
+            self.assertNotIn(">LOCAL-AGENT#LOCAL01</text>", "\n".join(svg_pages))
+            for page_no, svg in enumerate(svg_pages[1:], start=2):
+                self.assertIn('class="conversation-passport conversation-passport-compact"', svg)
+                self.assertIn("WORLD · 1:1", svg)
+                self.assertIn(f"{page_no} / {result['pageCount']}", svg)
+                self.assertIn('class="conversation-relation relation-peer"', svg)
+                self.assertIn(">→</text>", svg)
+                self.assertIn("<title>peer-agent#PEER01</title>", svg)
+                self.assertIn(">#PEER01</text>", svg)
+                self.assertIn("<title>local-agent#LOCAL01</title>", svg)
+                self.assertIn(">#LOCAL01</text>", svg)
+                compact_root = ET.fromstring(svg)
+                compact_codes = [
+                    node
+                    for node in compact_root.iter()
+                    if "identity-code" in node.attrib.get("class", "").split()
+                ]
+                compact_names = [
+                    node
+                    for node in compact_root.iter()
+                    if "identity-name" in node.attrib.get("class", "").split()
+                ]
+                self.assertEqual(len(compact_names), 2)
+                self.assertEqual(len(compact_codes), 2)
+                self.assertTrue(any((node.text or "").startswith("peer-") for node in compact_names))
+                self.assertTrue(any((node.text or "").startswith("loc") for node in compact_names))
+                self.assertTrue(
+                    all(
+                        node.attrib["font-size"]
+                        == str(claworld_comic_grid.IDENTITY_COMPACT_NAME_FONT_SIZE)
+                        and node.attrib["font-weight"] == "900"
+                        and node.attrib["fill"] == "#090909"
+                        for node in compact_names
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        node.attrib["font-size"]
+                        == str(claworld_comic_grid.IDENTITY_COMPACT_CODE_FONT_SIZE)
+                        and node.attrib["font-weight"] == "800"
+                        and node.attrib["fill"] == "#68645F"
+                        for node in compact_codes
+                    )
+                )
+                self.assertNotIn('class="conversation-context', svg)
 
     def test_local_episode_summary_counts_visible_directions(self):
         cfg = ClaworldConfig(agent_id="agent-local")
@@ -1286,10 +2150,31 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("what social goal it should pursue", main)
         self.assertIn("Select only visible original messages", main)
         self.assertIn("writes local SVG and PNG files", main)
-        self.assertIn('{"mode":"stored","chatRequestId":"req_..."}', main)
-        self.assertIn("send no header overrides", main)
-        self.assertIn('{"mode":"stored","chatRequestId":"req_..."}', management)
-        self.assertIn("Leave those header fields unchanged", management)
+        for skill in (management, main):
+            self.assertIn(
+                '`{"mode":"stored","chatRequestId":"req_...","topic":"<concise faithful topic>"}`',
+                skill,
+            )
+            self.assertIn("every stored-mode fallback at the top level", skill)
+            self.assertIn('top-level `initiatedBy="local"|"peer"`', skill)
+            self.assertIn(
+                "Always provide top-level `topic` after reading the actual conversation",
+                skill,
+            )
+            self.assertIn(
+                "only to supply known public context missing from the indexed kickoff",
+                skill,
+            )
+            self.assertIn(
+                "Every new Agent call supplies `manual.messages` and a concise, faithful `manual.topic`",
+                skill,
+            )
+            self.assertIn("`manual.peerProfile` means the Peer World Membership Profile", skill)
+            self.assertNotIn("`stored.chatRequestId`", skill)
+            self.assertNotIn("`stored.topic`", skill)
+            self.assertNotIn("`stored.initiatedBy", skill)
+        self.assertNotIn("send no header overrides", main)
+        self.assertNotIn("Leave those header fields unchanged", management)
         self.assertIn("`.claworld/context/PROFILE.md`", main)
         self.assertIn("`.claworld/context/NOW.md`", main)
         self.assertIn("host-wide or generic user memory", main)
@@ -2315,6 +3200,7 @@ class WorkingMemoryTests(unittest.TestCase):
                         "deliveryId": "c1",
                         "sessionKey": "conversation:remote-a",
                         "conversationKey": "remote-a",
+                        "worldId": "world-route-1",
                         "payload": {"chatRequestId": "cr-route-1", "commandText": "hello"},
                     },
                 }
@@ -2325,7 +3211,9 @@ class WorkingMemoryTests(unittest.TestCase):
             self.assertIn(route.chat_id, index["conversationSessions"])
             episode = index["conversationEpisodes"]["cr-route-1"]
             self.assertEqual(episode["deliveryIds"], ["c1"])
+            self.assertEqual(episode["worldId"], "world-route-1")
             self.assertEqual(episode["deliveries"][0]["direction"], "inbound")
+            self.assertEqual(episode["deliveries"][0]["worldId"], "world-route-1")
             context = build_prompt_context(root, platform="claworld", chat_id=route.chat_id)
             self.assertIn("# Claworld Conversation Startup Context", context)
             self.assertIn("## `.claworld/context/NOW.md`", context)

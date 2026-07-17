@@ -55,6 +55,7 @@ def _build_delivery_entry(envelope) -> dict | None:
         "fromAgentCode": _text(metadata.get("fromAgentCode")) or None,
         "fromDisplayIdentity": _text(metadata.get("fromDisplayIdentity")) or None,
         "deliveryType": _text(metadata.get("deliveryType")) or None,
+        "worldId": _text(getattr(envelope, "world_id", None)) or _text(metadata.get("worldId")) or None,
         "commandText": _text(payload.get("commandText")) or None,
         "contextText": _text(payload.get("contextText")) or None,
         "createdAt": _text(getattr(envelope, "created_at", None)) or None,
@@ -375,6 +376,7 @@ def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) 
                 deliveries.append(delivery_entry)
             from_agent_code = _text(envelope.metadata.get("fromAgentCode"))
             from_display_identity = _text(envelope.metadata.get("fromDisplayIdentity"))
+            world_id = _text(getattr(envelope, "world_id", None)) or _text(envelope.metadata.get("worldId"))
             episodes[chat_request_id] = {
                 **previous,
                 "chatRequestId": chat_request_id,
@@ -383,6 +385,7 @@ def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) 
                 "relaySessionKey": route.relay_session_key,
                 "conversationKey": route.conversation_key,
                 "targetAgentId": envelope.target_agent_id,
+                **({"worldId": world_id} if world_id else {}),
                 **({"fromAgentCode": from_agent_code} if from_agent_code else {}),
                 **({"fromDisplayIdentity": from_display_identity} if from_display_identity else {}),
                 "firstSeenAt": previous.get("firstSeenAt") or _text(getattr(envelope, "created_at", None)) or now,
