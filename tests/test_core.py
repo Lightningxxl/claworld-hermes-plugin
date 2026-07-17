@@ -1129,6 +1129,109 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(claworld_stylekit.text_runs("© ©️"), [("© ", "default"), ("©️", "emoji")])
         self.assertEqual(claworld_stylekit.text_runs("क्‍ष"), [("क्‍ष", "devanagari")])
 
+    def test_symbol_fallback_does_not_expand_numeric_runs_beyond_bubble(self):
+        binary_line = "5=101✓、9=1001✓、21=10101✓；6=110✗、10=1010✗、12=1100✗。全部对得上。"
+        runs = claworld_stylekit.text_runs(binary_line)
+
+        self.assertEqual(
+            [script for _run, script in runs],
+            [
+                "default",
+                "symbol",
+                "default",
+                "symbol",
+                "default",
+                "symbol",
+                "default",
+                "symbol",
+                "default",
+                "symbol",
+                "default",
+                "symbol",
+                "cjk",
+            ],
+        )
+        self.assertEqual(claworld_stylekit.text_units("✓"), claworld_stylekit.SYMBOL_INLINE_UNITS)
+        self.assertEqual(claworld_stylekit.text_units("✗"), claworld_stylekit.SYMBOL_INLINE_UNITS)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "maxPageHeight": 1600,
+                    "manual": {
+                        "topic": "不可见之门首场收尾",
+                        "chatMode": "world",
+                        "worldName": "不可见之门",
+                        "localIdentity": "小发发#LOCAL1",
+                        "peerIdentity": "Moza#Z99TMV",
+                        "peerProfile": "隐藏规则推理参与者。",
+                        "worldContext": "通过有限测试识别不可见规则。",
+                        "messages": [
+                            {
+                                "from": "peer",
+                                "createdAt": "2026-07-17T07:31:00Z",
+                                "text": (
+                                    "提示很直接。二进制回文。\n\n"
+                                    "正式猜测2：数字的二进制表示是回文（正读反读一样）。\n\n"
+                                    + binary_line
+                                ),
+                            }
+                        ],
+                    },
+                },
+            )
+
+            svg_path = Path(result["artifacts"]["svgPages"][0]["path"])
+            png_path = Path(result["artifacts"]["pngPages"][0]["path"])
+            svg = svg_path.read_text(encoding="utf-8")
+            self.assertIn('class="font-symbol"', svg)
+            self.assertIn("'Noto Sans Symbols 2'", svg)
+
+            root = ET.fromstring(svg)
+            message_group = next(
+                node
+                for node in root.iter("{http://www.w3.org/2000/svg}g")
+                if "message-row" in node.attrib.get("class", "").split()
+            )
+            rects = list(message_group.iter("{http://www.w3.org/2000/svg}rect"))
+            foreground_bubble = rects[2]
+            bubble_right = float(foreground_bubble.attrib["x"]) + float(
+                foreground_bubble.attrib["width"]
+            )
+            binary_text = next(
+                node
+                for node in message_group.iter("{http://www.w3.org/2000/svg}text")
+                if (node.text or "").startswith("5=101")
+            )
+            baseline_y = float(binary_text.attrib["y"])
+            font_size = float(binary_text.attrib["font-size"])
+
+            width, height, rows = decode_resvg_rgba_png(png_path)
+            dark_overflow = []
+            for y in range(
+                max(0, int(baseline_y - font_size * 1.2)),
+                min(height, int(baseline_y + font_size * 0.3) + 1),
+            ):
+                for x in range(
+                    min(width, math.ceil(bubble_right + 16)),
+                    min(width - 30, math.ceil(bubble_right + 180)),
+                ):
+                    red, green, blue, alpha = rows[y][x * 4 : x * 4 + 4]
+                    if alpha >= 200 and max(red, green, blue) <= 80:
+                        dark_overflow.append((x, y))
+            self.assertEqual(
+                dark_overflow,
+                [],
+                "numeric/symbol text painted beyond the foreground bubble in the final PNG",
+            )
+
     def test_manual_report_renders_inline_color_emoji_runs(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ,

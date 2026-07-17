@@ -18,6 +18,7 @@ RESVG_REQUIREMENT = "resvg_py>=0.3.3,<0.5"
 # emoji left so their ink does not collide with the following bold text.
 EMOJI_INLINE_UNITS = 1.12
 EMOJI_INLINE_X_OFFSET = -0.055
+SYMBOL_INLINE_UNITS = 1.0
 
 SYSTEM_EMOJI_FONT_FAMILIES = (
     # Prefer each operating system's native color emoji face. The monochrome
@@ -27,6 +28,18 @@ SYSTEM_EMOJI_FONT_FAMILIES = (
     "Noto Color Emoji",
     "Noto Emoji",
     "Noto Sans Symbols 2",
+    "Symbola",
+)
+
+# Keep standalone text-presentation symbols out of adjacent Latin/digit runs.
+# resvg may otherwise select one symbol-capable fallback face for the complete
+# run; some of those faces give ASCII digits a full-em advance even though the
+# wrapping model correctly budgets them as proportional glyphs.
+SYSTEM_SYMBOL_FONT_FAMILIES = (
+    "Segoe UI Symbol",
+    "Noto Sans Symbols 2",
+    "Noto Sans Symbols",
+    "Apple Symbols",
     "Symbola",
 )
 
@@ -172,6 +185,9 @@ def font_family_for_text(text: str) -> str:
 def font_family_for_script(script: str) -> str:
     if script == "emoji":
         return _css_font_family(SYSTEM_EMOJI_FONT_FAMILIES, "sans-serif")
+    if script == "symbol":
+        families = tuple(dict.fromkeys((*SYSTEM_SYMBOL_FONT_FAMILIES, *SYSTEM_UI_FONT_FAMILIES)))
+        return _css_font_family(families, "sans-serif")
     preferred = SCRIPT_FONT_FAMILIES.get(script, ())
     families = tuple(dict.fromkeys((*preferred, *SYSTEM_UI_FONT_FAMILIES)))
     return _css_font_family(families, "sans-serif")
@@ -281,19 +297,26 @@ def grapheme_clusters(text: str) -> list[str]:
 
 
 def text_runs(text: str) -> list[tuple[str, str]]:
-    """Split one visible line into normal-script and color-emoji font runs."""
+    """Split one visible line into normal, symbol, and color-emoji font runs."""
 
     runs: list[tuple[str, str]] = []
     normal = ""
     for cluster in grapheme_clusters(text):
-        if is_emoji_cluster(cluster):
+        special_script = (
+            "emoji"
+            if is_emoji_cluster(cluster)
+            else "symbol"
+            if is_text_symbol_cluster(cluster)
+            else ""
+        )
+        if special_script:
             if normal:
                 runs.append((normal, _text_script(normal)))
                 normal = ""
-            if runs and runs[-1][1] == "emoji":
-                runs[-1] = (runs[-1][0] + cluster, "emoji")
+            if runs and runs[-1][1] == special_script:
+                runs[-1] = (runs[-1][0] + cluster, special_script)
             else:
-                runs.append((cluster, "emoji"))
+                runs.append((cluster, special_script))
             continue
         normal += cluster
     if normal:
@@ -322,6 +345,18 @@ def is_emoji_cluster(cluster: str) -> bool:
     if 0x20E3 in codes:
         return True
     return any(_is_emoji_codepoint(code) for code in codes)
+
+
+def is_text_symbol_cluster(cluster: str) -> bool:
+    """Return whether a text-presentation symbol needs an isolated font run."""
+
+    value = str(cluster or "")
+    if not value or is_emoji_cluster(value):
+        return False
+    return any(
+        0x2000 <= ord(ch) <= 0x2BFF and unicodedata.category(ch) == "So"
+        for ch in value
+    )
 
 
 def _is_grapheme_extend(ch: str) -> bool:
@@ -546,6 +581,8 @@ def text_units(text: str) -> float:
 def cluster_units(cluster: str) -> float:
     if is_emoji_cluster(cluster):
         return EMOJI_INLINE_UNITS
+    if is_text_symbol_cluster(cluster):
+        return SYMBOL_INLINE_UNITS
     return sum(char_units(ch) for ch in cluster)
 
 
