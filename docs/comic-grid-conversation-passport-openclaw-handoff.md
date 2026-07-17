@@ -203,6 +203,7 @@ compact header 不显示 World Name secondary badge、Message count、emblem 或
 - 气泡 speaker label 只显示 Name，不显示尾部 `#CODE`。
 - label 继续大写并按原 Comic Grid 规则截断。
 - Public Identity Code 只在 Passport 中出现一次。
+- ASCII 数字与 `✓`、`✗`、`★`、`☑` 等 text-presentation symbols 混排时，symbol 必须使用独立 SVG text run、独立 symbol font stack 和独立宽度预算；不能让 symbol fallback font 接管整段数字，否则最终 PNG 的实际字宽会超过折行估算并穿出气泡。
 - 原有消息、时间分组、feedback tags、redaction 和 pagination 行为保持不变。
 
 ## 5. 统一的 renderer 数据模型
@@ -582,6 +583,7 @@ OpenClaw 合入前至少覆盖以下测试：
 - Topic 不遮挡右侧 emblem。
 - 短 Profile / Context 单行垂直居中。
 - 长 Profile / Context 两行并正确 ellipsis。
+- `5=101✓、9=1001✓、21=10101✓` 等数字/符号连续文本在真实 rasterizer 中正确折行且不越出气泡。
 - Direct 一张 context card；World 两张；无 context 使用较矮 header。
 - Direct 气泡阴影无明显重影；World orbit 有前后遮挡和渐变。
 - 气泡 label 不含 Public Identity Code。
