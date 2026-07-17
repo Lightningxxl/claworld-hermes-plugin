@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +69,7 @@ TAG_ICON_GAP = 12
 TAG_ICON_TOP_GAP = 8
 TAG_FALLBACK_MAX_COLS = 10
 TEXT_UNIT_PX = 18.0
-IDENTITY_WIDTH_SAFETY = 1.35
+IDENTITY_WIDTH_SAFETY = 1.14
 IDENTITY_CODE_GAP = 3.0
 IDENTITY_NAME_FONT_SIZE = 26
 IDENTITY_CODE_FONT_SIZE = 19
@@ -145,8 +146,22 @@ def paginate(
     subtitle: str,
     header: Any | None = None,
 ) -> list[LayoutPage]:
+    # A single message can be taller than a whole page.  Split its already
+    # wrapped lines before pagination so every fragment participates in the
+    # normal page-flow logic and no message can paint beyond the frame.
+    full_header_height = _header_height(compact=False, header=header, subtitle=subtitle)
+    safe_item_height = max(
+        LABEL_HEIGHT - LABEL_OVERLAP + BUBBLE_PAD_Y * 2 + LINE_HEIGHT + 10,
+        max_height
+        - full_header_height
+        - BODY_TOP_GAP
+        - PAGE_BOTTOM
+        - TIME_ROW_HEIGHT
+        - ITEM_GAP * 2,
+    )
+    items = _split_oversized_messages(items, safe_item_height)
     pages: list[list[MeasuredBubble]] = [[]]
-    header_height = _header_height(compact=False, header=header, subtitle=subtitle)
+    header_height = full_header_height
     used = header_height + BODY_TOP_GAP + PAGE_BOTTOM
     for idx, item in enumerate(items):
         item_h = item.height + ITEM_GAP
@@ -228,6 +243,61 @@ def paginate(
             setattr(layout_page, "page_count", total)
         rendered.append(layout_page)
     return rendered
+
+
+def _split_oversized_messages(
+    items: list[MeasuredBubble],
+    max_item_height: int,
+) -> list[MeasuredBubble]:
+    result: list[MeasuredBubble] = []
+    base_height = LABEL_HEIGHT - LABEL_OVERLAP + BUBBLE_PAD_Y * 2 + 10
+    for item in items:
+        if item.kind != "message" or item.message is None or item.height <= max_item_height:
+            result.append(item)
+            continue
+
+        remaining = list(item.lines) or [""]
+        part = 1
+        final_line_capacity = max(
+            1,
+            int((max_item_height - base_height - item.tag_height) // LINE_HEIGHT),
+        )
+        regular_line_capacity = max(
+            1,
+            int((max_item_height - base_height) // LINE_HEIGHT),
+        )
+        while remaining:
+            is_final = len(remaining) <= final_line_capacity
+            line_count = (
+                len(remaining)
+                if is_final
+                else min(regular_line_capacity, max(1, len(remaining) - final_line_capacity))
+            )
+            fragment_lines = remaining[:line_count]
+            del remaining[:line_count]
+            fragment_tags = list(item.message.tags) if not remaining else []
+            fragment_tag_height = TAG_HEIGHT if fragment_tags else 0
+            fragment_message = replace(
+                item.message,
+                id=f"{item.message.id}:part-{part}",
+                text="\n".join(fragment_lines),
+                tags=fragment_tags,
+            )
+            text_height = len(fragment_lines) * LINE_HEIGHT
+            result.append(
+                MeasuredBubble(
+                    kind="message",
+                    message=fragment_message,
+                    lines=fragment_lines,
+                    width=item.width,
+                    height=base_height + text_height + fragment_tag_height,
+                    meta_height=item.meta_height,
+                    tag_height=fragment_tag_height,
+                    text_height=text_height,
+                )
+            )
+            part += 1
+    return result
 
 
 def render_svg(page: LayoutPage) -> str:

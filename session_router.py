@@ -44,7 +44,11 @@ def resolve_session_kind(envelope: InboundEnvelope) -> str:
     return "conversation"
 
 
-def route_envelope(envelope: InboundEnvelope, config: ClaworldConfig) -> ClaworldRoute:
+def route_envelope(
+    envelope: InboundEnvelope,
+    config: ClaworldConfig,
+    existing_episode: dict | None = None,
+) -> ClaworldRoute:
     session_kind = resolve_session_kind(envelope)
     if session_kind == "management":
         agent_part = envelope.target_agent_id or config.agent_id or config.account_id
@@ -58,14 +62,17 @@ def route_envelope(envelope: InboundEnvelope, config: ClaworldConfig) -> Claworl
             management_key=bucket,
         )
 
-    conversation_raw = envelope.conversation_key or envelope.session_key
-    bucket = f"conversation-{stable_hash(conversation_raw)}"
+    existing_episode = existing_episode if isinstance(existing_episode, dict) else {}
+    existing_chat_id = text(existing_episode.get("chatId"))
+    existing_conversation_key = text(existing_episode.get("conversationKey"))
+    conversation_raw = existing_conversation_key or envelope.conversation_key or envelope.session_key
+    bucket = existing_chat_id or f"conversation-{stable_hash(conversation_raw)}"
     return ClaworldRoute(
         session_kind="conversation",
         chat_id=bucket,
         chat_name=f"Claworld Conversation {bucket[-8:]}",
         relay_session_key=envelope.session_key,
-        conversation_key=envelope.conversation_key,
+        conversation_key=existing_conversation_key or envelope.conversation_key,
         management_key=None,
     )
 

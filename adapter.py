@@ -19,6 +19,7 @@ from .working_memory import (
     claim_inbound_notification,
     complete_inbound_notification,
     ensure_working_memory,
+    read_session_index,
     record_claworld_route,
     record_outbound_reply,
     release_inbound_notification,
@@ -196,8 +197,14 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         return {"name": chat_id_text, "type": "dm", "chat_id": chat_id_text}
 
     async def _on_delivery(self, envelope) -> None:
-        route = route_envelope(envelope, self.claworld_config)
         ensure_working_memory(self.memory_root)
+        existing_episode = None
+        if envelope.chat_request_id:
+            index = read_session_index(self.memory_root)
+            episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+            candidate = episodes.get(envelope.chat_request_id)
+            existing_episode = candidate if isinstance(candidate, dict) else None
+        route = route_envelope(envelope, self.claworld_config, existing_episode=existing_episode)
         notification_key = _management_notification_key(envelope, route)
         notification_claim = None
         if notification_key:

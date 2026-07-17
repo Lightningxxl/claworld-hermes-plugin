@@ -20,6 +20,27 @@ EMOJI_INLINE_UNITS = 1.12
 EMOJI_INLINE_X_OFFSET = -0.055
 SYMBOL_INLINE_UNITS = 1.0
 
+# Conservative advances for scripts whose shaped glyphs are often much wider
+# than a Latin character count suggests.  These are layout budgets, not font
+# metrics: final SVG/PNG rendering still uses the platform's real system font.
+SCRIPT_CLUSTER_UNITS = {
+    "devanagari": 1.30,
+    "bengali": 1.35,
+    "gurmukhi": 1.80,
+    "gujarati": 1.40,
+    "tamil": 2.50,
+    "telugu": 2.10,
+    "kannada": 2.00,
+    "malayalam": 1.80,
+    "thai": 1.10,
+    "lao": 1.15,
+    "myanmar": 2.30,
+    "ethiopic": 1.70,
+    "khmer": 1.45,
+    "hebrew": 0.90,
+    "arabic": 1.15,
+}
+
 SYSTEM_EMOJI_FONT_FAMILIES = (
     # Prefer each operating system's native color emoji face. The monochrome
     # families at the end keep symbols visible on minimal Linux images.
@@ -164,8 +185,21 @@ SCRIPT_FONT_FAMILIES = {
 }
 
 
+def sanitize_xml_text(value: Any) -> str:
+    """Replace characters forbidden by XML 1.0 before SVG serialization."""
+
+    result = []
+    for char in str(value or ""):
+        code = ord(char)
+        if code in {0x09, 0x0A, 0x0D} or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF:
+            result.append(char)
+        else:
+            result.append("\uFFFD")
+    return "".join(result)
+
+
 def esc(value: Any) -> str:
-    return html.escape(str(value or ""), quote=True)
+    return html.escape(sanitize_xml_text(value), quote=True)
 
 
 def _css_font_family(families: tuple[str, ...], generic: str) -> str:
@@ -216,7 +250,7 @@ def terminal_font_family() -> str:
 
 
 def _text_script(text: str) -> str:
-    codepoints = [ord(ch) for ch in str(text or "")]
+    codepoints = [ord(ch) for ch in sanitize_xml_text(text)]
     checks = (
         ("devanagari", ((0x0900, 0x097F), (0xA8E0, 0xA8FF))),
         ("bengali", ((0x0980, 0x09FF),)),
@@ -267,7 +301,7 @@ def _text_script(text: str) -> str:
 def grapheme_clusters(text: str) -> list[str]:
     """Keep emoji modifiers, flags, variation selectors, and ZWJ chains intact."""
 
-    value = str(text or "")
+    value = sanitize_xml_text(text)
     clusters: list[str] = []
     index = 0
     while index < len(value):
@@ -429,7 +463,7 @@ def _is_emoji_codepoint(code: int) -> bool:
 
 def wrap_text(text: str, max_units: float) -> list[str]:
     lines: list[str] = []
-    for paragraph in str(text or "").splitlines() or [""]:
+    for paragraph in sanitize_xml_text(text).splitlines() or [""]:
         current = ""
         current_units = 0.0
         for token in wrap_tokens(paragraph):
@@ -462,7 +496,7 @@ def wrap_text(text: str, max_units: float) -> list[str]:
 
 def wrap_terminal_text(text: str, max_cols: int) -> list[str]:
     lines: list[str] = []
-    for paragraph in str(text or "").splitlines() or [""]:
+    for paragraph in sanitize_xml_text(text).splitlines() or [""]:
         current = ""
         current_cols = 0
         for token in wrap_tokens(paragraph):
@@ -535,7 +569,7 @@ def char_cols(ch: str) -> int:
 
 
 def clip_display(text: str, max_cols: int) -> str:
-    value = str(text or "")
+    value = sanitize_xml_text(text)
     if display_cols(value) <= max_cols:
         return value
     suffix = "..."
@@ -563,7 +597,19 @@ def char_units(ch: str) -> float:
         return 0.35
     if unicodedata.east_asian_width(ch) in {"W", "F"}:
         return 1.0
-    return 0.55
+    if ch in {"W", "M"}:
+        return 0.95
+    if ch in {"w", "m"}:
+        return 0.82
+    if ch.isupper():
+        return 0.72
+    if ch.islower():
+        return 0.64
+    if ch.isdigit():
+        return 0.62
+    if unicodedata.category(ch).startswith("P"):
+        return 0.62
+    return 0.64
 
 
 def _is_nonspacing(ch: str) -> bool:
@@ -583,11 +629,20 @@ def cluster_units(cluster: str) -> float:
         return EMOJI_INLINE_UNITS
     if is_text_symbol_cluster(cluster):
         return SYMBOL_INLINE_UNITS
-    return sum(char_units(ch) for ch in cluster)
+    codes = [ord(ch) for ch in cluster]
+    # U+FDFD is a compatibility ligature whose rendered ink can approach ten
+    # em in common Arabic fallback fonts despite being one Unicode scalar.
+    if 0xFDFD in codes:
+        return 10.0
+    base_units = sum(char_units(ch) for ch in cluster)
+    script = _text_script(cluster)
+    if script == "arabic" and any(0xFB50 <= code <= 0xFDFF or 0xFE70 <= code <= 0xFEFF for code in codes):
+        return max(base_units, 2.8)
+    return max(base_units, SCRIPT_CLUSTER_UNITS.get(script, 0.0))
 
 
 def ellipsize_text(text: str, max_units: float, *, suffix: str = "...") -> str:
-    value = str(text or "")
+    value = sanitize_xml_text(text)
     if text_units(value) <= max_units:
         return value
     allowed = max(0.0, max_units - text_units(suffix))

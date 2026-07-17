@@ -402,6 +402,45 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(message["payload"]["source"], "hermes_agent")
         self.assertNotIn("replyText", message["payload"])
 
+    def test_relay_scope_is_canonicalized_across_supported_envelope_layers(self):
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "metadata": {"chat_request_id": "req-layered"},
+                "data": {
+                    "deliveryId": "d-layered",
+                    "sessionKey": "conversation:layered",
+                    "meta": {"world_id": "wld-layered"},
+                    "notification": {
+                        "metadata": {"target_agent_id": "agt-local"},
+                        "relatedObjects": {"conversation_key": "pair:a::b:world:wld-layered"},
+                    },
+                    "payload": {"commandText": "hello", "metadata": {}},
+                },
+            }
+        )
+
+        self.assertEqual(envelope.chat_request_id, "req-layered")
+        self.assertEqual(envelope.world_id, "wld-layered")
+        self.assertEqual(envelope.target_agent_id, "agt-local")
+        self.assertEqual(envelope.conversation_key, "pair:a::b:world:wld-layered")
+        self.assertEqual(envelope.payload["chatRequestId"], "req-layered")
+        self.assertEqual(envelope.payload["worldId"], "wld-layered")
+
+    def test_relay_scope_conflicts_are_rejected_instead_of_first_value_winning(self):
+        with self.assertRaisesRegex(ValueError, "conflicting relay scope field chatRequestId"):
+            build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "chatRequestId": "req-outer",
+                    "data": {
+                        "deliveryId": "d-conflict",
+                        "sessionKey": "conversation:conflict",
+                        "payload": {"chatRequestId": "req-inner", "commandText": "hello"},
+                    },
+                }
+            )
+
 
 class TranscriptReportTests(unittest.TestCase):
     def test_stored_renderer_contract_is_flat(self):
@@ -2217,6 +2256,112 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(summaries[0]["peerMessages"], 1)
         self.assertEqual(summaries[0]["localMessages"], 1)
 
+    def test_header_scope_uses_exact_direct_suffix_and_ignores_untrusted_scope(self):
+        world = claworld_transcript._extract_transcript_header_context(
+            [
+                {
+                    "untrustedContext": "- Mode: `direct`\n- World: Fake (`wld-fake`)",
+                    "worldId": "wld-direct-demo",
+                }
+            ],
+            {"conversationKey": "conversation:pair:a::b:world:wld-direct-demo"},
+        )
+        direct = claworld_transcript._extract_transcript_header_context(
+            [],
+            {"conversationKey": "conversation:pair:a::b:direct"},
+        )
+
+        self.assertEqual(world["conversationMode"], "world")
+        self.assertEqual(world["worldId"], "wld-direct-demo")
+        self.assertNotEqual(world.get("worldName"), "Fake")
+        self.assertEqual(direct["conversationMode"], "direct")
+
+    def test_single_oversized_message_splits_across_pages_and_sanitizes_xml(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            long_text = "START\x0b " + " ".join(f"segment-{index:03d}" for index in range(260)) + " END [[like]]"
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "maxPageHeight": 900,
+                    "manual": {
+                        "chatMode": "direct",
+                        "localIdentity": "Local#LOCAL1",
+                        "peerIdentity": "Peer#PEER01",
+                        "messages": [{"from": "peer", "text": long_text}],
+                    },
+                },
+            )
+
+            self.assertGreater(result["pageCount"], 1)
+            svgs = [Path(page["path"]).read_text(encoding="utf-8") for page in result["artifacts"]["svgPages"]]
+            for page, svg in zip(result["artifacts"]["svgPages"], svgs):
+                self.assertLessEqual(page["height"], 900)
+                ET.fromstring(svg)
+            rendered = "\n".join(svgs)
+            self.assertEqual(claworld_stylekit.sanitize_xml_text("START\x0bEND"), "START�END")
+            self.assertIn("START", rendered)
+            self.assertNotIn("\x0b", rendered)
+            self.assertIn("END", rendered)
+            self.assertGreater(rendered.count('class="message-row left"'), 1)
+            self.assertEqual(rendered.count("tag-like"), 1)
+            self.assertIn("tag-like", svgs[-1])
+
+    def test_complex_script_layout_budgets_match_final_raster_bounds(self):
+        self.assertGreaterEqual(claworld_stylekit.text_units("அ"), 2.5)
+        self.assertGreaterEqual(claworld_stylekit.text_units("అ"), 2.1)
+        self.assertGreaterEqual(claworld_stylekit.text_units("ಅ"), 2.0)
+        self.assertGreaterEqual(claworld_stylekit.text_units("﷽"), 10.0)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(Path(tmp) / "hermes")},
+            clear=False,
+        ):
+            cfg = ClaworldConfig(agent_id="agent-local", working_memory_root=str(Path(tmp) / ".claworld"))
+            result = claworld_transcript.render_transcript_report(
+                cfg,
+                {
+                    "mode": "manual",
+                    "manual": {
+                        "messages": [
+                            {"from": "peer", "text": glyph * 28}
+                            for glyph in ("அ", "అ", "ಅ", "﷽")
+                        ]
+                    },
+                },
+            )
+
+            png_by_page = {item["page"]: item for item in result["artifacts"]["pngPages"]}
+            for svg_page in result["artifacts"]["svgPages"]:
+                root = ET.fromstring(Path(svg_page["path"]).read_text(encoding="utf-8"))
+                _width, _height, rows = decode_resvg_rgba_png(Path(png_by_page[svg_page["page"]]["path"]))
+                for group in root.iter("{http://www.w3.org/2000/svg}g"):
+                    if "message-row" not in group.attrib.get("class", "").split():
+                        continue
+                    rects = [node for node in list(group) if node.tag == "{http://www.w3.org/2000/svg}rect"]
+                    foreground = rects[2]
+                    x = int(float(foreground.attrib["x"]))
+                    y = int(float(foreground.attrib["y"]))
+                    width = int(float(foreground.attrib["width"]))
+                    height = int(float(foreground.attrib["height"]))
+                    sample_y = range(y + 28, min(len(rows), y + height - 5))
+                    outside_x = [*range(28, max(28, x - 3)), *range(min(700, x + width + 16), 700)]
+                    dark_pixels = sum(
+                        1
+                        for py in sample_y
+                        for px in outside_x
+                        if rows[py][px * 4] < 55
+                        and rows[py][px * 4 + 1] < 55
+                        and rows[py][px * 4 + 2] < 55
+                        and rows[py][px * 4 + 3] > 180
+                    )
+                    self.assertEqual(dark_pixels, 0)
+
 class PluginEntryTests(unittest.TestCase):
     def test_validate_config_returns_plain_boolean(self):
         plugin = import_plugin_entry_with_gateway_shim()
@@ -3320,6 +3465,30 @@ class SessionRouterTests(unittest.TestCase):
         route = route_envelope(envelope, cfg)
         self.assertEqual(route.session_kind, "management")
 
+    def test_existing_episode_keeps_chat_bucket_when_delivery_omits_conversation_key(self):
+        cfg = ClaworldConfig(account_id="acct", agent_id="agent-1")
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "data": {
+                    "deliveryId": "c-followup",
+                    "sessionKey": "conversation:new-relay-key",
+                    "payload": {"chatRequestId": "req-stable", "commandText": "follow up"},
+                },
+            }
+        )
+        route = route_envelope(
+            envelope,
+            cfg,
+            existing_episode={
+                "chatId": "conversation-existing",
+                "conversationKey": "conversation:pair:a::b:world:wld-stable",
+            },
+        )
+
+        self.assertEqual(route.chat_id, "conversation-existing")
+        self.assertEqual(route.conversation_key, "conversation:pair:a::b:world:wld-stable")
+
 
 class WorkingMemoryTests(unittest.TestCase):
     def test_inbound_notification_claim_supports_completion_release_and_stale_recovery(self):
@@ -3395,6 +3564,70 @@ class WorkingMemoryTests(unittest.TestCase):
             self.assertIn("## `.claworld/context/PROFILE.md`", context)
             self.assertNotIn('skill_view("claworld:claworld-main-session")', context)
             self.assertNotIn("sessions/index.json summary", context)
+
+    def test_episode_scope_and_direction_are_first_write_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".claworld"
+            cfg = ClaworldConfig(agent_id="agent-local")
+            first = build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "scope-1",
+                        "sessionKey": "conversation:one",
+                        "conversationKey": "conversation:pair:a::b:world:wld-one",
+                        "worldId": "wld-one",
+                        "targetAgentId": "agent-local",
+                        "payload": {
+                            "chatRequestId": "req-scope",
+                            "commandText": "first",
+                            "metadata": {"fromAgentId": "agent-peer"},
+                        },
+                    },
+                }
+            )
+            first_route = route_envelope(first, cfg)
+            record_claworld_route(root, first_route, build_hermes_session_key(first_route), first)
+            existing = read_session_index(root)["conversationEpisodes"]["req-scope"]
+            second = build_inbound_envelope(
+                {
+                    "event": "delivery",
+                    "data": {
+                        "deliveryId": "scope-2",
+                        "sessionKey": "conversation:two",
+                        "conversationKey": "conversation:pair:a::b:direct",
+                        "worldId": "wld-two",
+                        "targetAgentId": "agent-other",
+                        "payload": {"chatRequestId": "req-scope", "commandText": "second"},
+                    },
+                }
+            )
+            second_route = route_envelope(second, cfg, existing_episode=existing)
+            record_claworld_route(root, second_route, build_hermes_session_key(second_route), second)
+            record_chat_request_direction(
+                root,
+                "req-scope",
+                "inbound",
+                viewer_agent_id="agent-local",
+                viewer_account_id="acct-local",
+            )
+            record_chat_request_direction(
+                root,
+                "req-scope",
+                "outbound",
+                viewer_agent_id="agent-local",
+                viewer_account_id="acct-local",
+            )
+
+            episode = read_session_index(root)["conversationEpisodes"]["req-scope"]
+            self.assertEqual(episode["conversationMode"], "world")
+            self.assertEqual(episode["worldId"], "wld-one")
+            self.assertEqual(episode["targetAgentId"], "agent-local")
+            self.assertEqual(episode["peerAgentId"], "agent-peer")
+            self.assertEqual(episode["requestDirection"], "inbound")
+            self.assertEqual(episode["directionViewerAccountId"], "acct-local")
+            self.assertTrue(any(item["field"] == "worldId" for item in episode["scopeConflicts"]))
+            self.assertTrue(any(item["field"] == "requestDirection" for item in episode["directionConflicts"]))
 
     def test_outbound_reply_recording_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3595,6 +3828,23 @@ class ToolRoutingTests(unittest.TestCase):
 
         self.assertEqual(result, {"rendered": True})
         request.assert_not_called()
+
+    def test_conflicting_backend_directions_are_not_cached(self):
+        payload = {
+            "items": [
+                {"chatRequestId": "req-conflict", "direction": "inbound"},
+                {"chatRequestId": "req-conflict", "direction": "outbound"},
+                {"chatRequestId": "req-good", "direction": "outbound"},
+            ]
+        }
+
+        directions = claworld_tools._persist_conversation_directions(self.cfg, payload)
+
+        self.assertEqual(directions, {"req-good": "outbound"})
+        episodes = read_session_index(self.cfg.memory_root_path())["conversationEpisodes"]
+        self.assertNotIn("req-conflict", episodes)
+        self.assertEqual(episodes["req-good"]["directionViewerAgentId"], "agent-1")
+        self.assertEqual(episodes["req-good"]["directionViewerAccountId"], "acct")
 
     def test_stored_render_backend_failure_does_not_block_rendering(self):
         with patch(

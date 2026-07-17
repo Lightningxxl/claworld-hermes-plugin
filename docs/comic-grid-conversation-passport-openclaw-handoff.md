@@ -205,6 +205,9 @@ compact header 不显示 World Name secondary badge、Message count、emblem 或
 - Public Identity Code 只在 Passport 中出现一次。
 - ASCII 数字与 `✓`、`✗`、`★`、`☑` 等 text-presentation symbols 混排时，symbol 必须使用独立 SVG text run、独立 symbol font stack 和独立宽度预算；不能让 symbol fallback font 接管整段数字，否则最终 PNG 的实际字宽会超过折行估算并穿出气泡。
 - 原有消息、时间分组、feedback tags、redaction 和 pagination 行为保持不变。
+- 单条消息本身高于一页时，必须按已经折行的可见行切成连续片段；不能让气泡越过 page frame。feedback tags 只在最后一个片段出现一次，原始 BubbleSpec 仍保留一条完整消息。
+- 所有进入 SVG 的用户文本先做 XML 1.0 字符清洗；非法控制字符不能导致整页 SVG/PNG 失败。
+- 字宽预算必须覆盖 Tamil、Telugu、Kannada、Arabic compatibility ligature、emoji/ZWJ 和 symbol fallback。尤其不能用 Unicode 字符数量代替最终字体的 shaped width。
 
 ## 5. 统一的 renderer 数据模型
 
@@ -375,6 +378,9 @@ flowchart TD
 - backend 不可用、返回缺失或本地缓存写失败都不能阻塞 artifact 生成。
 - 如果缓存写失败但本次 backend 已返回 direction，本次 render 仍应使用该方向。
 - 不能用第一条可见 message 的方向代替 request direction；消息方向描述“谁发了这条消息”，不是“谁创建了 chat request”。
+- `requestDirection` 是 conversation-start fact，必须 first-write-wins；同一 receiving view 的后续相反值只记录冲突，不能覆盖箭头。
+- 同一 backend response 若对一个 `chatRequestId` 同时返回 inbound 与 outbound，该 ID 整体视为冲突并跳过，不能让数组最后一项获胜。
+- direction cache 必须绑定 receiving account/agent view；不同 view 不能复用同一个方向结论。
 
 Hermes 参考实现位于 [`tools.py`](../tools.py) 的 `_hydrate_stored_transcript_direction` 和 [`working_memory.py`](../working_memory.py) 的 `record_chat_request_direction`。
 
@@ -395,6 +401,8 @@ Hermes 参考实现位于 [`tools.py`](../tools.py) 的 `_hydrate_stored_transcr
   - `### World Membership Profile`
 
 Markdown heading parser 默认忽略 fenced code blocks，防止把普通聊天正文中的伪标题识别成 profile。
+
+Legacy parser 还必须锁定 conversation scope：结构化 delivery/source summary 的 `worldId` 强制 World；`untrustedContext` 不能写 mode、World 或双方 identity，只能作为低优先级 Profile fallback；Direct 只能匹配 canonical `conversationKey` 末尾的 `:direct`，不能搜索整串 ID。
 
 真实 Hermes kickoff 有时被包在如下外壳：
 
@@ -562,6 +570,9 @@ OpenClaw 合入前至少覆盖以下测试：
 - Direct manual 拒绝 World Context。
 - 不支持的 schema 字段被拒绝。
 - 内部 routing IDs 不进入可见 header。
+- Relay scope 同义字段跨 root/payload/metadata/notification/relatedObjects 一致时归一化写回，不一致时拒绝。
+- Episode 的 mode、World、local/peer、receiving view 与 direction 首次确定后不可被缺字段或冲突 delivery 改写。
+- 相同 `chatRequestId` 的后续 delivery 即使缺 `conversationKey`，仍路由到原 Hermes/OpenClaw conversation session。
 
 ### 11.2 Legacy parsing
 
@@ -571,6 +582,8 @@ OpenClaw 合入前至少覆盖以下测试：
 - 四 backtick queued-turn Background 能解析。
 - 任意 fenced Background 不解析 identities/profiles。
 - source priority 按 `rawKickoffText > contextText > untrustedContext`。
+- `untrustedContext` 不能把 World 改成 Direct，也不能伪造 public identity。
+- World ID 含 `direct`（例如 `wld-direct-demo`）仍保持 World。
 
 ### 11.3 视觉
 
@@ -590,10 +603,13 @@ OpenClaw 合入前至少覆盖以下测试：
 - 第二页及以后保留 Mode、Topic、页码、双方 identity 与同一箭头。
 - SVG accessibility text 保留完整未截断内容。
 - 最终 PNG 使用真实目标 rasterizer 做像素或截图验收。
+- Tamil、Telugu、Kannada、Arabic compatibility ligature、emoji/ZWJ 都做最终 raster 像素边界断言。
+- 单条超长消息可跨多页且首尾内容不丢；feedback tag 只在最后片段出现一次。
+- XML 非法控制字符不会破坏 SVG 解析或 PNG 导出。
 
 ### 11.4 已完成的 Hermes 验证
 
-- 134 项完整单元测试通过。
+- 143 项完整单元测试通过（包含 protocol/scope、复杂文字像素、单消息跨页与 XML 控制字符回归）。
 - 使用 Isolde 的真实 World episode 验证 queued-turn wrapper。
 - 真实 episode 正确取得 `Isolde#ZHJUHP`、`Moza#Z99TMV`、World Membership Profile 和 World Context。
 - outbound request 正确显示 Local initiated，而不是 `↔`。
