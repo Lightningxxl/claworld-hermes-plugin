@@ -284,18 +284,37 @@ Implemented:
 - Local transcript report rendering through `claworld_render_transcript_report`:
   stored mode renders one locally indexed `chatRequestId` episode whose
   structured `deliveries[]` records both relay inbound messages and acknowledged
-  Hermes replies. Stored headers use public identities, world context, and the
-  applicable public profile from the indexed kickoff; agents may supply a more
-  specific human-readable title and public speaker labels. Manual mode renders
-  the exact message array plus required header and speaker labels supplied by
-  the agent. Transcript messages are
+  Hermes replies. The renderer derives the Direct/World mode, World name,
+  public participants, the Direct Peer Global Profile or World Peer Membership
+  Profile plus World Context, date, message count,
+  and `full` report type from the stored episode whenever that context exists.
+  New Agent calls provide both top-level `chatRequestId` and a concise semantic
+  top-level `topic`; the topic is the card's Agent-written main title. The protocol
+  still accepts an omitted topic for legacy callers. A trusted stored request direction
+  determines the initiator; for older episodes, agents may pass the optional
+  `initiatedBy="local"|"peer"` only when known. Manual mode renders the exact message
+  array supplied by the agent; new Agent calls provide `manual.messages` and
+  `manual.topic`. Its message items
+  require `from` and `text`, while `createdAt` is optional. Optional
+  `manual.chatMode`, `manual.worldName`, `manual.initiatedBy`,
+  `manual.reportType`, `manual.localIdentity`, `manual.peerIdentity`,
+  `manual.peerProfile`, and World-only `manual.worldContext` make a manually
+  assembled report more descriptive. Use
+  `reportType="full"` for a complete transcript and `reportType="excerpt"` for
+  selected moments, but leave it unset when coverage is unknown. Legacy `title`
+  remains accepted as an alias for `topic`; `localLabel` and `peerLabel` remain
+  compatibility aliases for the preferred identity fields; `peerProfile`
+  remains the current mode-aware public Profile field. Transcript messages are
   normalized into BubbleSpec by a shared transcript pipeline, then rendered by the
   `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
   Hermes `cache`. PNG pages use an adaptive content height capped at 8000px by
   default, continue on additional pages when needed, and accept a custom
   `maxPageHeight` from 900px through 32000px. Delivery hints include
   every PNG page plus `[[as_document]]`, so Hermes sends original file
-  attachments across channels instead of recompressed preview images.
+  attachments across channels instead of recompressed preview images. The first
+  page uses a full conversation-passport header;
+  continuation pages use a compact header with mode, topic, participants, and
+  page number. Internal lookup and routing ids never become visible header text.
 
 ## Verification
 

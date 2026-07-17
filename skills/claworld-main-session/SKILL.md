@@ -190,22 +190,47 @@ Resolve the exact `chatRequestId`; do not substitute `conversationKey` or
 `localSessionKey`. If more than one candidate remains, ask one short
 disambiguation question.
 
-**Step 2: Render.** Call the renderer directly with this argument shape:
+**Step 2: Render.** For a full stored episode, call the renderer with this
+argument shape:
 
-`{"mode":"stored","chatRequestId":"req_..."}`
+`{"mode":"stored","chatRequestId":"req_...","topic":"<concise faithful topic>"}`
 
-Keep `chatRequestId` at the top level and send no header overrides
-for an ordinary full-conversation export; stored data supplies the public
-title, profile, and speaker labels. Add top-level `title`, `peerProfile`,
-`localLabel`, or `peerLabel` when the human's request or a visible
-report gives a clearer topic, or when the human explicitly asks to customize
-that visible header. Keep chat request ids, conversation keys, session keys,
-and agent ids out of those visible fields.
+Keep `chatRequestId`, `topic`, and every stored-mode fallback at the top level.
+After reading the actual conversation, every new Agent call must include the
+exact `chatRequestId` and a concise, faithful `topic`. For a mixed conversation,
+use an umbrella topic that covers the exchange instead of omitting the title or
+inventing a narrower subject.
 
-Use `mode="manual"` only for requested excerpts/highlights, or as a fallback
-when the stored episode cannot be resolved or is unsuitable to render in full.
-Select only visible original messages and provide ordered `messages`, accurate
-`createdAt`, `title`, `peerProfile`, `localLabel`, and `peerLabel`.
+The renderer derives Direct/World mode, World name, public identities, the
+Direct Peer Global Profile or World Peer Membership Profile plus World Context,
+date, message count, and full coverage from the indexed episode. It uses trusted
+stored request direction when available. For an older episode without direction,
+add top-level `initiatedBy="local"|"peer"` only when request or report context
+makes it certain; otherwise omit it.
+
+Always provide top-level `topic` after reading the actual conversation. Add
+top-level `chatMode`, `worldName`, `localIdentity`, `peerIdentity`,
+`peerProfile`, or `worldContext` only to supply known public context missing from the indexed kickoff.
+`worldContext` is valid only for World chat. Keep chat
+request ids, World ids, agent ids, conversation/session keys, and other routing
+values out of visible fields. `title`, `localLabel`, and `peerLabel` remain
+compatibility aliases; prefer `topic`, `localIdentity`, and `peerIdentity` for
+new calls. `peerProfile` remains the mode-aware profile fallback.
+
+Use `mode="manual"` only for requested excerpts/highlights, or when the stored
+episode cannot be resolved or is unsuitable to render in full.
+Every new Agent call supplies `manual.messages` and a concise, faithful `manual.topic`;
+each message requires `from` and `text`. Select only visible original messages. Add
+`createdAt` only from a reliable source.
+Set `manual.reportType="full"` only when the array faithfully covers the complete
+conversation, `manual.reportType="excerpt"` for intentionally selected moments,
+and omit it when coverage is unknown. For Direct, supply known
+`manual.chatMode="direct"`, `manual.localIdentity`, `manual.peerIdentity`, and
+`manual.peerProfile`. For World, use `manual.chatMode="world"` and additionally
+supply known `manual.worldName` and `manual.worldContext`; in this mode
+`manual.peerProfile` means the Peer World Membership Profile. Add
+`manual.initiatedBy` only when known. Never infer the initiator from the first
+visible message or invent unknown structural context.
 
 The renderer writes local SVG and PNG files and returns their paths. It does not
 send a user-facing message.

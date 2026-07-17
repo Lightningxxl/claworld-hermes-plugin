@@ -14,9 +14,11 @@ from ..transcript_report_stylekit import (
     esc,
     font_css_rules,
     font_family,
+    grapheme_clusters,
     text_runs,
     text_units,
     wrap_text,
+    wrap_tokens,
     write_png_from_svg,
 )
 from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMessage
@@ -25,8 +27,9 @@ from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMess
 CANVAS_MARGIN = 24
 FRAME_MARGIN = 16
 HEADER_Y = 48
-HEADER_CARD_HEIGHT_ONE_LINE = 92
-HEADER_CARD_HEIGHT_TWO_LINES = 110
+HEADER_CARD_HEIGHT_FULL = 286
+HEADER_CARD_HEIGHT_NO_CONTEXT = 168
+HEADER_CARD_HEIGHT_COMPACT = 96
 HEADER_BOTTOM_PAD = 20
 BODY_TOP_GAP = 24
 PAGE_BOTTOM = 54
@@ -44,18 +47,33 @@ BUBBLE_MIN_WIDTH = 200
 FONT_SIZE = 18
 SMALL_FONT_SIZE = 12
 LABEL_FONT_SIZE = 15
-TITLE_FONT_SIZE = 34
+TITLE_FONT_SIZE = 25
 LINE_HEIGHT = 29
-HEADER_SUBTITLE_MAX_UNITS = 33.0
-HEADER_SUBTITLE_MAX_LINES = 2
-HEADER_SUBTITLE_LINE_HEIGHT = 19
-HEADER_TITLE_MAX_COLS = 26
+HEADER_TOPIC_MAX_UNITS = 20.0
+HEADER_TOPIC_MAX_LINES = 2
+HEADER_TOPIC_LINE_HEIGHT = 26
+HEADER_TOPIC_EMBLEM_HALF_WIDTH = 28
+HEADER_TOPIC_EMBLEM_GAP = 12
+HEADER_COMPACT_TOPIC_MAX_UNITS = 26.0
+CONTEXT_CARD_HEIGHT = 54
+CONTEXT_CARD_GAP = 8
+CONTEXT_LABEL_FONT_SIZE = 12
+CONTEXT_TEXT_FONT_SIZE = 13
+CONTEXT_TEXT_LINE_HEIGHT = 18
+CONTEXT_TEXT_MAX_LINES = 2
+CONTEXT_TEXT_BASELINE_CENTER_OFFSET = 4
 TAG_HEIGHT = 58
 TAG_ICON_SIZE = 30
 TAG_ICON_GAP = 12
 TAG_ICON_TOP_GAP = 8
 TAG_FALLBACK_MAX_COLS = 10
 TEXT_UNIT_PX = 18.0
+IDENTITY_WIDTH_SAFETY = 1.35
+IDENTITY_CODE_GAP = 3.0
+IDENTITY_NAME_FONT_SIZE = 26
+IDENTITY_CODE_FONT_SIZE = 19
+IDENTITY_COMPACT_NAME_FONT_SIZE = 22
+IDENTITY_COMPACT_CODE_FONT_SIZE = 16
 BLACK = "#090909"
 
 THEME = {
@@ -77,6 +95,10 @@ THEME = {
     "time_fill": "#FFFDF7",
     "time_accent_left": "#FF62DE",
     "time_accent_right": "#50D995",
+    "direct_badge": "#67DDF1",
+    "world_badge": "#FFB34F",
+    "chat_badge": "#D3B7FF",
+    "passport_strip": "#FFFDF7",
 }
 
 TAG_ICON_THEMES = {
@@ -115,9 +137,16 @@ def measure_item(item: dict[str, Any], width: int) -> MeasuredBubble:
     )
 
 
-def paginate(items: list[MeasuredBubble], width: int, max_height: int, title: str, subtitle: str) -> list[LayoutPage]:
+def paginate(
+    items: list[MeasuredBubble],
+    width: int,
+    max_height: int,
+    title: str,
+    subtitle: str,
+    header: Any | None = None,
+) -> list[LayoutPage]:
     pages: list[list[MeasuredBubble]] = [[]]
-    header_height = _header_height(subtitle)
+    header_height = _header_height(compact=False, header=header, subtitle=subtitle)
     used = header_height + BODY_TOP_GAP + PAGE_BOTTOM
     for idx, item in enumerate(items):
         item_h = item.height + ITEM_GAP
@@ -126,14 +155,18 @@ def paginate(items: list[MeasuredBubble], width: int, max_height: int, title: st
             needed_h += items[idx + 1].height + ITEM_GAP
         if pages[-1] and used + needed_h > max_height:
             pages.append([])
-            used = header_height + BODY_TOP_GAP + PAGE_BOTTOM
+            used = _header_height(compact=True, header=header, subtitle=subtitle) + BODY_TOP_GAP + PAGE_BOTTOM
         pages[-1].append(item)
         used += item_h
 
     rendered: list[LayoutPage] = []
     total = len(pages)
     for page_no, page_items in enumerate(pages, start=1):
-        y = header_height + BODY_TOP_GAP
+        y = _header_height(
+            compact=page_no > 1,
+            header=header,
+            subtitle=subtitle,
+        ) + BODY_TOP_GAP
         layout_items = []
         for item in page_items:
             if item.kind == "ellipsis":
@@ -171,14 +204,44 @@ def paginate(items: list[MeasuredBubble], width: int, max_height: int, title: st
             y += item.height + ITEM_GAP
         height = max(520, min(max_height, y + PAGE_BOTTOM))
         footer = "visit claworld.love"
-        rendered.append(LayoutPage(page=page_no, width=width, height=height, items=layout_items, title=title, subtitle=subtitle, footer=footer))
+        page_kwargs: dict[str, Any] = {
+            "page": page_no,
+            "width": width,
+            "height": height,
+            "items": layout_items,
+            "title": title,
+            "subtitle": subtitle,
+            "footer": footer,
+        }
+        # LayoutPage gained structured passport fields after the style API was
+        # introduced.  Build against either shape so third-party/older callers
+        # using the style directly continue to work.
+        layout_fields = getattr(LayoutPage, "__dataclass_fields__", {})
+        if "header" in layout_fields:
+            page_kwargs["header"] = header
+        if "page_count" in layout_fields:
+            page_kwargs["page_count"] = total
+        layout_page = LayoutPage(**page_kwargs)
+        if "header" not in layout_fields:
+            setattr(layout_page, "header", header)
+        if "page_count" not in layout_fields:
+            setattr(layout_page, "page_count", total)
+        rendered.append(layout_page)
     return rendered
 
 
 def render_svg(page: LayoutPage) -> str:
     title_id = f"claworld-report-title-{page.page}"
     desc_id = f"claworld-report-desc-{page.page}"
-    desc = f"{page.title}. {page.subtitle}. {len(page.items)} transcript rows."
+    passport = _passport_data(page)
+    desc_values = [
+        passport["mode_label"],
+        passport["topic"],
+        passport["participants"],
+        passport["context"],
+        passport["meta"],
+    ]
+    desc = ". ".join(value for value in desc_values if value) + f". {len(page.items)} transcript rows."
     parts = [
         f'<svg class="comic-grid" xmlns="http://www.w3.org/2000/svg" width="{page.width}" height="{page.height}" viewBox="0 0 {page.width} {page.height}" role="img" aria-labelledby="{title_id} {desc_id}">',
         f'<title id="{title_id}">{esc(page.title)}</title>',
@@ -278,66 +341,972 @@ def _positions(width: int, bubble_w: int, label: str, side: str) -> tuple[int, i
 
 
 def _render_header(page: LayoutPage) -> str:
+    if page.page > 1:
+        return _render_compact_header(page)
+    return _render_full_header(page)
+
+
+def _render_full_header(page: LayoutPage) -> str:
     x = CANVAS_MARGIN + 26
     y = HEADER_Y
     w = page.width - (CANVAS_MARGIN + 26) * 2
-    h = _header_card_height(page.subtitle)
-    title = clip_display(_header_title(page.title), HEADER_TITLE_MAX_COLS)
-    subtitle = _render_header_subtitle_svg(x + 35, y + 70, _header_subtitle_lines(page.subtitle))
-    return "\n".join(
-        [
-            f'<rect x="{x + 11}" y="{y + 6}" width="{w + 2}" height="{h + 10}" rx="22" fill="{BLACK}"/>',
-            f'<rect x="{x + 7}" y="{y + 6}" width="{w}" height="{h + 4}" rx="22" fill="url(#headerAccent)"/>',
-            f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="22" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
+    data = _passport_data(page)
+    h = _full_header_card_height(data["context_blocks"])
+    mode_width = _mode_badge_width(data["mode_label"])
+    page_label = _page_label(page)
+    page_width = _small_badge_width(page_label, minimum=48)
+    count_label = data["count_label"]
+    count_width = _small_badge_width(count_label, minimum=48) if count_label else 0
+    right_edge = x + w - 20
+    page_x = right_edge - page_width
+    count_x = page_x - count_width - (8 if count_label else 0)
+    secondary_x = x + 20 + mode_width + 10
+    secondary_right = count_x - 10 if count_label else page_x - 10
+    secondary_width = max(0, secondary_right - secondary_x)
+
+    topic_center_x = x + w / 2
+    emblem_center_x = x + w - 47
+    topic_safe_right = emblem_center_x - HEADER_TOPIC_EMBLEM_HALF_WIDTH - HEADER_TOPIC_EMBLEM_GAP
+    topic_half_width = min(
+        topic_center_x - (x + 24),
+        topic_safe_right - topic_center_x,
+    )
+    topic_max_units = max(
+        8.0,
+        min(HEADER_TOPIC_MAX_UNITS, topic_half_width * 2 / TITLE_FONT_SIZE),
+    )
+    topic_lines = _topic_lines(data["topic"], max_units=topic_max_units)
+    topic_y = y + (71 if len(topic_lines) > 1 else 84)
+
+    parts = [
+        '<g class="conversation-passport conversation-passport-full">',
+        f'<rect x="{x + 11}" y="{y + 7}" width="{w + 2}" height="{h + 10}" rx="24" fill="{BLACK}"/>',
+        f'<rect x="{x + 7}" y="{y + 6}" width="{w}" height="{h + 4}" rx="24" fill="url(#headerAccent)"/>',
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="24" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
+        _mode_badge_svg(x + 20, y + 14, data["mode"], data["mode_label"]),
+    ]
+    if secondary_width >= 54:
+        secondary = data["world_name"] or "CLAWORLD CHAT"
+        parts.append(_secondary_badge_svg(secondary_x, y + 16, secondary_width, secondary))
+    if count_label:
+        parts.append(
+            _small_badge_svg(
+                count_x,
+                y + 15,
+                count_width,
+                count_label,
+                "#FFFFFF",
+                "message-count-badge",
+                accessible_label=count_label,
+            )
+        )
+    parts.append(_small_badge_svg(page_x, y + 15, page_width, page_label, "#F1E5FF", "page-badge"))
+    for idx, line in enumerate(topic_lines):
+        parts.append(
             _render_inline_text_svg(
-                title,
-                x + 28,
-                y + 43,
+                line,
+                topic_center_x,
+                topic_y + idx * HEADER_TOPIC_LINE_HEIGHT,
                 font_size=TITLE_FONT_SIZE,
                 font_weight=900,
                 fill=BLACK,
+                anchor="middle",
+                class_name="conversation-topic",
+            )
+        )
+    parts.extend(
+        [
+            _mode_emblem_svg(x + w - 47, y + 82, data["mode"]),
+            _identity_route_svg(
+                x + 18,
+                y + 104,
+                w - 36,
+                data["peer_identity"],
+                data["local_identity"],
+                data["initiated_by"],
             ),
-            subtitle,
-            _decorative_star_svg(x + w - 62, y + 34, 22, "#FFFFFF", "url(#headerAccent)"),
-            f'<circle cx="{x + w - 23}" cy="{y + 55}" r="9" fill="#72E3C0" stroke="{BLACK}" stroke-width="3"/>',
-            f'<circle cx="{x + w - 25}" cy="{y + 53}" r="9" fill="#72E3C0" stroke="{BLACK}" stroke-width="3"/>',
+        ]
+    )
+    if data["context_blocks"]:
+        parts.append(
+            _render_context_cards(
+                x + 18,
+                y + 156,
+                w - 36,
+                data["context_blocks"],
+            )
+        )
+    parts.append("</g>")
+    return "\n".join(parts)
+
+
+def _render_compact_header(page: LayoutPage) -> str:
+    x = CANVAS_MARGIN + 26
+    y = HEADER_Y
+    w = page.width - (CANVAS_MARGIN + 26) * 2
+    h = HEADER_CARD_HEIGHT_COMPACT
+    data = _passport_data(page)
+    mode_width = _mode_badge_width(data["mode_label"], compact=True)
+    page_label = _page_label(page)
+    page_width = _small_badge_width(page_label, minimum=48)
+    topic_x = x + 18 + mode_width + 12
+    topic_right = x + w - 18 - page_width - 12
+    topic_units = max(9.0, min(HEADER_COMPACT_TOPIC_MAX_UNITS, (topic_right - topic_x) / 18.0))
+    topic = ellipsize_text(data["topic"], topic_units, suffix="…")
+    return "\n".join(
+        [
+            '<g class="conversation-passport conversation-passport-compact">',
+            f'<rect x="{x + 9}" y="{y + 6}" width="{w + 1}" height="{h + 7}" rx="20" fill="{BLACK}"/>',
+            f'<rect x="{x + 6}" y="{y + 5}" width="{w}" height="{h + 2}" rx="20" fill="url(#headerAccent)"/>',
+            f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="20" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
+            _mode_badge_svg(x + 18, y + 12, data["mode"], data["mode_label"], compact=True),
+            _render_inline_text_svg(
+                topic,
+                topic_x,
+                y + 35,
+                font_size=18,
+                font_weight=900,
+                fill=BLACK,
+                class_name="conversation-topic",
+            ),
+            _small_badge_svg(x + w - 18 - page_width, y + 12, page_width, page_label, "#F1E5FF", "page-badge"),
+            _identity_route_svg(
+                x + 18,
+                y + 50,
+                w - 36,
+                data["peer_identity"],
+                data["local_identity"],
+                data["initiated_by"],
+                compact=True,
+            ),
+            "</g>",
         ]
     )
 
 
-def _header_subtitle_lines(subtitle: str) -> list[str]:
-    lines = wrap_text(str(subtitle or "").strip(), HEADER_SUBTITLE_MAX_UNITS)
-    if len(lines) <= HEADER_SUBTITLE_MAX_LINES:
-        return lines
-    visible = lines[: HEADER_SUBTITLE_MAX_LINES - 1]
-    remainder = " ".join(line.strip() for line in lines[HEADER_SUBTITLE_MAX_LINES - 1 :] if line.strip())
-    visible.append(ellipsize_text(remainder, HEADER_SUBTITLE_MAX_UNITS, suffix="…"))
+def _render_context_cards(
+    x: float,
+    y: float,
+    width: float,
+    blocks: list[dict[str, str]],
+) -> str:
+    visible = blocks[:2]
+    return "\n".join(
+        _render_context_card(
+            x,
+            y + index * (CONTEXT_CARD_HEIGHT + CONTEXT_CARD_GAP),
+            width,
+            block,
+        )
+        for index, block in enumerate(visible)
+    )
+
+
+def _render_context_card(
+    x: float,
+    y: float,
+    width: float,
+    block: dict[str, str],
+) -> str:
+    kind = str(block.get("kind") or "profile")
+    label = str(block.get("label") or "Profile").strip().upper()
+    text = " ".join(str(block.get("text") or "").split())
+    label_width = 132.0
+    divider_x = x + label_width
+    content_x = divider_x + 14
+    content_width = max(48.0, x + width - 14 - content_x)
+    lines = _bounded_context_lines(text, content_width)
+    label_lines = _context_field_label_lines(kind, label)
+    class_kind = "".join(char.lower() if char.isalnum() else "-" for char in kind).strip("-") or "profile"
+    accent = THEME["world_badge"] if kind == "worldContext" else THEME["left_label"]
+    accessible_text = ellipsize_text(text, 120.0, suffix="…")
+    accessible = f"{label}: {accessible_text}" if accessible_text else label
+
+    parts = [
+        f'<g class="passport-context-field context-{class_kind}" role="group" aria-label="{esc(accessible)}">',
+        f"<title>{esc(accessible)}</title>",
+        f'<rect x="{x + 3:.1f}" y="{y + 3:.1f}" width="{width:.1f}" height="{CONTEXT_CARD_HEIGHT}" rx="15" fill="{BLACK}"/>',
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{CONTEXT_CARD_HEIGHT}" rx="15" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="2.5"/>',
+        f'<rect x="{x + 6:.1f}" y="{y + 13:.1f}" width="6" height="28" rx="3" fill="{accent}"/>',
+        _context_field_icon_svg(x + 36, y + CONTEXT_CARD_HEIGHT / 2, kind),
+        f'<line x1="{divider_x:.1f}" y1="{y + 8:.1f}" x2="{divider_x:.1f}" y2="{y + CONTEXT_CARD_HEIGHT - 8:.1f}" stroke="{BLACK}" stroke-width="2" stroke-dasharray="3 3" opacity="0.45"/>',
+    ]
+    label_max_units = max(4.0, (label_width - 48) / CONTEXT_LABEL_FONT_SIZE)
+    label_start_y = y + (22 if len(label_lines) > 1 else 31)
+    for index, label_line in enumerate(label_lines):
+        parts.append(
+            _render_inline_text_svg(
+                ellipsize_text(label_line, label_max_units, suffix="…"),
+                x + 84,
+                label_start_y + index * 16,
+                font_size=CONTEXT_LABEL_FONT_SIZE,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+                class_name=(
+                    "context-field-label context-field-label-primary"
+                    if index == 0
+                    else "context-field-label context-field-label-secondary"
+                ),
+            )
+        )
+    content_start_y = (
+        y
+        + CONTEXT_CARD_HEIGHT / 2
+        + CONTEXT_TEXT_BASELINE_CENTER_OFFSET
+        - max(0, len(lines) - 1) * CONTEXT_TEXT_LINE_HEIGHT / 2
+    )
+    for index, line in enumerate(lines):
+        parts.append(
+            _render_inline_text_svg(
+                line,
+                content_x,
+                content_start_y + index * CONTEXT_TEXT_LINE_HEIGHT,
+                font_size=CONTEXT_TEXT_FONT_SIZE,
+                font_weight=800,
+                fill=THEME["muted"],
+                class_name="conversation-context context-field-text",
+            )
+        )
+    parts.append("</g>")
+    return "\n".join(parts)
+
+
+def _context_field_label_lines(kind: str, label: str) -> list[str]:
+    semantic_labels = {
+        "peerGlobalProfile": ["PEER", "PROFILE"],
+        "peerWorldMembershipProfile": ["PEER", "WORLD"],
+        "worldContext": ["WORLD", "CONTEXT"],
+    }
+    if kind in semantic_labels:
+        return semantic_labels[kind]
+    words = [word for word in label.replace("·", " ").split() if word]
+    if len(words) <= 1:
+        return words or ["PROFILE"]
+    return [words[0], " ".join(words[1:])]
+
+
+def _context_field_icon_svg(cx: float, cy: float, kind: str) -> str:
+    if kind == "worldContext":
+        return _context_icon_svg(cx, cy, "world")
+    fill = THEME["left_label"]
+    return "\n".join(
+        [
+            '<g class="context-icon context-icon-profile">',
+            f'<circle cx="{cx:.1f}" cy="{cy - 6.5:.1f}" r="4.7" fill="{fill}" stroke="{BLACK}" stroke-width="1.9"/>',
+            f'<path d="M{cx - 8:.1f} {cy + 9:.1f} C{cx - 8:.1f} {cy + 2:.1f} {cx - 4:.1f} {cy - 0.5:.1f} {cx:.1f} {cy - 0.5:.1f} C{cx + 4:.1f} {cy - 0.5:.1f} {cx + 8:.1f} {cy + 2:.1f} {cx + 8:.1f} {cy + 9:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.9" stroke-linejoin="round"/>',
+            "</g>",
+        ]
+    )
+
+
+def _bounded_context_lines(text: str, content_width: float) -> list[str]:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return []
+    max_units = max(4.0, content_width / CONTEXT_TEXT_FONT_SIZE)
+    lines = wrap_text(value, max_units)
+    visible = lines[:CONTEXT_TEXT_MAX_LINES]
+    if len(lines) > CONTEXT_TEXT_MAX_LINES and visible:
+        suffix = "…"
+        last = ellipsize_text(
+            visible[-1],
+            max(0.0, max_units - text_units(suffix)),
+            suffix="",
+        ).rstrip()
+        visible[-1] = f"{last}{suffix}" if last else suffix
     return visible
 
 
-def _header_card_height(subtitle: str) -> int:
-    return HEADER_CARD_HEIGHT_TWO_LINES if len(_header_subtitle_lines(subtitle)) > 1 else HEADER_CARD_HEIGHT_ONE_LINE
+def _header_height(*, compact: bool, header: Any | None = None, subtitle: str = "") -> int:
+    if compact:
+        card_height = HEADER_CARD_HEIGHT_COMPACT
+    else:
+        card_height = _full_header_card_height(
+            _header_context_blocks(header, fallback_text=subtitle if header is None else "")
+        )
+    return HEADER_Y + card_height + HEADER_BOTTOM_PAD
 
 
-def _header_height(subtitle: str) -> int:
-    return HEADER_Y + _header_card_height(subtitle) + HEADER_BOTTOM_PAD
+def _full_header_card_height(context_blocks: list[dict[str, str]]) -> int:
+    count = min(2, len(context_blocks))
+    if count == 0:
+        return HEADER_CARD_HEIGHT_NO_CONTEXT
+    content_height = count * CONTEXT_CARD_HEIGHT + (count - 1) * CONTEXT_CARD_GAP
+    return min(HEADER_CARD_HEIGHT_FULL, 156 + content_height + 14)
 
 
-def _render_header_subtitle_svg(x: float, y: float, lines: list[str]) -> str:
+def _passport_data(page: LayoutPage) -> dict[str, Any]:
+    header = getattr(page, "header", None)
+    mode = _header_value(header, "chat_mode", "chatMode", "mode").lower()
+    if mode not in {"direct", "world"}:
+        mode = "chat"
+    mode_label = f"{mode.upper()} · 1:1"
+    topic = _header_value(header, "topic") or _clean_header_title(page.title)
+    world_name = _header_value(header, "world_name", "worldName")
+    local_identity = _header_value(header, "local_identity", "localIdentity")
+    peer_identity = _header_value(header, "peer_identity", "peerIdentity")
+    initiated_by = _normalize_initiated_by(
+        _header_value(
+            header,
+            "initiated_by",
+            "initiatedBy",
+            "initiator",
+            "request_direction",
+            "requestDirection",
+        )
+    )
+    participants = _participants_accessible_text(peer_identity, local_identity, initiated_by)
+    context_blocks = _header_context_blocks(
+        header,
+        fallback_text=str(page.subtitle or "").strip() if header is None else "",
+    )
+    context = " · ".join(
+        f'{block["label"]}: {ellipsize_text(block["text"], 90.0, suffix="…")}'
+        if block["label"]
+        else ellipsize_text(block["text"], 90.0, suffix="…")
+        for block in context_blocks
+    )
+    report_type = _header_value(header, "report_type", "reportType").lower()
+    date_label = _header_value(header, "date_label", "dateLabel")
+    message_count = _header_value(header, "message_count", "messageCount")
+    count_label = _message_count_label(message_count)
+    meta = " · ".join(value for value in (date_label, count_label) if value)
+    return {
+        "mode": mode,
+        "mode_label": mode_label,
+        "topic": topic or "Claworld conversation",
+        "world_name": world_name,
+        "participants": participants,
+        "peer_identity": peer_identity or "UNKNOWN",
+        "local_identity": local_identity or "UNKNOWN",
+        "initiated_by": initiated_by,
+        "context": context,
+        "context_blocks": context_blocks,
+        "report_type": report_type,
+        "count_label": count_label,
+        "meta": meta,
+    }
+
+
+def _header_context_blocks(header: Any, *, fallback_text: str = "") -> list[dict[str, str]]:
+    raw_blocks: Any = None
+    for name in ("context_blocks", "contextBlocks"):
+        if isinstance(header, dict):
+            raw_blocks = header.get(name)
+        elif header is not None:
+            raw_blocks = getattr(header, name, None)
+        if raw_blocks:
+            break
+
+    blocks: list[dict[str, str]] = []
+    if isinstance(raw_blocks, (list, tuple)):
+        for item in raw_blocks:
+            kind = _header_value(item, "kind")
+            label = _header_value(item, "label").rstrip("：: ")
+            text = _header_value(item, "text")
+            source = _header_value(item, "source")
+            if text:
+                blocks.append({"kind": kind or "profile", "label": label, "text": text, "source": source})
+
+    if not blocks:
+        label = _header_value(header, "context_label", "contextLabel").rstrip("：: ")
+        text = _header_value(header, "context_text", "contextText")
+        source = _header_value(header, "context_source", "contextSource")
+        if text:
+            blocks.append({"kind": "profile", "label": label, "text": text, "source": source})
+        world_context = _header_value(
+            header,
+            "world_context_text",
+            "worldContextText",
+            "worldContext",
+        )
+        if world_context:
+            blocks.append(
+                {
+                    "kind": "worldContext",
+                    "label": "World Context",
+                    "text": world_context,
+                    "source": _header_value(header, "world_context_source", "worldContextSource"),
+                }
+            )
+
+    if not blocks and fallback_text:
+        blocks.append({"kind": "profile", "label": "Profile", "text": fallback_text, "source": "fallback"})
+    return blocks[:2]
+
+
+def _header_value(header: Any, *names: str) -> str:
+    for name in names:
+        if isinstance(header, dict):
+            value = header.get(name)
+        else:
+            value = getattr(header, name, None) if header is not None else None
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _normalize_initiated_by(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    if normalized in {"peer", "inbound", "remote", "from-peer"}:
+        return "peer"
+    if normalized in {"local", "me", "outbound", "from-local"}:
+        return "local"
+    return ""
+
+
+def _message_count_label(value: str) -> str:
+    """Return a compact English count badge, hiding malformed counts."""
+
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    if count < 0:
+        return ""
+    unit = "MSG" if count == 1 else "MSGS"
+    return f"{count} {unit}"
+
+
+def _participants_accessible_text(peer_identity: str, local_identity: str, initiated_by: str) -> str:
+    peer = peer_identity or "Peer"
+    local = local_identity or "Me"
+    if initiated_by == "peer":
+        return f"{peer} initiated a conversation with {local}"
+    if initiated_by == "local":
+        return f"{local} initiated a conversation with {peer}"
+    return f"Conversation between {peer} and {local}; initiator unknown"
+
+
+def _identity_route_svg(
+    x: float,
+    y: float,
+    width: float,
+    peer_identity: str,
+    local_identity: str,
+    initiated_by: str,
+    *,
+    compact: bool = False,
+) -> str:
+    """Render a fixed peer-left / local-right route without guessing initiator.
+
+    The arrow is pinned to the route center. Each identity's text is centered
+    independently in the remaining half, while its color dot follows the
+    measured left edge of the (possibly truncated) text.
+    """
+
+    height = 36 if compact else 40
+    gap = 8 if compact else 12
+    center_width = 42 if compact else 46
+    route_center = x + width / 2
+    center_x = route_center - center_width / 2
+    peer_width = max(48.0, center_x - gap - x)
+    local_x = center_x + center_width + gap
+    local_width = max(48.0, x + width - local_x)
+    relation_label, accessible_relation = {
+        "peer": ("→", "Peer initiated the conversation with Me"),
+        "local": ("←", "Me initiated the conversation with Peer"),
+    }.get(initiated_by, ("↔", "The conversation initiator is unknown"))
+    accessible = f"{accessible_relation}. Peer: {peer_identity or 'Peer'}. Me: {local_identity or 'Me'}."
+
+    relation_height = 24 if compact else 26
+    relation_y = y + (height - relation_height) / 2
     return "\n".join(
         [
-            _render_inline_text_svg(
-                line,
+            f'<g class="conversation-participants identity-route" role="img" aria-label="{esc(accessible)}">',
+            f"<title>{esc(accessible)}</title>",
+            _identity_label_svg(
                 x,
-                y + idx * HEADER_SUBTITLE_LINE_HEIGHT,
-                font_size=15,
-                font_weight=700,
-                fill=THEME["muted"],
-                class_name="header-subtitle-line",
-            )
-            for idx, line in enumerate(lines)
+                y,
+                peer_width,
+                peer_identity or "UNKNOWN",
+                dot_fill=THEME["left_label"],
+                class_name="identity-peer",
+                compact=compact,
+            ),
+            f'<rect x="{center_x + 2:.1f}" y="{relation_y + 3:.1f}" width="{center_width:.1f}" height="{relation_height}" rx="{relation_height / 2:.1f}" fill="{BLACK}"/>',
+            f'<rect class="conversation-relation relation-{initiated_by or "unknown"}" x="{center_x:.1f}" y="{relation_y:.1f}" width="{center_width:.1f}" height="{relation_height}" rx="{relation_height / 2:.1f}" fill="#FFFFFF" stroke="{BLACK}" stroke-width="2"/>',
+            _render_inline_text_svg(
+                relation_label,
+                center_x + center_width / 2,
+                relation_y + (17 if compact else 19),
+                font_size=15 if compact else 17,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+                class_name="conversation-relation-label",
+            ),
+            _identity_label_svg(
+                local_x,
+                y,
+                local_width,
+                local_identity or "UNKNOWN",
+                dot_fill=THEME["right_label"],
+                class_name="identity-local",
+                compact=compact,
+            ),
+            "</g>",
         ]
     )
+
+
+def _identity_label_svg(
+    x: float,
+    y: float,
+    width: float,
+    identity: str,
+    *,
+    dot_fill: str,
+    class_name: str,
+    compact: bool,
+) -> str:
+    """Render a centered public identity with a dynamically positioned dot."""
+
+    height = 36 if compact else 40
+    dot_y = y + height / 2
+    radius = 5 if compact else 6
+    dot_gap = 3
+    identity_font_size = IDENTITY_COMPACT_NAME_FONT_SIZE if compact else IDENTITY_NAME_FONT_SIZE
+    code_font_size = IDENTITY_COMPACT_CODE_FONT_SIZE if compact else IDENTITY_CODE_FONT_SIZE
+    identity_y = y + (28 if compact else 30)
+    # The text itself stays centered in its half. Reserve the same amount on
+    # both sides for the left-hand dot so the entire group remains in-bounds.
+    dot_reserve = radius * 2 + dot_gap + 2
+    available_px = max(18.0, width - dot_reserve * 2)
+    _raw_name, raw_code = _split_identity(identity)
+    code_gap = IDENTITY_CODE_GAP if raw_code else 0.0
+    visible_name, visible_code = _ellipsize_identity_parts(
+        identity,
+        max(1.0, available_px / IDENTITY_WIDTH_SAFETY - code_gap),
+        name_font_size=identity_font_size,
+        code_font_size=code_font_size,
+    )
+    name_width = text_units(visible_name) * identity_font_size
+    code_width = text_units(visible_code) * code_font_size
+    visible_gap = IDENTITY_CODE_GAP if visible_code else 0.0
+    text_center_x = x + width / 2
+    if visible_code:
+        combined_width = name_width + visible_gap + code_width
+        divider_x = text_center_x - combined_width / 2 + name_width
+        name_left_x = divider_x - name_width
+    else:
+        name_left_x = text_center_x - name_width / 2
+
+    # Follow the display name itself, not the wider name + code run. SVG text
+    # anchored at ``end`` uses the font's shaped width, which is a little wider
+    # than ``text_units`` for Latin bold faces, so use a script-aware width for
+    # the dot while keeping wide CJK/emoji runs close to their measured edge.
+    conservative_name_width = _identity_name_render_width(
+        visible_name,
+        identity_font_size,
+    )
+    measured_name_left_x = name_left_x - (conservative_name_width - name_width)
+    dot_x = measured_name_left_x - dot_gap - radius
+    identity_svg = _render_identity_text_svg(
+        visible_name,
+        visible_code,
+        text_center_x,
+        identity_y,
+        name_font_size=identity_font_size,
+        code_font_size=code_font_size,
+        class_name=class_name,
+    )
+    return "\n".join(
+        [
+            f'<g class="identity-label {class_name}">',
+            f"<title>{esc(identity)}</title>",
+            f'<circle cx="{dot_x:.1f}" cy="{dot_y:.1f}" r="{radius}" fill="{dot_fill}" stroke="{BLACK}" stroke-width="2"/>',
+            identity_svg,
+            "</g>",
+        ]
+    )
+
+
+def _identity_name_render_width(name: str, font_size: int) -> float:
+    """Conservatively approximate the shaped width of a bold identity name."""
+
+    total_units = 0.0
+    for run, script in text_runs(name):
+        if script == "default":
+            total_units += sum(_identity_default_glyph_units(char) for char in run)
+        elif script in {"cjk", "japanese", "korean", "emoji"}:
+            total_units += text_units(run) * 1.02
+        else:
+            total_units += text_units(run) * 1.16
+    return total_units * font_size
+
+
+def _identity_default_glyph_units(char: str) -> float:
+    """Approximate the heavy UI face used by resvg more closely than 0.55em."""
+
+    if char.isspace():
+        return 0.25
+    if char == "…":
+        return 1.0
+    if char == "M":
+        return 0.90
+    if char == "W":
+        return 0.96
+    if char == "m":
+        return 1.0
+    if char == "w":
+        return 0.93
+    if char in "Iilj":
+        return 0.35
+    if char in "ft":
+        return 0.44
+    if char == "r":
+        return 0.48
+    if char in "csyz":
+        return 0.55
+    if char in "OQHNUDG":
+        return 0.80
+    if char.isupper():
+        return 0.72
+    if char.islower():
+        return 0.63
+    if char.isdigit():
+        return 0.62
+    return max(0.5, text_units(char) * 1.08)
+
+
+def _render_identity_text_svg(
+    name: str,
+    code: str,
+    x: float,
+    y: float,
+    *,
+    name_font_size: int,
+    code_font_size: int,
+    class_name: str,
+) -> str:
+    """Render identity parts around a shared divider without SVG tspans.
+
+    The bold name ends at the divider and the smaller code begins just after
+    it, so each side's real glyph shaping cannot overlap the other. The
+    existing inline renderer keeps mixed scripts and emoji in independent
+    text nodes, which is required by the supported usvg/resvg versions.
+    """
+
+    name_width = text_units(name) * name_font_size
+    if not code:
+        return _render_inline_text_svg(
+            name,
+            x,
+            y,
+            font_size=name_font_size,
+            font_weight=900,
+            fill=BLACK,
+            anchor="middle",
+            class_name=f"{class_name}-name identity-name identity-text",
+        )
+
+    code_width = text_units(code) * code_font_size
+    code_gap = IDENTITY_CODE_GAP
+    combined_width = name_width + code_gap + code_width
+    divider_x = x - combined_width / 2 + name_width
+    name_svg = _render_inline_text_svg(
+        name,
+        divider_x,
+        y,
+        font_size=name_font_size,
+        font_weight=900,
+        fill=BLACK,
+        anchor="end",
+        class_name=f"{class_name}-name identity-name identity-text",
+    )
+    code_svg = _render_inline_text_svg(
+        code,
+        divider_x + code_gap,
+        y,
+        font_size=code_font_size,
+        font_weight=800,
+        fill="#68645F",
+        class_name=f"{class_name}-code identity-code identity-text",
+    )
+    return f"{name_svg}\n{code_svg}"
+
+
+def _ellipsize_identity_parts(
+    identity: str,
+    max_width: float,
+    *,
+    name_font_size: int,
+    code_font_size: int,
+) -> tuple[str, str]:
+    """Fit a public identity while preserving a valid trailing ``#CODE``.
+
+    Width is measured in pixels because the name and code intentionally use
+    different font sizes. In normal public identities the complete code is
+    retained and truncation is applied to the display name first.
+    """
+
+    name, code = _split_identity(identity)
+    code_width = text_units(code) * code_font_size
+    name_width = text_units(name) * name_font_size
+    if name_width + code_width <= max_width:
+        return name, code
+
+    if code:
+        name_budget = max_width - code_width
+        ellipsis_width = text_units("…") * name_font_size
+        if name_budget >= ellipsis_width:
+            visible_name = ellipsize_text(
+                name,
+                name_budget / name_font_size,
+                suffix="…",
+            )
+            return visible_name, code
+
+    # A pathological code can itself exceed the column. Fall back to one
+    # safely bounded run rather than allowing it to cross the center route.
+    value = str(identity or "").strip()
+    return ellipsize_text(value, max_width / name_font_size, suffix="…"), ""
+
+
+def _split_identity(identity: str) -> tuple[str, str]:
+    """Split a trailing whitespace-free public identity code from its name."""
+
+    value = str(identity or "").strip()
+    name, marker, code = value.rpartition("#")
+    if marker and name.strip() and code and not any(ch.isspace() for ch in code):
+        return name.strip(), f"#{code}"
+    return value, ""
+
+
+def _ellipsize_identity(identity: str, max_units: float) -> str:
+    """Truncate the display name first so a public ``#CODE`` stays visible."""
+
+    value = str(identity or "").strip()
+    if text_units(value) <= max_units:
+        return value
+    name, marker, code = value.rpartition("#")
+    suffix = f"#{code}" if marker and name.strip() and code and not any(ch.isspace() for ch in code) else ""
+    if not suffix or text_units(suffix) + text_units("…") >= max_units:
+        return ellipsize_text(value, max_units, suffix="…")
+    name_budget = max_units - text_units(suffix)
+    return ellipsize_text(name.strip(), name_budget, suffix="…") + suffix
+
+
+def _clean_header_title(title: str) -> str:
+    clean = str(title or "").strip()
+    return clean[1:] if clean.startswith("@") else clean
+
+
+def _topic_lines(topic: str, *, max_units: float = HEADER_TOPIC_MAX_UNITS) -> list[str]:
+    lines = _wrap_topic_text(str(topic or "").strip(), max_units)
+    if len(lines) <= HEADER_TOPIC_MAX_LINES:
+        return lines or ["Claworld conversation"]
+    visible = lines[: HEADER_TOPIC_MAX_LINES - 1]
+    remainder = " ".join(line.strip() for line in lines[HEADER_TOPIC_MAX_LINES - 1 :] if line.strip())
+    visible.append(_ellipsize_topic_text(remainder, max_units, suffix="…"))
+    return visible
+
+
+def _wrap_topic_text(text: str, max_units: float) -> list[str]:
+    """Wrap a heavy title using conservative shaped-width estimates."""
+
+    lines: list[str] = []
+    for paragraph in str(text or "").splitlines() or [""]:
+        current = ""
+        for token in wrap_tokens(paragraph):
+            if token.isspace():
+                if current and _topic_render_units(current + " ") <= max_units:
+                    current += " "
+                continue
+            if current and _topic_render_units(current + token) > max_units:
+                lines.append(current.rstrip())
+                current = ""
+            if _topic_render_units(token) > max_units:
+                for cluster in grapheme_clusters(token):
+                    if current and _topic_render_units(current + cluster) > max_units:
+                        lines.append(current.rstrip())
+                        current = ""
+                    current += cluster
+            else:
+                current += token
+        if current or not lines:
+            lines.append(current.rstrip())
+    return lines
+
+
+def _ellipsize_topic_text(text: str, max_units: float, *, suffix: str) -> str:
+    value = str(text or "")
+    if _topic_render_units(value) <= max_units:
+        return value
+    allowed = max(0.0, max_units - _topic_render_units(suffix))
+    kept = ""
+    for cluster in grapheme_clusters(value):
+        if _topic_render_units(kept + cluster) > allowed:
+            break
+        kept += cluster
+    return kept.rstrip() + suffix
+
+
+def _topic_render_units(text: str) -> float:
+    return _identity_name_render_width(text, TITLE_FONT_SIZE) / TITLE_FONT_SIZE
+
+
+def _page_label(page: LayoutPage) -> str:
+    total = getattr(page, "page_count", 1) or 1
+    return f"{page.page} / {total}"
+
+
+def _mode_badge_width(label: str, *, compact: bool = False) -> int:
+    font_size = 11 if compact else 12
+    horizontal_pad = 20 if compact else 24
+    return max(92 if compact else 104, int(text_units(label) * font_size + horizontal_pad))
+
+
+def _small_badge_width(label: str, *, minimum: int) -> int:
+    return max(minimum, int(text_units(label) * 12 + 24))
+
+
+def _mode_badge_svg(x: float, y: float, mode: str, label: str, *, compact: bool = False) -> str:
+    w = _mode_badge_width(label, compact=compact)
+    h = 26 if compact else 28
+    fill = {
+        "direct": THEME["direct_badge"],
+        "world": THEME["world_badge"],
+    }.get(mode, THEME["chat_badge"])
+    return "\n".join(
+        [
+            f'<g class="mode-badge mode-{esc(mode)}">',
+            f'<rect x="{x + 3:.1f}" y="{y + 3:.1f}" width="{w}" height="{h}" rx="{h / 2:.1f}" fill="{BLACK}"/>',
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w}" height="{h}" rx="{h / 2:.1f}" fill="{fill}" stroke="{BLACK}" stroke-width="2.5"/>',
+            _render_inline_text_svg(
+                label,
+                x + w / 2,
+                y + (17.5 if compact else 19),
+                font_size=11 if compact else 12,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+            ),
+            "</g>",
+        ]
+    )
+
+
+def _secondary_badge_svg(x: float, y: float, width: float, label: str) -> str:
+    clipped = _ellipsize_topic_text(label, max(4.0, (width - 22) / 12.0), suffix="…")
+    return "\n".join(
+        [
+            '<g class="world-name-badge">',
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="25" rx="12.5" fill="#FFFFFF" fill-opacity="0.72" stroke="{BLACK}" stroke-width="2" stroke-dasharray="4 3"/>',
+            _render_inline_text_svg(
+                clipped,
+                x + width / 2,
+                y + 17,
+                font_size=12,
+                font_weight=800,
+                fill=THEME["muted"],
+                anchor="middle",
+            ),
+            "</g>",
+        ]
+    )
+
+
+def _small_badge_svg(
+    x: float,
+    y: float,
+    width: float,
+    label: str,
+    fill: str,
+    class_name: str,
+    *,
+    accessible_label: str = "",
+) -> str:
+    aria = f' role="img" aria-label="{esc(accessible_label)}"' if accessible_label else ""
+    title = f"<title>{esc(accessible_label)}</title>" if accessible_label else ""
+    return "\n".join(
+        [
+            f'<g class="{class_name}"{aria}>',
+            title,
+            f'<rect x="{x + 2:.1f}" y="{y + 3:.1f}" width="{width:.1f}" height="26" rx="13" fill="{BLACK}"/>',
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="26" rx="13" fill="{fill}" stroke="{BLACK}" stroke-width="2"/>',
+            _render_inline_text_svg(
+                label,
+                x + width / 2,
+                y + 18,
+                font_size=12,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+            ),
+            "</g>",
+        ]
+    )
+
+
+def _connection_icon_svg(x: float, y: float, *, compact: bool = False) -> str:
+    radius = 3.5 if compact else 4.5
+    gap = 11 if compact else 14
+    stroke = 2 if compact else 2.5
+    return "\n".join(
+        [
+            '<g class="participants-icon">',
+            f'<line x1="{x + radius:.1f}" y1="{y:.1f}" x2="{x + gap - radius:.1f}" y2="{y:.1f}" stroke="{BLACK}" stroke-width="{stroke}" stroke-linecap="round"/>',
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius}" fill="#62E69D" stroke="{BLACK}" stroke-width="2"/>',
+            f'<circle cx="{x + gap:.1f}" cy="{y:.1f}" r="{radius}" fill="#B785FF" stroke="{BLACK}" stroke-width="2"/>',
+            "</g>",
+        ]
+    )
+
+
+def _context_icon_svg(cx: float, cy: float, mode: str) -> str:
+    fill = THEME["world_badge"] if mode == "world" else THEME["direct_badge"]
+    if mode == "world":
+        return "\n".join(
+            [
+                '<g class="context-icon context-icon-world">',
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="8.2" fill="{fill}" stroke="{BLACK}" stroke-width="2"/>',
+                f'<path d="M{cx - 7.1:.1f} {cy:.1f} H{cx + 7.1:.1f} M{cx:.1f} {cy - 7.1:.1f} C{cx - 3.5:.1f} {cy - 2.4:.1f} {cx - 3.5:.1f} {cy + 2.4:.1f} {cx:.1f} {cy + 7.1:.1f} M{cx:.1f} {cy - 7.1:.1f} C{cx + 3.5:.1f} {cy - 2.4:.1f} {cx + 3.5:.1f} {cy + 2.4:.1f} {cx:.1f} {cy + 7.1:.1f}" fill="none" stroke="{BLACK}" stroke-width="1.3" stroke-linecap="round"/>',
+                "</g>",
+            ]
+        )
+    return "\n".join(
+        [
+            '<g class="context-icon context-icon-direct">',
+            f'<path d="M{cx - 7:.1f} {cy - 5:.1f} H{cx + 7:.1f} V{cy + 4:.1f} H{cx + 1:.1f} L{cx - 3:.1f} {cy + 8:.1f} V{cy + 4:.1f} H{cx - 7:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="2" stroke-linejoin="round"/>',
+            "</g>",
+        ]
+    )
+
+
+def _mode_emblem_svg(cx: float, cy: float, mode: str) -> str:
+    if mode == "world":
+        return "\n".join(
+            [
+                '<g class="mode-emblem mode-emblem-world">',
+                f'<circle class="mode-emblem-shadow mode-emblem-world-shadow" cx="{cx + 2:.1f}" cy="{cy + 2.5:.1f}" r="17" fill="{BLACK}"/>',
+                f'<ellipse class="mode-emblem-orbit mode-emblem-orbit-back" cx="{cx:.1f}" cy="{cy:.1f}" rx="25" ry="8" fill="none" stroke="url(#modeOrbitGradient)" stroke-width="5" transform="rotate(-13 {cx:.1f} {cy:.1f})"/>',
+                '<g class="mode-emblem-globe">',
+                f'<circle class="mode-emblem-planet-shell" cx="{cx:.1f}" cy="{cy:.1f}" r="17" fill="#FFFFFF" stroke="{BLACK}" stroke-width="3"/>',
+                f'<circle class="mode-emblem-planet-core" cx="{cx:.1f}" cy="{cy:.1f}" r="11" fill="{THEME["world_badge"]}" stroke="{BLACK}" stroke-width="2.5"/>',
+                "</g>",
+                f'<path class="mode-emblem-orbit mode-emblem-orbit-front" d="M{cx - 25:.1f} {cy:.1f} A25 8 0 0 0 {cx + 25:.1f} {cy:.1f}" fill="none" stroke="url(#modeOrbitGradient)" stroke-width="5" transform="rotate(-13 {cx:.1f} {cy:.1f})"/>',
+                "</g>",
+            ]
+        )
+    if mode == "direct":
+        translate_x = cx - 32
+        translate_y = cy - 26
+        return "\n".join(
+            [
+                f'<g class="mode-emblem mode-emblem-direct" transform="translate({translate_x:.1f} {translate_y:.1f})">',
+                '<g class="mode-emblem-shadow mode-emblem-direct-shadow">',
+                f'<path class="mode-emblem-direct-shadow-back" d="M8 15.7883L8.5 14.5L36 15.7883V38.5H23L15 46.5V38.5H8V15.7883Z" fill="{BLACK}"/>',
+                f'<path class="mode-emblem-direct-shadow-front" d="M32 23H43.5L59.5 23.5L60 25V44.8772H52V52L44 44.8772H35L32 42V23Z" fill="{BLACK}"/>',
+                "</g>",
+                f'<path class="mode-emblem-chat-bubble mode-emblem-chat-bubble-back" d="M10 15H38V34H25L17 42V34H10V15Z" fill="#FFFFFF" stroke="{BLACK}" stroke-width="3" stroke-linejoin="round"/>',
+                f'<path class="mode-emblem-chat-bubble mode-emblem-chat-bubble-front" d="M33 24H58V41H50V48L42 41H33V24Z" fill="{THEME["direct_badge"]}" stroke="{BLACK}" stroke-width="3" stroke-linejoin="round"/>',
+                "</g>",
+            ]
+        )
+    return _decorative_star_svg(cx, cy, 17, "#FFFFFF", "url(#headerAccent)")
 
 
 def _render_ellipsis_svg(page: LayoutPage, item: dict[str, Any]) -> str:
@@ -451,14 +1420,23 @@ def _side_colors(side: str) -> dict[str, str]:
 
 
 def _header_title(title: str) -> str:
-    clean = str(title or "").strip()
-    if clean.startswith("@"):
-        return clean
-    return "@" + clean if clean else "@claworld"
+    # Kept for callers that imported the old helper.  Topics and World names
+    # are not handles, so the passport must never invent a leading @.
+    return _clean_header_title(title) or "Claworld conversation"
 
 
 def _label_text(label: str) -> str:
-    return clip_display(str(label or "AGENT").upper(), LABEL_MAX_COLS)
+    return clip_display(_body_participant_name(label).upper(), LABEL_MAX_COLS)
+
+
+def _body_participant_name(label: str) -> str:
+    """Hide a trailing public identity code in bubbles; the header keeps it."""
+
+    value = str(label or "AGENT").strip()
+    name, marker, code = value.rpartition("#")
+    if marker and name.strip() and code and not any(ch.isspace() for ch in code):
+        return name.strip()
+    return value
 
 
 def _label_width(label: str) -> int:
@@ -610,6 +1588,7 @@ def _svg_defs(page: LayoutPage) -> str:
             '<pattern id="comicGridMinor" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#BED1D8" stroke-width="1" stroke-opacity="0.62"/></pattern>',
             '<pattern id="comicGridMajor" width="128" height="128" patternUnits="userSpaceOnUse"><path d="M 128 0 L 0 0 0 128" fill="none" stroke="#AABFC8" stroke-width="1.4" stroke-opacity="0.72"/></pattern>',
             '<linearGradient id="headerAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#47B6FF"/><stop offset="52%" stop-color="#FF4EB4"/><stop offset="100%" stop-color="#FF8A2A"/></linearGradient>',
+            '<linearGradient id="modeOrbitGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#8F72FF"/><stop offset="52%" stop-color="#FF4EB4"/><stop offset="100%" stop-color="#FF963D"/></linearGradient>',
             '<linearGradient id="leftAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#58E58F"/><stop offset="100%" stop-color="#47B6FF"/></linearGradient>',
             '<linearGradient id="rightAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#A871FF"/><stop offset="100%" stop-color="#FF4EB4"/></linearGradient>',
             '<filter id="comicLift" x="-6%" y="-16%" width="112%" height="132%"><feDropShadow dx="0" dy="2" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.14"/></filter>',
@@ -620,6 +1599,10 @@ def _svg_defs(page: LayoutPage) -> str:
 
 def _page_text_values(page: LayoutPage) -> list[str]:
     values = [page.title, page.subtitle, page.footer]
+    passport = _passport_data(page)
+    values.extend(str(value) for value in passport.values() if isinstance(value, str))
+    for block in passport["context_blocks"]:
+        values.extend((block["label"], ellipsize_text(block["text"], 120.0, suffix="…")))
     for item in page.items:
         values.append(str(item.get("label") or ""))
         values.extend(str(line) for line in item.get("lines") or [])

@@ -6,14 +6,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..transcript_report_types import LayoutPage, MeasuredBubble
+from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptHeader
 
 
 @dataclass(frozen=True)
 class TranscriptReportStyle:
     name: str
     measure_item: Callable[[dict, int], MeasuredBubble]
-    paginate: Callable[[list[MeasuredBubble], int, int, str, str], list[LayoutPage]]
+    paginate: Callable[
+        [list[MeasuredBubble], int, int, str, str, TranscriptHeader | None],
+        list[LayoutPage],
+    ]
     render_svg: Callable[[LayoutPage], str]
     write_png: Callable[[Path, Path, LayoutPage], dict]
 

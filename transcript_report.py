@@ -14,7 +14,7 @@ from .config import ClaworldConfig, hermes_home_path
 from .protocol import classify_reply_content
 from .transcript_report_stylekit import display_cols
 from .transcript_report_styles import resolve_report_style
-from .transcript_report_types import TranscriptMessage
+from .transcript_report_types import TranscriptContextBlock, TranscriptHeader, TranscriptMessage
 from .working_memory import append_journal, atomic_write_text, read_session_index
 
 
@@ -25,10 +25,22 @@ DOCUMENT_DELIVERY_DIRECTIVE = "[[as_document]]"
 
 TIME_SPLIT_SECONDS = 5 * 60
 
-STORED_RENDER_FIELDS = {"chatRequestId", "title", "peerProfile", "localLabel", "peerLabel"}
+PUBLIC_HEADER_RENDER_FIELDS = {
+    "chatMode",
+    "worldName",
+    "initiatedBy",
+    "topic",
+    "title",
+    "peerProfile",
+    "worldContext",
+    "localIdentity",
+    "peerIdentity",
+    "localLabel",
+    "peerLabel",
+}
+MANUAL_RENDER_FIELDS = {"messages", "reportType", *PUBLIC_HEADER_RENDER_FIELDS}
+STORED_RENDER_FIELDS = {"chatRequestId", *PUBLIC_HEADER_RENDER_FIELDS}
 TOP_LEVEL_RENDER_FIELDS = {"mode", "manual", "style", "maxPageHeight", *STORED_RENDER_FIELDS}
-MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
-REQUIRED_MANUAL_RENDER_FIELDS = {"messages", "title", "peerProfile", "localLabel", "peerLabel"}
 MANUAL_MESSAGE_FIELDS = {"from", "text", "createdAt"}
 
 
@@ -39,7 +51,7 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     render_args = request["renderArgs"]
     root = cfg.memory_root_path()
     source = _load_source_messages(request, root)
-    header_context = _extract_transcript_header_context(source["messages"])
+    header_context = _extract_transcript_header_context(source["messages"], source.get("summary"))
     normalized = _normalize_messages(source["messages"], cfg, render_args, header_context)
     if not normalized:
         raise ValueError("no visible transcript messages were found for rendering")
@@ -57,6 +69,13 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     style = resolve_report_style(_report_style_name(render_args))
     participants = _participants(selected)
     title, subtitle = _header_text(render_args, selected, header_context)
+    header = _transcript_header(
+        render_args,
+        selected,
+        header_context,
+        title=title,
+        source_summary=source.get("summary"),
+    )
     bubbles = _decorate_selection(selected, selection)
     bubble_spec = {
         "version": "1",
@@ -66,11 +85,8 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
             "subtitle": subtitle,
             "peerId": title,
             "peerProfile": subtitle,
-            "peerProfileSource": (
-                "explicit"
-                if _public_header_value(render_args.get("peerProfile"))
-                else header_context.get("profileSource", "fallback")
-            ),
+            "peerProfileSource": header.context_source or "fallback",
+            "header": header.as_dict(),
             "generatedAt": _iso_now(),
             "source": source["summary"],
             "selection": selection,
@@ -85,7 +101,7 @@ def render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
     }
 
     measured = [style.measure_item(item, width) for item in bubbles]
-    pages = style.paginate(measured, width, max_page_height, title, subtitle)
+    pages = style.paginate(measured, width, max_page_height, title, subtitle, header)
     artifact_id = _artifact_id(source["summary"], selection, style.name)
     output_dirs = _output_dirs()
     files = []
@@ -229,7 +245,8 @@ def _normalize_render_request(args: dict) -> dict:
         chat_request_id = _text(args.get("chatRequestId"))
         if not chat_request_id:
             raise ValueError("chatRequestId is required when mode=stored")
-        for key in ("title", "peerProfile", "localLabel", "peerLabel"):
+        _validate_header_render_fields("stored", args)
+        for key in PUBLIC_HEADER_RENDER_FIELDS:
             render_args[key] = args.get(key)
         return {
             "mode": mode,
@@ -246,14 +263,12 @@ def _normalize_render_request(args: dict) -> dict:
     if not isinstance(manual, dict):
         raise ValueError("manual must be an object when mode=manual")
     _reject_unknown_nested("manual", manual, MANUAL_RENDER_FIELDS)
-    for key in sorted(REQUIRED_MANUAL_RENDER_FIELDS - {"messages"}):
-        if not _text(manual.get(key)):
-            raise ValueError(f"manual.{key} is required when mode=manual")
+    _validate_header_render_fields("manual", manual)
     messages = manual.get("messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("manual.messages must be a non-empty array when mode=manual")
     _validate_manual_messages(messages)
-    for key in ("title", "peerProfile", "localLabel", "peerLabel"):
+    for key in (*PUBLIC_HEADER_RENDER_FIELDS, "reportType"):
         render_args[key] = manual.get(key)
     return {
         "mode": mode,
@@ -268,6 +283,23 @@ def _reject_unknown_nested(name: str, value: dict, allowed: set[str]) -> None:
         raise ValueError(f"unsupported {name} parameter(s): {', '.join(extra)}")
 
 
+def _validate_header_render_fields(name: str, value: dict) -> None:
+    chat_mode = _text(value.get("chatMode"))
+    if chat_mode and chat_mode not in {"direct", "world"}:
+        raise ValueError(f"{name}.chatMode must be direct or world")
+    report_type = _text(value.get("reportType"))
+    if report_type and report_type not in {"full", "excerpt"}:
+        raise ValueError(f"{name}.reportType must be full or excerpt")
+    initiated_by = _text(value.get("initiatedBy"))
+    if initiated_by and initiated_by not in {"local", "peer"}:
+        raise ValueError(f"{name}.initiatedBy must be local or peer")
+    if chat_mode == "direct":
+        if _text(value.get("worldName")):
+            raise ValueError(f"{name}.worldName must not be provided when chatMode=direct")
+        if _text(value.get("worldContext")):
+            raise ValueError(f"{name}.worldContext must not be provided when chatMode=direct")
+
+
 def _validate_manual_messages(messages: list) -> None:
     for idx, message in enumerate(messages, start=1):
         if not isinstance(message, dict):
@@ -278,8 +310,6 @@ def _validate_manual_messages(messages: list) -> None:
             raise ValueError(f"manual.messages[{idx}].from must be peer or local")
         if not _text(message.get("text")):
             raise ValueError(f"manual.messages[{idx}].text is required")
-        if not _text(message.get("createdAt")):
-            raise ValueError(f"manual.messages[{idx}].createdAt is required")
 
 
 def _load_source_messages(request: dict, root: Path) -> dict:
@@ -307,6 +337,8 @@ def _load_source_messages(request: dict, root: Path) -> dict:
             "conversationKey": episode.get("conversationKey"),
             "relaySessionKey": episode.get("relaySessionKey"),
             "lastActiveSessionKey": episode.get("lastActiveSessionKey"),
+            "worldId": episode.get("worldId"),
+            "requestDirection": episode.get("requestDirection") or episode.get("direction"),
             "firstSeenAt": episode.get("firstSeenAt"),
             "lastSeenAt": episode.get("lastSeenAt"),
             "indexSource": "conversationEpisodes",
@@ -325,12 +357,27 @@ def _normalize_messages(
     header_context: dict | None = None,
 ) -> list[TranscriptMessage]:
     header_context = header_context or {}
-    local_identity = _text(header_context.get("localIdentity"))
-    peer_identity = _text(header_context.get("peerIdentity"), _text(header_context.get("peerId")))
+    source_mode = _text(args.get("mode")) or ""
+    trusted_local_identity = _public_header_value(header_context.get("localIdentity"))
+    trusted_peer_identity = _public_header_value(header_context.get("peerIdentity")) or _public_header_value(
+        header_context.get("peerId")
+    )
+    explicit_local_identity = _public_header_value(args.get("localIdentity")) or _public_header_value(
+        args.get("localLabel")
+    )
+    explicit_peer_identity = _public_header_value(args.get("peerIdentity")) or _public_header_value(
+        args.get("peerLabel")
+    )
+    if source_mode == "stored":
+        local_identity = trusted_local_identity or explicit_local_identity
+        peer_identity = trusted_peer_identity or explicit_peer_identity
+    else:
+        local_identity = explicit_local_identity or trusted_local_identity
+        peer_identity = explicit_peer_identity or trusted_peer_identity
     local_id = _text(local_identity, cfg.agent_id) or "local-agent"
     peer_id = peer_identity or "peer-agent"
-    local_label = _public_header_value(args.get("localLabel")) or _public_header_value(local_identity) or "Me"
-    peer_label = _public_header_value(args.get("peerLabel")) or _public_header_value(peer_identity) or "Peer"
+    local_label = _public_header_value(local_identity) or "Me"
+    peer_label = _public_header_value(peer_identity) or "Peer"
     normalized: list[TranscriptMessage] = []
     for idx, raw in enumerate(raw_messages):
         if not isinstance(raw, dict):
@@ -464,9 +511,18 @@ def _header_text(
     header_context: dict | None = None,
 ) -> tuple[str, str]:
     header_context = header_context or {}
-    explicit_title = _public_header_value(args.get("title"))
-    peer_identity = _public_header_value(header_context.get("peerIdentity")) or _public_header_value(
+    source_mode = _text(args.get("mode")) or ""
+    explicit_title = _public_header_value(args.get("topic")) or _public_header_value(args.get("title"))
+    explicit_peer_identity = _public_header_value(args.get("peerIdentity")) or _public_header_value(
+        args.get("peerLabel")
+    )
+    trusted_peer_identity = _public_header_value(header_context.get("peerIdentity")) or _public_header_value(
         header_context.get("peerId")
+    )
+    peer_identity = (
+        trusted_peer_identity or explicit_peer_identity
+        if source_mode == "stored"
+        else explicit_peer_identity or trusted_peer_identity
     )
     if not peer_identity:
         for message in messages:
@@ -474,19 +530,198 @@ def _header_text(
                 peer_identity = _public_header_value(message.participant_label)
                 break
     peer_name = _display_name(peer_identity)
-    world_name = _public_header_value(header_context.get("worldName"))
+    explicit_world_name = _public_header_value(args.get("worldName"))
+    trusted_world_name = _public_header_value(header_context.get("worldName"))
+    world_name = (
+        trusted_world_name or explicit_world_name
+        if source_mode == "stored"
+        else explicit_world_name or trusted_world_name
+    )
     title = explicit_title or _semantic_header_title(peer_name, world_name)
 
     explicit_profile = _public_header_value(args.get("peerProfile"))
-    if explicit_profile:
-        subtitle = explicit_profile
-    else:
-        profile = _public_header_value(header_context.get("peerProfile"))
-        subtitle_parts = [part for part in (peer_identity, profile) if part]
-        if not subtitle_parts and world_name:
-            subtitle_parts.append(world_name)
-        subtitle = " · ".join(subtitle_parts) or "Conversation transcript"
+    trusted_profile = _public_header_value(header_context.get("peerProfile"))
+    if explicit_profile and not (_text(args.get("mode")) == "stored" and trusted_profile):
+        return title, explicit_profile
+    profile = trusted_profile
+    subtitle_parts = [part for part in (peer_identity, profile) if part]
+    if not subtitle_parts and world_name:
+        subtitle_parts.append(world_name)
+    subtitle = " · ".join(subtitle_parts) or "Conversation transcript"
     return title, subtitle
+
+
+def _transcript_header(
+    args: dict,
+    messages: list[TranscriptMessage],
+    header_context: dict | None = None,
+    *,
+    title: str,
+    source_summary: dict | None = None,
+) -> TranscriptHeader:
+    """Build public header facts without requiring Agent-authored metadata."""
+
+    header_context = header_context or {}
+    source_mode = _text(args.get("mode")) or ""
+    explicit_chat_mode = _text(args.get("chatMode")) or ""
+    trusted_chat_mode = _text(header_context.get("conversationMode")) or ""
+    explicit_world_name = _public_header_value(args.get("worldName"))
+    trusted_world_name = _public_header_value(header_context.get("worldName"))
+
+    # Stored kickoff context is backend-authored and wins over optional fallback
+    # hints.  Manual reports have no such guarantee, so their explicit fields win.
+    if source_mode == "stored":
+        chat_mode = trusted_chat_mode or explicit_chat_mode
+        world_name = trusted_world_name or (explicit_world_name if chat_mode != "direct" else "")
+    else:
+        chat_mode = explicit_chat_mode or trusted_chat_mode
+        world_name = explicit_world_name or trusted_world_name
+    explicit_world_context = _public_header_value(args.get("worldContext"))
+    trusted_world_context = _public_header_value(header_context.get("worldContext"))
+    if not chat_mode and (world_name or explicit_world_context or trusted_world_context):
+        chat_mode = "world"
+    if chat_mode == "direct":
+        world_name = ""
+
+    explicit_local_identity = _public_header_value(args.get("localIdentity")) or _public_header_value(
+        args.get("localLabel")
+    )
+    trusted_local_identity = _public_header_value(header_context.get("localIdentity"))
+    explicit_peer_identity = _public_header_value(args.get("peerIdentity")) or _public_header_value(
+        args.get("peerLabel")
+    )
+    trusted_peer_identity = _public_header_value(header_context.get("peerIdentity")) or _public_header_value(
+        header_context.get("peerId")
+    )
+    if source_mode == "stored":
+        local_identity = trusted_local_identity or explicit_local_identity
+        peer_identity = trusted_peer_identity or explicit_peer_identity
+    else:
+        local_identity = explicit_local_identity or trusted_local_identity
+        peer_identity = explicit_peer_identity or trusted_peer_identity
+    local_identity = local_identity or _message_participant_identity(messages, "right") or "Me"
+    peer_identity = peer_identity or _message_participant_identity(messages, "left") or "Peer"
+
+    explicit_context = _public_header_value(args.get("peerProfile"))
+    trusted_context = _public_header_value(header_context.get("peerProfile"))
+    if source_mode == "stored":
+        context_text = trusted_context or explicit_context
+        context_source = (
+            (_text(header_context.get("profileSource")) or "rawKickoffText")
+            if trusted_context
+            else ("explicit" if explicit_context else "")
+        )
+        world_context = trusted_world_context or explicit_world_context
+        world_context_source = (
+            (_text(header_context.get("worldContextSource")) or "rawKickoffText")
+            if trusted_world_context
+            else ("explicit" if explicit_world_context else "")
+        )
+    else:
+        context_text = explicit_context or trusted_context
+        context_source = (
+            "explicit"
+            if explicit_context
+            else (_text(header_context.get("profileSource")) or ("fallback" if context_text else ""))
+        )
+        world_context = explicit_world_context or trusted_world_context
+        world_context_source = (
+            "explicit"
+            if explicit_world_context
+            else (_text(header_context.get("worldContextSource")) or ("fallback" if world_context else ""))
+        )
+    context_label = ""
+    context_kind = "profile"
+    if context_text:
+        if chat_mode == "world":
+            context_kind = "peerWorldMembershipProfile"
+            context_label = "Peer · World"
+        elif chat_mode == "direct":
+            context_kind = "peerGlobalProfile"
+            context_label = "Peer · Profile"
+        else:
+            context_label = "Peer Profile"
+
+    context_blocks: list[TranscriptContextBlock] = []
+    if context_text:
+        context_blocks.append(
+            TranscriptContextBlock(
+                kind=context_kind,
+                label=context_label,
+                text=context_text,
+                source=context_source,
+            )
+        )
+    if chat_mode == "world" and world_context:
+        context_blocks.append(
+            TranscriptContextBlock(
+                kind="worldContext",
+                label="World Context",
+                text=world_context,
+                source=world_context_source,
+            )
+        )
+
+    report_type = "full" if source_mode == "stored" else (_text(args.get("reportType")) or "")
+    explicit_initiated_by = _text(args.get("initiatedBy")) or ""
+    request_direction = _text((source_summary or {}).get("requestDirection")) or ""
+    trusted_initiated_by = {
+        "inbound": "peer",
+        "outbound": "local",
+    }.get(request_direction, "")
+    initiated_by = (
+        trusted_initiated_by or explicit_initiated_by
+        if source_mode == "stored"
+        else explicit_initiated_by
+    )
+    return TranscriptHeader(
+        chat_mode=chat_mode,
+        report_type=report_type,
+        initiated_by=initiated_by,
+        topic=_public_header_value(args.get("topic")) or title,
+        world_name=world_name,
+        local_identity=local_identity,
+        peer_identity=peer_identity,
+        context_label=context_label,
+        context_text=context_text,
+        context_source=context_source,
+        context_blocks=tuple(context_blocks),
+        date_label=_transcript_date_label(messages, source_summary),
+        message_count=len(messages),
+    )
+
+
+def _message_participant_identity(messages: list[TranscriptMessage], side: str) -> str:
+    for message in messages:
+        if message.side == side:
+            value = _public_header_value(message.participant_label)
+            if value:
+                return value
+    return ""
+
+
+def _transcript_date_label(
+    messages: list[TranscriptMessage],
+    source_summary: dict | None = None,
+) -> str:
+    dates: list[str] = []
+    candidates = [message.created_at for message in messages]
+    if not any(candidates) and isinstance(source_summary, dict):
+        candidates.extend([source_summary.get("firstSeenAt"), source_summary.get("lastSeenAt")])
+    for candidate in candidates:
+        match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", str(candidate or ""))
+        if match:
+            value = match.group(0)
+            if value not in dates:
+                dates.append(value)
+    if not dates:
+        return ""
+    first, last = dates[0], dates[-1]
+    if first == last:
+        return first[5:]
+    if first[:4] == last[:4]:
+        return f"{first[5:]}–{last[5:]}"
+    return f"{first}–{last}"
 
 
 def _semantic_header_title(peer_name: str, world_name: str) -> str:
@@ -506,7 +741,7 @@ def _public_header_value(value: Any) -> str:
     return normalized
 
 
-def _extract_transcript_header_context(raw_messages: list) -> dict:
+def _extract_transcript_header_context(raw_messages: list, source_summary: dict | None = None) -> dict:
     merged: dict[str, str] = {}
     for raw in raw_messages:
         if not isinstance(raw, dict):
@@ -519,9 +754,25 @@ def _extract_transcript_header_context(raw_messages: list) -> dict:
             candidates.append((_text(raw.get("commandText")), "rawKickoffText"))
         for candidate, source in candidates:
             _merge_header_context_candidate(merged, candidate, source)
+        world_id = _text(raw.get("worldId"))
+        if world_id:
+            merged.setdefault("worldId", world_id)
+            merged.setdefault("conversationMode", "world")
         from_display = _text(raw.get("fromDisplayIdentity"))
         if from_display and "peerIdentity" not in merged:
             merged["peerIdentity"] = from_display
+    source_summary = source_summary if isinstance(source_summary, dict) else {}
+    source_world_id = _text(source_summary.get("worldId"))
+    if source_world_id:
+        merged.setdefault("worldId", source_world_id)
+        merged.setdefault("conversationMode", "world")
+    conversation_key = _text(source_summary.get("conversationKey")) or ""
+    if "conversationMode" not in merged and re.search(
+        r"(?:^|[:/_-])direct(?:$|[:/_-])",
+        conversation_key,
+        flags=re.IGNORECASE,
+    ):
+        merged["conversationMode"] = "direct"
     profile, source = _select_header_profile(merged)
     return {
         key: value
@@ -532,6 +783,12 @@ def _extract_transcript_header_context(raw_messages: list) -> dict:
             "conversationMode": merged.get("conversationMode"),
             "worldName": merged.get("worldName"),
             "worldId": merged.get("worldId"),
+            "peerGlobalProfile": merged.get("globalProfile"),
+            "peerGlobalProfileSource": merged.get("globalProfileSource"),
+            "peerWorldProfile": merged.get("worldProfile"),
+            "peerWorldProfileSource": merged.get("worldProfileSource"),
+            "worldContext": merged.get("worldContext"),
+            "worldContextSource": merged.get("worldContextSource"),
             "peerProfile": profile,
             "profileSource": source,
         }.items()
@@ -553,8 +810,10 @@ def _should_merge_header_value(merged: dict[str, str], parsed: dict[str, str], k
     source_priority_keys = {
         "globalProfile": "globalProfileSource",
         "worldProfile": "worldProfileSource",
+        "worldContext": "worldContextSource",
         "globalProfileSource": "globalProfileSource",
         "worldProfileSource": "worldProfileSource",
+        "worldContextSource": "worldContextSource",
     }
     source_key = source_priority_keys.get(key)
     if not source_key:
@@ -566,9 +825,9 @@ def _should_merge_header_value(merged: dict[str, str], parsed: dict[str, str], k
 
 def _header_profile_source_priority(source: str | None) -> int:
     return {
-        "contextText": 4,
-        "untrustedContext": 3,
-        "rawKickoffText": 2,
+        "rawKickoffText": 4,
+        "contextText": 3,
+        "untrustedContext": 2,
         "transcript": 1,
     }.get(_text(source), 0)
 
@@ -586,6 +845,11 @@ def _parse_header_context_candidate(text: str, source: str) -> dict[str, str]:
         parsed["worldName"] = world_name
     if world_id:
         parsed["worldId"] = world_id
+    world_section = _markdown_section(value, "World Facts", 2)
+    world_context = _markdown_named_code_block(world_section, "World Context", 3)
+    if world_context:
+        parsed["worldContext"] = _squash_whitespace(world_context)
+        parsed["worldContextSource"] = source
 
     local_section = _markdown_section(value, "You", 2)
     if local_section:
@@ -633,15 +897,65 @@ def _extract_world_label(text: str) -> tuple[str, str]:
 
 
 def _markdown_section(text: str, title: str, level: int) -> str:
-    hashes = "#" * level
-    pattern = re.compile(rf"(?im)^{re.escape(hashes)}\s+{re.escape(title)}\s*$")
-    match = pattern.search(text)
-    if not match:
+    headings = _markdown_headings(text)
+    target_index = next(
+        (
+            index
+            for index, (heading_level, heading_title, _start, _end) in enumerate(headings)
+            if heading_level == level and heading_title.casefold() == title.casefold()
+        ),
+        None,
+    )
+    if target_index is None:
         return ""
-    start = match.end()
-    next_heading = re.search(rf"(?m)^#{{1,{level}}}\s+", text[start:])
-    end = start + next_heading.start() if next_heading else len(text)
+    _heading_level, _heading_title, _heading_start, start = headings[target_index]
+    end = next(
+        (
+            heading_start
+            for heading_level, _heading_title, heading_start, _heading_end in headings[target_index + 1 :]
+            if heading_level <= level
+        ),
+        len(text),
+    )
     return text[start:end].strip()
+
+
+def _markdown_headings(text: str) -> list[tuple[int, str, int, int]]:
+    """Return Markdown headings outside fenced code blocks with source spans."""
+
+    headings: list[tuple[int, str, int, int]] = []
+    active_fence = ""
+    active_fence_length = 0
+    offset = 0
+    for line in str(text or "").splitlines(keepends=True):
+        line_without_ending = line.rstrip("\r\n")
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line_without_ending)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not active_fence:
+                active_fence = marker[0]
+                active_fence_length = len(marker)
+            elif marker[0] == active_fence and len(marker) >= active_fence_length:
+                active_fence = ""
+                active_fence_length = 0
+            offset += len(line)
+            continue
+        if not active_fence:
+            heading_match = re.match(
+                r"^\s*(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$",
+                line_without_ending,
+            )
+            if heading_match:
+                headings.append(
+                    (
+                        len(heading_match.group(1)),
+                        heading_match.group(2).strip(),
+                        offset,
+                        offset + len(line),
+                    )
+                )
+        offset += len(line)
+    return headings
 
 
 def _markdown_named_code_block(text: str, title: str, level: int) -> str:
