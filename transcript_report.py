@@ -836,6 +836,7 @@ def _parse_header_context_candidate(text: str, source: str) -> dict[str, str]:
     value = str(text or "").strip()
     if not value:
         return {}
+    value = _queued_turn_background(value)
     parsed: dict[str, str] = {}
     mode = _extract_conversation_mode(value)
     if mode:
@@ -879,6 +880,28 @@ def _parse_header_context_candidate(text: str, source: str) -> dict[str, str]:
             parsed["globalProfile"] = plain_profile
             parsed["globalProfileSource"] = source
     return parsed
+
+
+def _queued_turn_background(text: str) -> str:
+    """Unwrap a backend Background document from a recognized queued-turn shell."""
+
+    queued_section = _markdown_section(text, "Earlier Queued Turns", 2)
+    if not queued_section:
+        return text
+    outer_fence = re.compile(
+        r"(?ms)^\s*(?P<fence>`{4,}|~{4,})[^\r\n]*\r?\n"
+        r"(?P<body>.*?)^\s*(?P=fence)\s*$"
+    )
+    for match in outer_fence.finditer(queued_section):
+        body = match.group("body").strip()
+        headings = _markdown_headings(body)
+        titles = {(level, title.casefold()) for level, title, _start, _end in headings}
+        if (1, "background") in titles and (
+            (2, "conversation facts") in titles
+            or ((2, "you") in titles and (2, "peer") in titles)
+        ):
+            return body
+    return text
 
 
 def _extract_conversation_mode(text: str) -> str:
