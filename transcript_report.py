@@ -12,7 +12,7 @@ from typing import Any
 
 from .config import ClaworldConfig, hermes_home_path
 from .protocol import classify_reply_content
-from .transcript_report_stylekit import display_cols
+from .transcript_report_stylekit import display_cols, sanitize_xml_text
 from .transcript_report_styles import resolve_report_style
 from .transcript_report_types import TranscriptContextBlock, TranscriptHeader, TranscriptMessage
 from .working_memory import append_journal, atomic_write_text, read_session_index
@@ -415,6 +415,7 @@ def _normalize_messages(
         cleaned_text, tags = _extract_control_tags(text)
         cleaned_text = _redact_text(cleaned_text)
         cleaned_text = _strip_internal_markup(cleaned_text)
+        cleaned_text = sanitize_xml_text(cleaned_text)
         if not cleaned_text and not tags:
             continue
         normalized.append(
@@ -736,9 +737,51 @@ def _display_name(identity: str) -> str:
 
 def _public_header_value(value: Any) -> str:
     normalized = _text(value) or ""
-    if re.search(r"(?i)(?:^|[\s(])(?:agt|req|wld|dlv|conversation|management)[_:-][a-z0-9]", normalized):
+    internal_token = re.compile(
+        r"(?i)(?<![\w])(?:agt|req|wld|dlv)[_:-][a-z0-9][a-z0-9_.:-]*"
+    )
+    internal_route = re.compile(r"(?i)(?:conversation|management)(?::[^\s:]+)+")
+    legacy_container_id = re.compile(
+        r"(?i)(?:conversation|management)[_:-][a-z0-9][a-z0-9_.:-]*"
+    )
+    if (
+        internal_token.fullmatch(normalized)
+        or internal_route.fullmatch(normalized)
+        or legacy_container_id.fullmatch(normalized)
+    ):
         return ""
-    return normalized
+    # Legacy/manual text is not a Relay-authored public projection.  Remove an
+    # embedded routing identifier without discarding the surrounding public
+    # prose (for example, "works on AI products").
+    normalized = internal_token.sub(" ", normalized)
+    normalized = internal_route.sub(" ", normalized)
+    return _squash_whitespace(normalized)
+
+
+_HEADER_IMMUTABLE_KEYS = {
+    "conversationMode",
+    "worldName",
+    "worldId",
+    "localIdentity",
+    "peerIdentity",
+    "peerId",
+}
+
+
+def _merge_header_scalar(merged: dict[str, str], key: str, value: Any, source: str) -> None:
+    normalized = _text(value)
+    if not normalized:
+        return
+    source_key = f"__{key}Source"
+    current = _text(merged.get(key))
+    current_source = _text(merged.get(source_key))
+    incoming_priority = _header_profile_source_priority(source)
+    current_priority = _header_profile_source_priority(current_source)
+    if not current or incoming_priority > current_priority:
+        merged[key] = normalized
+        merged[source_key] = source
+    elif current == normalized and incoming_priority > current_priority:
+        merged[source_key] = source
 
 
 def _extract_transcript_header_context(raw_messages: list, source_summary: dict | None = None) -> dict:
@@ -756,23 +799,26 @@ def _extract_transcript_header_context(raw_messages: list, source_summary: dict 
             _merge_header_context_candidate(merged, candidate, source)
         world_id = _text(raw.get("worldId"))
         if world_id:
-            merged.setdefault("worldId", world_id)
-            merged.setdefault("conversationMode", "world")
+            _merge_header_scalar(merged, "worldId", world_id, "structuredDelivery")
+            _merge_header_scalar(merged, "conversationMode", "world", "structuredDelivery")
         from_display = _text(raw.get("fromDisplayIdentity"))
-        if from_display and "peerIdentity" not in merged:
-            merged["peerIdentity"] = from_display
+        if from_display:
+            _merge_header_scalar(merged, "peerIdentity", from_display, "structuredDelivery")
     source_summary = source_summary if isinstance(source_summary, dict) else {}
     source_world_id = _text(source_summary.get("worldId"))
     if source_world_id:
-        merged.setdefault("worldId", source_world_id)
-        merged.setdefault("conversationMode", "world")
+        _merge_header_scalar(merged, "worldId", source_world_id, "sourceSummary")
+        _merge_header_scalar(merged, "conversationMode", "world", "sourceSummary")
+    summary_mode = (_text(source_summary.get("conversationMode")) or "").lower()
+    if summary_mode in {"direct", "world"}:
+        _merge_header_scalar(merged, "conversationMode", summary_mode, "sourceSummary")
     conversation_key = _text(source_summary.get("conversationKey")) or ""
     if "conversationMode" not in merged and re.search(
-        r"(?:^|[:/_-])direct(?:$|[:/_-])",
+        r"(?:^|:)direct$",
         conversation_key,
         flags=re.IGNORECASE,
     ):
-        merged["conversationMode"] = "direct"
+        _merge_header_scalar(merged, "conversationMode", "direct", "sourceSummary")
     profile, source = _select_header_profile(merged)
     return {
         key: value
@@ -801,8 +847,21 @@ def _merge_header_context_candidate(merged: dict[str, str], text: str | None, so
         return
     parsed = _parse_header_context_candidate(text, source)
     for key, value in parsed.items():
+        if source == "untrustedContext" and key not in {
+            "globalProfile",
+            "globalProfileSource",
+            "worldProfile",
+            "worldProfileSource",
+            "worldContext",
+            "worldContextSource",
+        }:
+            continue
         normalized = _text(value)
-        if normalized and _should_merge_header_value(merged, parsed, key, normalized):
+        if not normalized:
+            continue
+        if key in _HEADER_IMMUTABLE_KEYS:
+            _merge_header_scalar(merged, key, normalized, source)
+        elif _should_merge_header_value(merged, parsed, key, normalized):
             merged[key] = normalized
 
 
@@ -825,6 +884,8 @@ def _should_merge_header_value(merged: dict[str, str], parsed: dict[str, str], k
 
 def _header_profile_source_priority(source: str | None) -> int:
     return {
+        "sourceSummary": 6,
+        "structuredDelivery": 5,
         "rawKickoffText": 4,
         "contextText": 3,
         "untrustedContext": 2,

@@ -1267,10 +1267,18 @@ def _hydrate_stored_transcript_direction(cfg: ClaworldConfig, args: dict) -> str
     index = read_session_index(root)
     episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
     episode = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+    cached_viewer_agent = _text(episode.get("directionViewerAgentId"))
+    cached_viewer_account = _text(episode.get("directionViewerAccountId"))
+    current_viewer_agent = _agent_id(cfg, {})
+    current_viewer_account = _text(cfg.account_id)
+    cache_matches_view = not (
+        (cached_viewer_agent and current_viewer_agent and cached_viewer_agent != current_viewer_agent)
+        or (cached_viewer_account and current_viewer_account and cached_viewer_account != current_viewer_account)
+    )
     local_direction = _normalized_request_direction(
         episode.get("requestDirection") or episode.get("direction")
     )
-    if local_direction:
+    if local_direction and cache_matches_view:
         return local_direction
 
     try:
@@ -1297,9 +1305,17 @@ def _persist_conversation_directions(cfg: ClaworldConfig, payload: Any) -> dict[
 
     directions = _conversation_directions(payload)
     root = cfg.memory_root_path()
+    viewer_agent_id = _agent_id(cfg, {})
+    viewer_account_id = _text(cfg.account_id)
     for chat_request_id, direction in directions.items():
         try:
-            record_chat_request_direction(root, chat_request_id, direction)
+            record_chat_request_direction(
+                root,
+                chat_request_id,
+                direction,
+                viewer_agent_id=viewer_agent_id,
+                viewer_account_id=viewer_account_id,
+            )
         except Exception:
             # API results remain usable even if a local cache write is unavailable.
             continue
@@ -1315,11 +1331,18 @@ def _conversation_directions(payload: Any) -> dict[str, str]:
         if isinstance(values, list):
             candidates.extend(item for item in values if isinstance(item, dict))
     directions: dict[str, str] = {}
+    conflicts: set[str] = set()
     for item in candidates:
         chat_request_id = _text(item.get("chatRequestId"))
         direction = _normalized_request_direction(item.get("direction"))
-        if chat_request_id and direction:
-            directions[chat_request_id] = direction
+        if not chat_request_id or not direction or chat_request_id in conflicts:
+            continue
+        current = directions.get(chat_request_id)
+        if current and current != direction:
+            directions.pop(chat_request_id, None)
+            conflicts.add(chat_request_id)
+            continue
+        directions[chat_request_id] = direction
     return directions
 
 

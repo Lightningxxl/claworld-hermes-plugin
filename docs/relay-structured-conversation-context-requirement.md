@@ -235,6 +235,26 @@ data.payload.conversationContext
 
 无权限时必须统一返回 `not_visible`。不得通过 `not_set`、`not_found`、`revision` 或更新时间泄露资源是否存在。
 
+### 5.4 v1 Wire 类型必须严格
+
+v1 validator 必须在任何归一化或 fallback 前检查 JSON wire type，不能先执行 `String(value)`、模板字符串或其他隐式转换：
+
+- `snapshotId`、所有 ID、`displayName`、`agentCode`、Profile/Identity `text`、`format`、`revision` 必须是 JSON string。
+- `conversation.worldId` 只允许 string 或协议明确要求的 `null`。
+- 数字、布尔值、数组或对象形式的上述字段均为协议错误；即使转换后“看起来可用”也不能接受。
+- `capturedAt` 必须是合法 UTC RFC 3339；`Z` 与零偏移形式（如 `+00:00`）都应接受，非零时区、无时区或非法日期应拒绝。
+- `available` 必须携带合法非空 value；其他 state 必须严格携带 `value:null`。
+
+槽位还必须做 mode-aware 校验：Agent/Human Profile 不能是 `not_applicable`；Direct 的 World Agent Profile 与 World Identity 必须是 `not_applicable`；World 的这两个槽位不能是 `not_applicable`。
+
+### 5.5 `not_visible` 与无降级规则
+
+`not_visible` 是 Relay 的权威权限结论。合法 v1 槽位为 `not_visible` 时，客户端不得再从显式 tool fallback、legacy Markdown、旧 episode 字段或 Agent 文本补回内容，否则会绕过 Relay 权限。
+
+若 delivery 声称携带 v1（存在 `conversationContext` 或 v1 schema marker）但对象无效，客户端必须记录协议错误并拒绝消费该对象；同一 delivery 中即使附带形似合法的 Markdown，也不能降级解析。只有完全没有 v1 声明的历史 delivery 才允许进入 legacy-safe parser。
+
+合法 v1 的 `displayName`、`agentCode`、Profile 和 World 名称已经是 Relay 经过权限裁剪的公开投影。客户端不得再因为内容中出现 `agent_tools`、`world_...` 或类似 routing ID 的字面形态而整段删除。内部 ID 过滤仅保留给 legacy Markdown 与 manual fallback。
+
 ## 6. Direct / World 场景规则
 
 | 场景 | Agent Profile | Human Profile | World Agent Profile | World Identity |
@@ -302,6 +322,26 @@ Direct Chat 必须明确返回以下结构，而不是直接删除两个 World �
 4. WebSocket kickoff 与 REST History 中相同 `snapshotId` 的内容必须完全一致。
 5. 快照表示会话开始时的历史事实；资料后续更新只影响新会话或新快照，不得回写旧会话记录。
 6. Relay 可以自行选择数据库 join、缓存或预计算方案，但不能改变 wire contract 和快照语义。
+
+### 9.1 Conversation-start snapshot：first-write-wins
+
+客户端以“第一份合法、完整、scope 一致的 kickoff 快照”为准：
+
+- 相同 `snapshotId` 再次出现但内容不同：记录冲突，不覆盖。
+- 同一 episode 出现不同 `snapshotId`：记录冲突，不覆盖。
+- 后续 delivery 可以只携带与首份快照匹配的引用。
+- `chatRequestId`、mode、`worldId`、local/peer Agent 或 receiving view 任一不一致：拒绝该 delivery 的快照更新。
+- 缺失字段不能把已锁定的 World scope 降成 Direct，也不能改变 local/peer 角色。
+
+方向与内容都是“接收方视角”。`local` 永远是当前 delivery 接收方，`peer` 永远是对端；一个运行时如果可能同时连接会话两侧，必须用 account/agent receiving view 对相同 `chatRequestId` 做 namespace 隔离，不能共享一份方向缓存。
+
+### 9.2 Relay envelope 的 canonical scope
+
+过渡期 Relay 可能在以下受支持位置重复携带 scope：root、`data`、`payload`、`metadata` / `meta`、外层或内层 `notification`、`relatedObjects`。Relay 和客户端都必须先收集并校验同义字段；任意两个非空值不一致时拒绝 delivery，不能按遍历顺序挑一个。
+
+校验成功后，客户端必须把 canonical 非空值真正写入标准 envelope/payload，再交给后续路由与 episode store。仅检查冲突但仍让空的内层 metadata 吞掉外层有效值，同样不符合协议。
+
+`conversationKey` 的 Direct 判断只允许匹配 canonical 结尾（例如 `:direct`），不能在整串 ID 中搜索单词 `direct`；合法 World ID `wld-direct-demo` 不得导致 World 会话被误判成 Direct。
 
 ## 10. 客户端落盘与消费要求
 
