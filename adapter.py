@@ -10,7 +10,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult
 
 from .config import ClaworldConfig
-from .protocol import build_agent_text, classify_reply_content
+from .protocol import build_agent_guidance, build_agent_text, classify_reply_content
 from .relay_client import RelayClient
 from .session_router import build_hermes_session_key, build_session_source, route_envelope
 from .working_memory import (
@@ -274,6 +274,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.warning("failed to build Claworld channel prompt: %s", exc)
+        channel_prompt = _append_prompt_guidance(channel_prompt, build_agent_guidance(envelope))
 
         event = MessageEvent(
             text=build_agent_text(envelope),
@@ -335,6 +336,11 @@ def _is_hermes_transient_status_notice(content: str) -> bool:
 
 def _matches_any(patterns, text: str) -> bool:
     return any(pattern.search(text) for pattern in patterns)
+
+
+def _append_prompt_guidance(prompt: str | None, guidance: str | None) -> str | None:
+    sections = [str(section).strip() for section in (prompt, guidance) if str(section or "").strip()]
+    return "\n\n".join(sections) if sections else None
 
 
 def _completion_silence_reason(outcome: ProcessingOutcome, record: DeliveryRecord) -> str:

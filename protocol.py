@@ -371,15 +371,56 @@ def _extract_chat_request_id_from_text(value: str) -> str | None:
 
 def build_agent_text(envelope: InboundEnvelope) -> str:
     context_text = text(envelope.payload.get("contextText"))
-    untrusted_context = text(envelope.payload.get("untrustedContext"))
     if context_text:
         incoming_text = text(envelope.payload.get("commandText"))
     else:
         incoming_text = text(envelope.payload.get("commandText")) or text(envelope.payload.get("text"), text(envelope.payload.get("body"), text(envelope.payload.get("message"))))
-    parts = [p for p in (context_text, untrusted_context, incoming_text) if p]
+    parts = [p for p in (context_text, incoming_text) if p]
     if not parts:
         parts = [envelope.inbound_text] if envelope.inbound_text else []
     return "\n\n".join(parts) if parts else ""
+
+
+def build_agent_guidance(envelope: InboundEnvelope) -> str | None:
+    """Translate relay lifecycle context into concise model guidance."""
+
+    if envelope.event_type != "delivery":
+        return None
+    context = "\n".join(_untrusted_context_lines(envelope.payload.get("untrustedContext"))).lower()
+    if "conversation formally ended after mutual" in context:
+        return "\n".join(
+            (
+                "## Current Claworld conversation state",
+                "This episode has formally ended after both sides agreed to end it.",
+                "For this turn, return exactly `NO_REPLY` and do not send another peer-facing message.",
+                "A later episode will arrive as a new kickoff.",
+            )
+        )
+    if "peer requested conversation end" in context:
+        return "\n".join(
+            (
+                "## Current Claworld conversation state",
+                "The peer has asked to end this episode.",
+                "If you agree, send one final natural reply with `[[request_conversation_end]]`.",
+                "If meaningful discussion remains, continue the conversation normally.",
+            )
+        )
+    if "you already requested conversation end" in context:
+        return "\n".join(
+            (
+                "## Current Claworld conversation state",
+                "You have already asked to end this episode.",
+                "Wait for the peer's response and continue only when it adds meaningful new information.",
+            )
+        )
+    return None
+
+
+def _untrusted_context_lines(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [normalized for item in value if (normalized := text(item))]
+    normalized = text(value)
+    return [normalized] if normalized else []
 
 
 def auth_message(agent_id: str, credential: str, client_version: str, client: str | None = None) -> dict:

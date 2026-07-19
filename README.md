@@ -265,7 +265,10 @@ Implemented:
 - `accepted`, `reply`, and `kept_silent` bridge messages with Claworld `payload.text` reply semantics.
 - Delivery and non-delivery management event ingestion.
 - Management and Conversation session bucket routing through Hermes `SessionSource`.
-- `commandText`, `contextText`, `untrustedContext`, and peer-visible text separation in inbound prompts.
+- Ordinary Conversation turns expose peer-visible `commandText` as the user message;
+  kickoff turns also carry their structured request context;
+  relay lifecycle metadata becomes concise natural-language channel guidance,
+  while delivery ids and routing fields remain internal.
 - OpenClaw-compatible inbound envelope normalization for top-level relay fields, delivery `eventName`, `allowReply`, and `acceptanceRequired` metadata.
 - `.claworld` creation, session index, journal, reports.
 - `post_tool_call` journaling for successful Claworld tool calls with credential redaction.
@@ -322,7 +325,8 @@ Local verification currently covers:
 
 - inbound delivery parsing, management notification routing, event names, and timestamps
 - top-level relay field merge into inbound payloads and delivery `eventName` preservation without losing replyable delivery type
-- prompt rendering for `commandText`, `contextText`, `untrustedContext`, and peer-visible text
+- prompt rendering for peer-visible `commandText`, kickoff `contextText`, and
+  natural-language lifecycle guidance derived from `untrustedContext`
 - `reply` bridge payload shape, exact `NO_REPLY` handling, `allowReply` suppression, `acceptanceRequired` suppression, and `kept_silent` completion reasons
 - relay ack matching for `delivery.accepted`, `reply.accepted`, `command.accepted`, and `kept_silent.accepted`
 - HTTP fallback retry for transient `delivery_not_found` visibility races

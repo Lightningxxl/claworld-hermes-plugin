@@ -139,7 +139,16 @@ from claworld_hermes_plugin import tools as claworld_tools
 from claworld_hermes_plugin import transcript_report as claworld_transcript
 from claworld_hermes_plugin import transcript_report_stylekit as claworld_stylekit
 from claworld_hermes_plugin.transcript_report_styles import comic_grid as claworld_comic_grid
-from claworld_hermes_plugin.protocol import auth_message, build_agent_text, build_inbound_envelope, classify_reply_content, normalize_http_base_url, normalize_ws_url, reply_message
+from claworld_hermes_plugin.protocol import (
+    auth_message,
+    build_agent_guidance,
+    build_agent_text,
+    build_inbound_envelope,
+    classify_reply_content,
+    normalize_http_base_url,
+    normalize_ws_url,
+    reply_message,
+)
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
 from claworld_hermes_plugin.version import PLUGIN_VERSION
@@ -339,12 +348,39 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("Backend-authored", text)
         self.assertIn("Decide whether to continue the chat.", text)
         self.assertIn("Backend says this is a warm intro.", text)
-        self.assertIn("Peer profile summary.", text)
+        self.assertNotIn("Peer profile summary.", text)
         self.assertNotIn("Peer-visible", text)
         self.assertNotIn("hello from peer", text)
         self.assertNotIn("Claworld live conversation rules", text)
         self.assertNotIn("[[request_conversation_end]]", text)
         self.assertNotIn("NO_REPLY", text)
+
+    def test_formal_end_metadata_becomes_natural_system_guidance(self):
+        envelope = build_inbound_envelope(
+            {
+                "event": "delivery",
+                "data": {
+                    "deliveryId": "dlv-internal-1",
+                    "sessionKey": "conversation:pair-internal",
+                    "payload": {
+                        "commandText": "谢谢你分享这些经验，我们下次再聊。",
+                        "untrustedContext": [
+                            "conversation formally ended after mutual agreement",
+                            "conversationKey=pair:agent-a::agent-b",
+                            "deliveryId=dlv-internal-1",
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(build_agent_text(envelope), "谢谢你分享这些经验，我们下次再聊。")
+        guidance = build_agent_guidance(envelope)
+        self.assertIn("formally ended", guidance)
+        self.assertIn("return exactly `NO_REPLY`", guidance)
+        self.assertIn("new kickoff", guidance)
+        self.assertNotIn("pair:agent-a::agent-b", guidance)
+        self.assertNotIn("dlv-internal-1", guidance)
 
     def test_agent_text_prefers_command_text_when_no_context(self):
         envelope = build_inbound_envelope(
@@ -3117,7 +3153,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                     "data": {
                         "deliveryId": "d-channel-conversation",
                         "sessionKey": "conversation:abc",
-                        "payload": {"text": "hello"},
+                        "payload": {
+                            "commandText": "Thanks for the thoughtful exchange.",
+                            "untrustedContext": [
+                                "conversation formally ended after mutual agreement",
+                                "deliveryId=d-channel-conversation",
+                            ],
+                        },
                     },
                 }
             )
@@ -3140,12 +3182,17 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled[1].source.role_authorized)
         conversation_prompt = handled[0].channel_prompt
         management_prompt = handled[1].channel_prompt
+        self.assertEqual(handled[0].text, "Thanks for the thoughtful exchange.")
+        self.assertNotIn("deliveryId", handled[0].text)
         self.assertIn("# Claworld Conversation Startup Context", conversation_prompt)
         self.assertIn("## `.claworld/context/NOW.md`", conversation_prompt)
         self.assertIn("## `.claworld/context/MEMORY.md`", conversation_prompt)
         self.assertIn("## `.claworld/context/PROFILE.md`", conversation_prompt)
         self.assertNotIn("claworld:claworld-main-session", conversation_prompt)
         self.assertNotIn("sessions/index.json summary", conversation_prompt)
+        self.assertIn("This episode has formally ended", conversation_prompt)
+        self.assertIn("return exactly `NO_REPLY`", conversation_prompt)
+        self.assertNotIn("d-channel-conversation", conversation_prompt)
         self.assertTrue(management_prompt.startswith("## Your Role"))
         self.assertIn("You are currently acting as the private Claworld Manager", management_prompt)
         self.assertFalse(management_prompt.startswith("---"))
