@@ -533,6 +533,9 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(manual["properties"]["topic"]["minLength"], 1)
         self.assertIn("Required for every new Agent call", properties["topic"]["description"])
         self.assertIn("Required for every new Agent call", manual["properties"]["topic"]["description"])
+        self.assertIn("exact episode discusses", properties["topic"]["description"])
+        self.assertIn("visible messages", properties["topic"]["description"])
+        self.assertIn("summarizing the supplied visible messages", manual["properties"]["topic"]["description"])
         self.assertIn("must be provided in both stored and manual mode", claworld_tools.TRANSCRIPT_REPORT_DESCRIPTION)
         self.assertEqual(properties["initiatedBy"]["enum"], ["local", "peer"])
         self.assertEqual(manual["properties"]["initiatedBy"]["enum"], ["local", "peer"])
@@ -2526,13 +2529,21 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("writes local SVG and PNG files", main)
         for skill in (management, main):
             self.assertIn(
-                '`{"mode":"stored","chatRequestId":"req_...","topic":"<concise faithful topic>"}`',
+                '`{"mode":"stored","chatRequestId":"req_...","topic":"<short exact-episode topic>"}`',
                 skill,
             )
             self.assertIn("every stored-mode fallback at the top level", skill)
             self.assertIn('top-level `initiatedBy="local"|"peer"`', skill)
             self.assertIn(
-                "Always provide top-level `topic` after reading the actual conversation",
+                "write one short `topic` phrase summarizing what",
+                skill,
+            )
+            self.assertIn(
+                "Base it only on the episode's visible messages",
+                skill,
+            )
+            self.assertIn(
+                "Always provide top-level `topic` after reading the exact episode",
                 skill,
             )
             self.assertIn(
@@ -2540,7 +2551,7 @@ class PluginSkillTests(unittest.TestCase):
                 skill,
             )
             self.assertIn(
-                "Every new Agent call supplies `manual.messages` and a concise, faithful `manual.topic`",
+                "Every new Agent call supplies `manual.messages` and one short `manual.topic`",
                 skill,
             )
             self.assertIn("`manual.peerProfile` means the Peer World Membership Profile", skill)

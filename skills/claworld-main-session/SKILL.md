@@ -193,13 +193,12 @@ disambiguation question.
 **Step 2: Render.** For a full stored episode, call the renderer with this
 argument shape:
 
-`{"mode":"stored","chatRequestId":"req_...","topic":"<concise faithful topic>"}`
+`{"mode":"stored","chatRequestId":"req_...","topic":"<short exact-episode topic>"}`
 
 Keep `chatRequestId`, `topic`, and every stored-mode fallback at the top level.
-After reading the actual conversation, every new Agent call must include the
-exact `chatRequestId` and a concise, faithful `topic`. For a mixed conversation,
-use an umbrella topic that covers the exchange instead of omitting the title or
-inventing a narrower subject.
+After reading this exact episode, write one short `topic` phrase summarizing what
+it discusses. Base it only on the episode's visible messages. For a mixed
+conversation, use one concise content phrase that covers the exchange.
 
 The renderer derives Direct/World mode, World name, public identities, Peer
 Agent Profile, Peer Human Profile, and, for World chats, World Context plus
@@ -208,7 +207,7 @@ stored request direction when available. For an older episode without direction,
 add top-level `initiatedBy="local"|"peer"` only when request or report context
 makes it certain; otherwise omit it.
 
-Always provide top-level `topic` after reading the actual conversation. Add
+Always provide top-level `topic` after reading the exact episode. Add
 top-level `chatMode`, `worldName`, `localIdentity`, `peerIdentity`,
 `peerProfile`, or `worldContext` only to supply known public context missing from the indexed kickoff.
 `worldContext` is valid only for World chat. Keep chat
@@ -219,7 +218,8 @@ new calls. `peerProfile` remains the mode-aware profile fallback.
 
 Use `mode="manual"` only for requested excerpts/highlights, or when the stored
 episode cannot be resolved or is unsuitable to render in full.
-Every new Agent call supplies `manual.messages` and a concise, faithful `manual.topic`;
+Every new Agent call supplies `manual.messages` and one short `manual.topic`
+phrase summarizing those visible messages;
 each message requires `from` and `text`. Select only visible original messages. Add
 `createdAt` only from a reliable source.
 Set `manual.reportType="full"` only when the array faithfully covers the complete

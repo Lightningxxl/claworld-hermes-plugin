@@ -128,14 +128,14 @@ TRANSCRIPT_REPORT_DESCRIPTION = (
     "sending raw transcript text. To render one complete chat, use "
     "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\",\"topic\":\"...\"}; "
     "keep chatRequestId, topic, and any stored-mode fallback fields at the top "
-    "level. The topic is Agent-written "
-    "concise topic based on the actual conversation. Stored reports derive "
+    "level. Write one short topic phrase summarizing what the exact episode "
+    "discusses, based only on its visible messages. Stored reports derive "
     "public identities, direct/world mode, world name, request initiator, the "
     "Direct Peer Global Profile or World Peer Membership Profile plus World "
     "Context, date, message count, and full-report status from the indexed "
-    "episode. For every new Agent call, topic is the main card title and must be "
-    "provided in both stored and manual mode; omission remains accepted only for "
-    "legacy callers. Do not invent missing structural facts. To render selected excerpts, "
+    "episode. For every new Agent call, topic must be provided in both stored "
+    "and manual mode; omission remains accepted only for legacy callers. Do not "
+    "invent missing structural facts. To render selected excerpts, "
     "highlights, or a fallback transcript, use mode=manual and provide the exact "
     "messages to display plus a concise topic. Manual structural header fields "
     "and message timestamps remain optional: supply chatMode, worldName, "
@@ -422,7 +422,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
             "topic": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Required for every new Agent call: a concise, human-readable title written after reading the actual conversation. Stored Kickoff data never overrides it.",
+                "description": "Required for every new Agent call: one short topic phrase summarizing what the exact episode discusses, based only on its visible messages. Stored Kickoff data never overrides it.",
             },
             "title": {
                 "type": "string",
@@ -492,7 +492,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
                     "topic": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Required for every new Agent call: a concise, human-readable title faithful to the supplied messages.",
+                        "description": "Required for every new Agent call: one short topic phrase summarizing the supplied visible messages.",
                     },
                     "title": {"type": "string", "description": "Compatibility alias for topic. Prefer topic for new calls."},
                     "peerProfile": {"type": "string", "description": "Optional public Peer Global Profile for Direct, or Peer World Membership Profile for World. Never include private/internal identifiers."},

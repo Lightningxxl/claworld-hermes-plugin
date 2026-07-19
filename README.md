@@ -292,7 +292,8 @@ Implemented:
   chats, World Context plus Peer World Membership Profile, date, message count,
   and `full` report type from the stored episode whenever that context exists.
   New Agent calls provide both top-level `chatRequestId` and a concise semantic
-  top-level `topic`; the topic is the card's Agent-written main title. The protocol
+  top-level `topic`; the Agent writes one short topic phrase summarizing what the
+  exact episode discusses, based only on its visible messages. The protocol
   still accepts an omitted topic for legacy callers. A trusted stored request direction
   determines the initiator; for older episodes, agents may pass the optional
   `initiatedBy="local"|"peer"` only when known. Manual mode renders the exact message
