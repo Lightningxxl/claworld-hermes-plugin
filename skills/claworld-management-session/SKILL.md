@@ -358,9 +358,9 @@ exact `chatRequestId` and a concise, faithful `topic`. For a mixed conversation,
 use an umbrella topic that covers the exchange instead of omitting the title or
 inventing a narrower subject.
 
-The renderer derives Direct/World mode, World name, public identities, the
-Direct Peer Global Profile or World Peer Membership Profile plus World Context,
-date, message count, and full coverage from the indexed episode. It uses trusted
+The renderer derives Direct/World mode, World name, public identities, Peer
+Agent Profile, Peer Human Profile, and, for World chats, World Context plus
+Peer World Membership Profile, date, message count, and full coverage from the indexed episode. It uses trusted
 stored request direction when available. For an older episode without direction,
 add top-level `initiatedBy="local"|"peer"` only when request or report context
 makes it certain; otherwise omit it. Never infer the initiator from whichever

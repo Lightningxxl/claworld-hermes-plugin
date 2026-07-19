@@ -644,24 +644,62 @@ def _transcript_header(
             context_label = "Peer Profile"
 
     context_blocks: list[TranscriptContextBlock] = []
-    if context_text:
-        context_blocks.append(
-            TranscriptContextBlock(
-                kind=context_kind,
-                label=context_label,
-                text=context_text,
-                source=context_source,
+    if source_mode == "stored":
+        stored_blocks = [
+            (
+                "peerGlobalProfile",
+                "Agent Profile",
+                _public_header_value(header_context.get("peerGlobalProfile")),
+                _text(header_context.get("peerGlobalProfileSource")) or "rawKickoffText",
+            ),
+            (
+                "peerHumanProfile",
+                "Human Profile",
+                _public_header_value(header_context.get("peerHumanProfile")),
+                _text(header_context.get("peerHumanProfileSource")) or "rawKickoffText",
+            ),
+        ]
+        if chat_mode == "world":
+            stored_blocks.extend(
+                [
+                    (
+                        "worldContext",
+                        "World Context",
+                        world_context,
+                        world_context_source,
+                    ),
+                    (
+                        "peerWorldMembershipProfile",
+                        "World Membership Profile",
+                        _public_header_value(header_context.get("peerWorldProfile")),
+                        _text(header_context.get("peerWorldProfileSource")) or "rawKickoffText",
+                    ),
+                ]
             )
+        context_blocks.extend(
+            TranscriptContextBlock(kind=kind, label=label, text=text, source=source)
+            for kind, label, text, source in stored_blocks
+            if text
         )
-    if chat_mode == "world" and world_context:
-        context_blocks.append(
-            TranscriptContextBlock(
-                kind="worldContext",
-                label="World Context",
-                text=world_context,
-                source=world_context_source,
+    else:
+        if context_text:
+            context_blocks.append(
+                TranscriptContextBlock(
+                    kind=context_kind,
+                    label=context_label,
+                    text=context_text,
+                    source=context_source,
+                )
             )
-        )
+        if chat_mode == "world" and world_context:
+            context_blocks.append(
+                TranscriptContextBlock(
+                    kind="worldContext",
+                    label="World Context",
+                    text=world_context,
+                    source=world_context_source,
+                )
+            )
 
     report_type = "full" if source_mode == "stored" else (_text(args.get("reportType")) or "")
     explicit_initiated_by = _text(args.get("initiatedBy")) or ""
@@ -831,6 +869,8 @@ def _extract_transcript_header_context(raw_messages: list, source_summary: dict 
             "worldId": merged.get("worldId"),
             "peerGlobalProfile": merged.get("globalProfile"),
             "peerGlobalProfileSource": merged.get("globalProfileSource"),
+            "peerHumanProfile": merged.get("humanProfile"),
+            "peerHumanProfileSource": merged.get("humanProfileSource"),
             "peerWorldProfile": merged.get("worldProfile"),
             "peerWorldProfileSource": merged.get("worldProfileSource"),
             "worldContext": merged.get("worldContext"),
@@ -850,6 +890,8 @@ def _merge_header_context_candidate(merged: dict[str, str], text: str | None, so
         if source == "untrustedContext" and key not in {
             "globalProfile",
             "globalProfileSource",
+            "humanProfile",
+            "humanProfileSource",
             "worldProfile",
             "worldProfileSource",
             "worldContext",
@@ -868,9 +910,11 @@ def _merge_header_context_candidate(merged: dict[str, str], text: str | None, so
 def _should_merge_header_value(merged: dict[str, str], parsed: dict[str, str], key: str, value: str) -> bool:
     source_priority_keys = {
         "globalProfile": "globalProfileSource",
+        "humanProfile": "humanProfileSource",
         "worldProfile": "worldProfileSource",
         "worldContext": "worldContextSource",
         "globalProfileSource": "globalProfileSource",
+        "humanProfileSource": "humanProfileSource",
         "worldProfileSource": "worldProfileSource",
         "worldContextSource": "worldContextSource",
     }
@@ -925,10 +969,14 @@ def _parse_header_context_candidate(text: str, source: str) -> dict[str, str]:
         if identity:
             parsed["peerIdentity"] = identity
         global_profile = _markdown_named_code_block(peer_section, "Global Profile", 3)
+        human_profile = _markdown_named_code_block(peer_section, "Human Profile", 3)
         world_profile = _markdown_named_code_block(peer_section, "World Membership Profile", 3)
         if global_profile:
             parsed["globalProfile"] = _squash_whitespace(global_profile)
             parsed["globalProfileSource"] = source
+        if human_profile:
+            parsed["humanProfile"] = _squash_whitespace(human_profile)
+            parsed["humanProfileSource"] = source
         if world_profile:
             parsed["worldProfile"] = _squash_whitespace(world_profile)
             parsed["worldProfileSource"] = source

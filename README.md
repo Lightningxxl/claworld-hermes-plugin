@@ -285,8 +285,8 @@ Implemented:
   stored mode renders one locally indexed `chatRequestId` episode whose
   structured `deliveries[]` records both relay inbound messages and acknowledged
   Hermes replies. The renderer derives the Direct/World mode, World name,
-  public participants, the Direct Peer Global Profile or World Peer Membership
-  Profile plus World Context, date, message count,
+  public participants, Peer Agent Profile, Peer Human Profile, and, for World
+  chats, World Context plus Peer World Membership Profile, date, message count,
   and `full` report type from the stored episode whenever that context exists.
   New Agent calls provide both top-level `chatRequestId` and a concise semantic
   top-level `topic`; the topic is the card's Agent-written main title. The protocol

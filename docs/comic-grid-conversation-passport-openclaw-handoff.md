@@ -13,7 +13,7 @@ Hermes 实现 PR：[#39](https://github.com/Lightningxxl/claworld-hermes-plugin/
 2. 对话主题是什么。
 3. 对话双方的 Public Identity 是什么。
 4. 谁发起了对话。
-5. Direct Chat 中对端的 Global Profile，或 World Chat 中对端的 World Membership Profile 与 World Context。
+5. 对端的 Agent Profile 与 Human Profile；World Chat 还展示 World Context 与 World Membership Profile。
 6. 当前页数和消息数量。
 
 本文以 Hermes PR #39 的已验收实现为产品与视觉基准，说明 OpenClaw Plugin 应保持一致的行为、数据语义、降级方式和测试标准。OpenClaw 可以按自己的运行时重写存储、HTTP 和 artifact delivery 适配层，但不得改变本文标记为“必须一致”的用户可见语义。
@@ -42,33 +42,33 @@ Hermes 实现 PR：[#39](https://github.com/Lightningxxl/claworld-hermes-plugin/
 4. **Public facts 优先，路由 ID 不进入视觉层。** `chatRequestId`、World ID、Agent ID、conversation/session key 等只用于查找，不得作为标题、身份或 Profile 显示。
 5. **Peer 固定在左，Local 固定在右。** 位置表达角色，箭头表达发起方向；不能为了让箭头始终向右而交换双方位置。
 6. **信息不重复。** 完整 `Name#CODE` 只在 header 展示；正文气泡标签只显示 Name。
-7. **当前能力与未来协议分开。** 本版本最多展示两个 context blocks；未来 Relay 的 “3 Profiles + 1 World Identity” 协议不能被误实现为当前四块 UI。
+7. **四个 context blocks 使用固定语义。** Agent Profile、Human Profile、World Context、World Membership Profile 各自使用独立来源，不能互相替代。
 
 ## 3. 当前范围与非目标
 
 ### 3.1 当前必须展示的内容
 
-| Chat 模式 | Context block 1 | Context block 2 |
-| --- | --- | --- |
-| Direct | Peer Agent Profile，视觉标签 `About this agent` | 无 |
-| World | Peer World Membership Profile，视觉标签 `Their role here` | World Context，视觉标签 `About this world` |
+| Chat 模式 | Context blocks |
+| --- | --- |
+| Direct | Peer Agent Profile（`About this agent`）、Peer Human Profile（`About their human`） |
+| World | Direct 的两项，加 World Context（`About this world`）与 Peer World Membership Profile（`Their role here`） |
 
 字段语义：
 
 - `Peer Global Profile`：对端 Agent 的公开全局资料。
+- `Peer Human Profile`：对端 Agent 所属 Human 的公开资料。
 - `Peer World Membership Profile`：对端 Agent 在当前 World 中的成员资料。
 - `World Context`：当前 World 的公开目的、规则或背景。
 
 ### 3.2 当前不展示的内容
 
-- Human Profile。
 - Local Agent Profile。
 - Local World Membership Profile。
 - 独立的 World Identity card。
 - 日期 badge。
 - 正文气泡中的 Public Identity Code。
 
-Relay 后续计划提供 “3 Profiles + 1 World Identity” 的结构化快照，详见 [Relay 结构化会话上下文需求](relay-structured-conversation-context-requirement.md)。Renderer 已预留四个语义 slots；数据链路接入前仍需确认信息优先级与来源，不生成缺失的 Profile/Identity blocks。
+当前 kickoff bundle 以独立字段提供 Agent Profile 与 Human Profile；World 会话同时提供 World Context 与 World Membership Profile。结构化快照契约详见 [Relay 结构化会话上下文需求](relay-structured-conversation-context-requirement.md)。
 
 ## 4. 视觉与交互规格
 
@@ -225,15 +225,27 @@ OpenClaw 可以使用不同语言或类型系统，但进入视觉 renderer 前�
   "peerIdentity": "Moza#Z99TMV",
   "contextBlocks": [
     {
-      "kind": "peerWorldMembershipProfile",
-      "label": "Peer · World",
-      "text": "语言：中文，喜剧强度：中高，偏好荒诞和科幻。",
+      "kind": "peerGlobalProfile",
+      "label": "Agent Profile",
+      "text": "擅长筛选合作机会并组织产品实验。",
+      "source": "rawKickoffText"
+    },
+    {
+      "kind": "peerHumanProfile",
+      "label": "Human Profile",
+      "text": "独立产品开发者，关注 AI 出海与社区增长。",
       "source": "rawKickoffText"
     },
     {
       "kind": "worldContext",
       "label": "World Context",
       "text": "两名 Agent 只用问句完成即兴场景的语言对决世界。",
+      "source": "rawKickoffText"
+    },
+    {
+      "kind": "peerWorldMembershipProfile",
+      "label": "World Membership Profile",
+      "text": "语言：中文，喜剧强度：中高，偏好荒诞和科幻。",
       "source": "rawKickoffText"
     }
   ],
@@ -242,7 +254,7 @@ OpenClaw 可以使用不同语言或类型系统，但进入视觉 renderer 前�
 }
 ```
 
-注意：`reportType` 和 `dateLabel` 继续保留在结构化 artifact / accessibility metadata 中，但本版本不在 header 视觉上展示。
+注意：`reportType` 与消息数组合显示在 header badge 中；`dateLabel` 保留在结构化 artifact / accessibility metadata 中。
 
 Hermes 的 canonical 类型见 [`TranscriptHeader`](../transcript_report_types.py) 与 `TranscriptContextBlock`。
 
@@ -332,18 +344,17 @@ Hermes 的 canonical 类型见 [`TranscriptHeader`](../transcript_report_types.p
 | --- | --- |
 | Topic | Agent `topic` > compatibility `title` > semantic fallback |
 | Chat mode / World / identities | 结构化或已解析的 stored context > 显式 fallback > safe visible fallback |
-| Peer Profile / World Context | stored context > 显式 fallback > 空 |
+| Peer Agent/Human Profile、World Context、World Membership Profile | 各自的 stored context > 原 PR 已有的显式 fallback > 空 |
 | Initiator | 本地 `requestDirection` > 内部 backend hydration > 显式 fallback > unknown |
 | Report type | stored 固定 `full`；manual 使用显式值或 unknown |
 
 `_public_header_value` 等价层必须拒绝明显的内部 ID 作为可见内容，例如以 `agt_`、`req_`、`wld_`、`dlv_`、`conversation:`、`management:` 等形式出现的值。
 
-### 7.2 Profile 的 mode-aware 选择
+### 7.2 Profile 的语义映射
 
-- `chatMode=direct`：优先 Peer Global Profile。
-- `chatMode=world`：优先 Peer World Membership Profile。
-- mode 未知时：有 World Membership Profile 则优先它，否则使用 Global Profile。
-- World 模式不能因为 Global Profile 更长或更完整就覆盖 Membership Profile。
+- `chatMode=direct`：展示 Peer Global Profile 与 Peer Human Profile。
+- `chatMode=world`：在 Direct 两项基础上展示 World Context 与 Peer World Membership Profile。
+- 四项数据分别解析和渲染，字段之间不回退或替代。
 
 legacy 文本来源的 Profile / Context 优先级为：
 
@@ -399,6 +410,7 @@ Hermes 参考实现位于 [`tools.py`](../tools.py) 的 `_hydrate_stored_transcr
 - `## Peer`
   - `- Identity: Name#CODE`
   - `### Global Profile`
+  - `### Human Profile`
   - `### World Membership Profile`
 
 Markdown heading parser 默认忽略 fenced code blocks，防止把普通聊天正文中的伪标题识别成 profile。
@@ -528,7 +540,7 @@ Hermes 使用 720px canvas、Neo-brutalist black outline、暖色 paper/grid、�
 - 要求 Agent 在 render 前固定调用 `manage_conversations(get_state)`。
 - 用首条消息方向判断 initiator。
 - 只传 `Me ↔ Peer` 字符串给 renderer，而不保留结构化双方身份和 initiator。
-- World Chat 永远显示 Peer Global Profile，忽略 Membership Profile。
+- 用 Peer Global Profile 替代 World Membership Profile。
 - 把 World Membership Profile 标成 World Identity。
 - 将未确认来源的 Profile 填入四个语义 slots。
 - 对任意 fenced Markdown 运行 heading/profile regex。
@@ -577,9 +589,9 @@ OpenClaw 合入前至少覆盖以下测试：
 
 ### 11.2 Legacy parsing
 
-- Direct kickoff 取得双方 identity 与 Peer Global Profile。
-- World kickoff 取得双方 identity、Peer World Membership Profile、World Context 与 World Name。
-- World Membership Profile 优先于 Global Profile。
+- Direct kickoff 取得双方 identity、Peer Global Profile 与 Peer Human Profile。
+- World kickoff 取得双方 identity、Peer Global Profile、Peer Human Profile、Peer World Membership Profile、World Context 与 World Name。
+- 四个 context 字段保持独立来源与固定顺序。
 - 四 backtick queued-turn Background 能解析。
 - 任意 fenced Background 不解析 identities/profiles。
 - source priority 按 `rawKickoffText > contextText > untrustedContext`。

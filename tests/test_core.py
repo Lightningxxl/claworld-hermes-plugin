@@ -583,7 +583,7 @@ class TranscriptReportTests(unittest.TestCase):
         )
         self.assertEqual(fallback_title, "夜航工坊")
 
-    def test_kickoff_context_parser_keeps_mode_specific_peer_profile_and_world_context(self):
+    def test_kickoff_context_parser_keeps_complete_peer_and_world_context(self):
         direct_text = "\n".join(
             [
                 "# Background",
@@ -597,6 +597,10 @@ class TranscriptReportTests(unittest.TestCase):
                 "### Global Profile",
                 "```text",
                 "Peer global profile from kickoff.",
+                "```",
+                "### Human Profile",
+                "```text",
+                "Peer human profile from kickoff.",
                 "```",
             ]
         )
@@ -617,16 +621,23 @@ class TranscriptReportTests(unittest.TestCase):
         )
 
         self.assertEqual(direct_context["peerGlobalProfile"], "Peer global profile from kickoff.")
+        self.assertEqual(direct_context["peerHumanProfile"], "Peer human profile from kickoff.")
         self.assertNotIn("worldContext", direct_context)
         self.assertEqual(
             [block.as_dict() for block in direct_header.context_blocks],
             [
                 {
                     "kind": "peerGlobalProfile",
-                    "label": "Peer · Profile",
+                    "label": "Agent Profile",
                     "text": "Peer global profile from kickoff.",
                     "source": "rawKickoffText",
-                }
+                },
+                {
+                    "kind": "peerHumanProfile",
+                    "label": "Human Profile",
+                    "text": "Peer human profile from kickoff.",
+                    "source": "rawKickoffText",
+                },
             ],
         )
 
@@ -654,7 +665,11 @@ class TranscriptReportTests(unittest.TestCase):
                 "- Identity: `Rin#PEER01`",
                 "### Global Profile",
                 "```text",
-                "Peer global profile that World must not display.",
+                "Peer global profile for this world conversation.",
+                "```",
+                "### Human Profile",
+                "```text",
+                "Peer human profile for this world conversation.",
                 "```",
                 "### World Membership Profile",
                 "```text",
@@ -675,10 +690,17 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(world_context["worldContext"], "The real public world context.")
         self.assertEqual(
             [block.kind for block in world_header.context_blocks],
-            ["peerWorldMembershipProfile", "worldContext"],
+            [
+                "peerGlobalProfile",
+                "peerHumanProfile",
+                "worldContext",
+                "peerWorldMembershipProfile",
+            ],
         )
-        self.assertEqual(world_header.context_blocks[0].text, "Peer membership profile for this world.")
-        self.assertEqual(world_header.context_blocks[1].text, "The real public world context.")
+        self.assertEqual(world_header.context_blocks[0].text, "Peer global profile for this world conversation.")
+        self.assertEqual(world_header.context_blocks[1].text, "Peer human profile for this world conversation.")
+        self.assertEqual(world_header.context_blocks[2].text, "The real public world context.")
+        self.assertEqual(world_header.context_blocks[3].text, "Peer membership profile for this world.")
 
     def test_context_cards_bound_long_copy_and_use_dynamic_first_page_height(self):
         short_lines = claworld_comic_grid._bounded_context_lines("Short public profile.", 430)
@@ -1584,6 +1606,11 @@ class TranscriptReportTests(unittest.TestCase):
                     "structured global profile",
                     "```",
                     "",
+                    "### Human Profile",
+                    "```text",
+                    "structured human profile",
+                    "```",
+                    "",
                     "### World Membership Profile",
                     "```text",
                     "structured world profile",
@@ -1708,15 +1735,27 @@ class TranscriptReportTests(unittest.TestCase):
                     "contextSource": "rawKickoffText",
                     "contextBlocks": [
                         {
-                            "kind": "peerWorldMembershipProfile",
-                            "label": "Peer · World",
-                            "text": "structured world profile",
+                            "kind": "peerGlobalProfile",
+                            "label": "Agent Profile",
+                            "text": "structured global profile",
+                            "source": "rawKickoffText",
+                        },
+                        {
+                            "kind": "peerHumanProfile",
+                            "label": "Human Profile",
+                            "text": "structured human profile",
                             "source": "rawKickoffText",
                         },
                         {
                             "kind": "worldContext",
                             "label": "World Context",
                             "text": "A focused archive world for organizing evidence, coordinating members, and connecting related clues across long-running investigations.",
+                            "source": "rawKickoffText",
+                        },
+                        {
+                            "kind": "peerWorldMembershipProfile",
+                            "label": "World Membership Profile",
+                            "text": "structured world profile",
                             "source": "rawKickoffText",
                         },
                     ],
@@ -1732,6 +1771,10 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertIn("WORLD CHAT", visible_svg)
             self.assertIn("Their role here", visible_svg)
             self.assertIn("About this world", visible_svg)
+            self.assertIn("About this agent", visible_svg)
+            self.assertIn("About their human", visible_svg)
+            self.assertIn("context-peerglobalprofile", visible_svg)
+            self.assertIn("context-peerhumanprofile", visible_svg)
             self.assertIn("context-peerworldmembershipprofile", visible_svg)
             self.assertIn("context-worldcontext", visible_svg)
             self.assertEqual(visible_svg.count("context-icon-role"), 1)
