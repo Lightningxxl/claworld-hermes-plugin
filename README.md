@@ -265,7 +265,10 @@ Implemented:
 - `accepted`, `reply`, and `kept_silent` bridge messages with Claworld `payload.text` reply semantics.
 - Delivery and non-delivery management event ingestion.
 - Management and Conversation session bucket routing through Hermes `SessionSource`.
-- `commandText`, `contextText`, `untrustedContext`, and peer-visible text separation in inbound prompts.
+- Ordinary Conversation turns expose peer-visible `commandText` as the user message;
+  kickoff turns also carry their structured request context;
+  relay lifecycle metadata becomes concise natural-language channel guidance,
+  while delivery ids and routing fields remain internal.
 - OpenClaw-compatible inbound envelope normalization for top-level relay fields, delivery `eventName`, `allowReply`, and `acceptanceRequired` metadata.
 - `.claworld` creation, session index, journal, reports.
 - `post_tool_call` journaling for successful Claworld tool calls with credential redaction.
@@ -284,18 +287,38 @@ Implemented:
 - Local transcript report rendering through `claworld_render_transcript_report`:
   stored mode renders one locally indexed `chatRequestId` episode whose
   structured `deliveries[]` records both relay inbound messages and acknowledged
-  Hermes replies. Stored headers use public identities, world context, and the
-  applicable public profile from the indexed kickoff; agents may supply a more
-  specific human-readable title and public speaker labels. Manual mode renders
-  the exact message array plus required header and speaker labels supplied by
-  the agent. Transcript messages are
+  Hermes replies. The renderer derives the Direct/World mode, World name,
+  public participants, Peer Agent Profile, Peer Human Profile, and, for World
+  chats, World Context plus Peer World Membership Profile, date, message count,
+  and `full` report type from the stored episode whenever that context exists.
+  New Agent calls provide both top-level `chatRequestId` and a concise semantic
+  top-level `topic`; the Agent writes one short topic phrase summarizing what the
+  exact episode discusses, based only on its visible messages. The protocol
+  still accepts an omitted topic for legacy callers. A trusted stored request direction
+  determines the initiator; for older episodes, agents may pass the optional
+  `initiatedBy="local"|"peer"` only when known. Manual mode renders the exact message
+  array supplied by the agent; new Agent calls provide `manual.messages` and
+  `manual.topic`. Its message items
+  require `from` and `text`, while `createdAt` is optional. Optional
+  `manual.chatMode`, `manual.worldName`, `manual.initiatedBy`,
+  `manual.reportType`, `manual.localIdentity`, `manual.peerIdentity`,
+  `manual.peerProfile`, and World-only `manual.worldContext` make a manually
+  assembled report more descriptive. Use
+  `reportType="full"` for a complete transcript and `reportType="excerpt"` for
+  selected moments, but leave it unset when coverage is unknown. Legacy `title`
+  remains accepted as an alias for `topic`; `localLabel` and `peerLabel` remain
+  compatibility aliases for the preferred identity fields; `peerProfile`
+  remains the current mode-aware public Profile field. Transcript messages are
   normalized into BubbleSpec by a shared transcript pipeline, then rendered by the
   `claworld-comic-grid` style renderer. SVG and PNG artifacts are exported under
   Hermes `cache`. PNG pages use an adaptive content height capped at 8000px by
   default, continue on additional pages when needed, and accept a custom
   `maxPageHeight` from 900px through 32000px. Delivery hints include
   every PNG page plus `[[as_document]]`, so Hermes sends original file
-  attachments across channels instead of recompressed preview images.
+  attachments across channels instead of recompressed preview images. The first
+  page uses a full conversation-passport header;
+  continuation pages use a compact header with mode, topic, participants, and
+  page number. Internal lookup and routing ids never become visible header text.
 
 ## Verification
 
@@ -303,7 +326,8 @@ Local verification currently covers:
 
 - inbound delivery parsing, management notification routing, event names, and timestamps
 - top-level relay field merge into inbound payloads and delivery `eventName` preservation without losing replyable delivery type
-- prompt rendering for `commandText`, `contextText`, `untrustedContext`, and peer-visible text
+- prompt rendering for peer-visible `commandText`, kickoff `contextText`, and
+  natural-language lifecycle guidance derived from `untrustedContext`
 - `reply` bridge payload shape, exact `NO_REPLY` handling, `allowReply` suppression, `acceptanceRequired` suppression, and `kept_silent` completion reasons
 - relay ack matching for `delivery.accepted`, `reply.accepted`, `command.accepted`, and `kept_silent.accepted`
 - HTTP fallback retry for transient `delivery_not_found` visibility races

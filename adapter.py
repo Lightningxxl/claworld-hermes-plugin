@@ -10,7 +10,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult
 
 from .config import ClaworldConfig
-from .protocol import build_agent_text, classify_reply_content
+from .protocol import build_agent_guidance, build_agent_text, classify_reply_content
 from .relay_client import RelayClient
 from .session_router import build_hermes_session_key, build_session_source, route_envelope
 from .working_memory import (
@@ -19,6 +19,7 @@ from .working_memory import (
     claim_inbound_notification,
     complete_inbound_notification,
     ensure_working_memory,
+    read_session_index,
     record_claworld_route,
     record_outbound_reply,
     release_inbound_notification,
@@ -196,8 +197,14 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
         return {"name": chat_id_text, "type": "dm", "chat_id": chat_id_text}
 
     async def _on_delivery(self, envelope) -> None:
-        route = route_envelope(envelope, self.claworld_config)
         ensure_working_memory(self.memory_root)
+        existing_episode = None
+        if envelope.chat_request_id:
+            index = read_session_index(self.memory_root)
+            episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+            candidate = episodes.get(envelope.chat_request_id)
+            existing_episode = candidate if isinstance(candidate, dict) else None
+        route = route_envelope(envelope, self.claworld_config, existing_episode=existing_episode)
         notification_key = _management_notification_key(envelope, route)
         notification_claim = None
         if notification_key:
@@ -267,6 +274,7 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.warning("failed to build Claworld channel prompt: %s", exc)
+        channel_prompt = _append_prompt_guidance(channel_prompt, build_agent_guidance(envelope))
 
         event = MessageEvent(
             text=build_agent_text(envelope),
@@ -328,6 +336,11 @@ def _is_hermes_transient_status_notice(content: str) -> bool:
 
 def _matches_any(patterns, text: str) -> bool:
     return any(pattern.search(text) for pattern in patterns)
+
+
+def _append_prompt_guidance(prompt: str | None, guidance: str | None) -> str | None:
+    sections = [str(section).strip() for section in (prompt, guidance) if str(section or "").strip()]
+    return "\n\n".join(sections) if sections else None
 
 
 def _completion_silence_reason(outcome: ProcessingOutcome, record: DeliveryRecord) -> str:

@@ -13,7 +13,7 @@ from .http_client import download_share_card, public_error_payload, request_json
 from .protocol import classify_reply_content
 from .transcript_report import MAX_PAGE_HEIGHT, render_transcript_report as render_transcript_report_artifact
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
-from .working_memory import read_session_index, record_owner_route_from_context
+from .working_memory import read_session_index, record_chat_request_direction, record_owner_route_from_context
 
 TOOLSET = "claworld"
 
@@ -121,16 +121,28 @@ SEND_MESSAGE_DESCRIPTION = (
 )
 
 TRANSCRIPT_REPORT_DESCRIPTION = (
-    "Render a Claworld conversation into readable PNG images. Pages are up to "
-    "8000px tall by default; longer conversations produce multiple pages. "
-    "For a complete episode, call with "
-    "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\"}. "
-    "Keep chatRequestId at the top level. Stored mode recovers public identity, "
-    "world context, profile, title, and speaker labels "
-    "automatically. Use mode=manual to render selected quotes or excerpts. "
-    "The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` "
-    "string containing `[[as_document]]` and every page's `MEDIA:` ref. "
-    "Before using this tool for the first time, load "
+    "Render a Claworld conversation transcript into BubbleSpec, SVG, and "
+    "readable PNG artifacts. Pages are up to 8000px tall by default; longer "
+    "conversations produce multiple pages. When you need to show the user the "
+    "concrete content of a Claworld A2A chat, prefer this tool instead of "
+    "sending raw transcript text. To render one complete chat, use "
+    "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\",\"topic\":\"...\"}; "
+    "keep chatRequestId, topic, and any stored-mode fallback fields at the top "
+    "level. Write one short topic phrase summarizing what the exact episode "
+    "discusses, based only on its visible messages. Stored reports derive "
+    "public identities, direct/world mode, world name, request initiator, the "
+    "Direct Peer Global Profile or World Peer Membership Profile plus World "
+    "Context, date, message count, and full-report status from the indexed "
+    "episode. For every new Agent call, topic must be provided in both stored "
+    "and manual mode; omission remains accepted only for legacy callers. Do not "
+    "invent missing structural facts. To render selected excerpts, "
+    "highlights, or a fallback transcript, use mode=manual and provide the exact "
+    "messages to display plus a concise topic. Manual structural header fields "
+    "and message timestamps remain optional: supply chatMode, worldName, "
+    "initiatedBy, reportType, localIdentity, peerIdentity, peerProfile, or worldContext "
+    "under manual only when known. The tool returns PNG page paths and a "
+    "`deliveryHint.primaryMediaBatch` string containing `[[as_document]]` and "
+    "every page's `MEDIA:` ref. Before using this tool for the first time, load "
     'skill_view("claworld:claworld-main-session") for full delivery guidance.'
 )
 
@@ -393,25 +405,56 @@ TRANSCRIPT_REPORT_SCHEMA = {
                 "type": "string",
                 "description": "Required for mode=stored. Top-level Claworld chat request / episode id.",
             },
+            "chatMode": {
+                "type": "string",
+                "enum": ["direct", "world"],
+                "description": "Optional top-level fallback only when an older stored episode has no trusted mode context. Parsed stored context wins.",
+            },
+            "worldName": {
+                "type": "string",
+                "description": "Optional top-level public World-name fallback for an older stored World episode. Parsed stored context wins; omit for Direct.",
+            },
+            "initiatedBy": {
+                "type": "string",
+                "enum": ["local", "peer"],
+                "description": "Optional top-level fallback for an older stored episode with no request direction. Trusted stored requestDirection wins.",
+            },
+            "topic": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Required for every new Agent call: one short topic phrase summarizing what the exact episode discusses, based only on its visible messages. Stored Kickoff data never overrides it.",
+            },
             "title": {
                 "type": "string",
-                "description": "Optional stored-mode report title. Defaults to public peer/world context from the stored kickoff.",
+                "description": "Top-level compatibility alias for topic. Prefer topic for new stored calls.",
             },
             "peerProfile": {
                 "type": "string",
-                "description": "Optional stored-mode subtitle/profile. Defaults to public peer identity and the applicable world/global profile from the stored kickoff.",
+                "description": "Optional top-level public profile fallback. Direct uses the Peer Global Profile; World uses the Peer World Membership Profile. Parsed stored context wins.",
+            },
+            "worldContext": {
+                "type": "string",
+                "description": "Optional top-level public World Context fallback for an older stored World episode. Parsed stored context wins; omit for Direct.",
+            },
+            "localIdentity": {
+                "type": "string",
+                "description": "Optional top-level public local/right-side identity fallback, preferably Name#CODE. Parsed stored identity wins.",
+            },
+            "peerIdentity": {
+                "type": "string",
+                "description": "Optional top-level public peer/left-side identity fallback, preferably Name#CODE. Parsed stored identity wins.",
             },
             "localLabel": {
                 "type": "string",
-                "description": "Optional stored-mode speaker label for local/right-side messages.",
+                "description": "Top-level compatibility alias for localIdentity. Prefer localIdentity for new calls.",
             },
             "peerLabel": {
                 "type": "string",
-                "description": "Optional stored-mode speaker label for peer/left-side messages.",
+                "description": "Top-level compatibility alias for peerIdentity. Prefer peerIdentity for new calls.",
             },
             "manual": {
                 "type": "object",
-                "description": "Manual transcript content. Provide only when mode=manual.",
+                "description": "Manual transcript content. New Agent calls must provide messages and topic; other public header fields are supplied when known.",
                 "properties": {
                     "messages": {
                         "type": "array",
@@ -421,18 +464,45 @@ TRANSCRIPT_REPORT_SCHEMA = {
                             "properties": {
                                 "from": {"type": "string", "enum": ["peer", "local"], "description": "peer=left; local=right."},
                                 "text": {"type": "string", "description": "Visible message text."},
-                                "createdAt": {"type": "string", "description": "Message timestamp, preferably ISO 8601."},
+                                "createdAt": {"type": "string", "description": "Optional real message timestamp, preferably ISO 8601. Omit rather than inventing one."},
                             },
-                            "required": ["from", "text", "createdAt"],
+                            "required": ["from", "text"],
                             "additionalProperties": False,
                         },
                     },
-                    "title": {"type": "string", "description": "Report header title."},
-                    "peerProfile": {"type": "string", "description": "Report header subtitle/profile."},
-                    "localLabel": {"type": "string", "description": "Speaker label for local/right-side messages."},
-                    "peerLabel": {"type": "string", "description": "Speaker label for peer/left-side messages."},
+                    "chatMode": {
+                        "type": "string",
+                        "enum": ["direct", "world"],
+                        "description": "Optional known chat context. Omit when unknown; the renderer will use a neutral chat badge.",
+                    },
+                    "worldName": {
+                        "type": "string",
+                        "description": "Optional public World name. Providing it without chatMode implies world; do not provide it for direct chats.",
+                    },
+                    "initiatedBy": {
+                        "type": "string",
+                        "enum": ["local", "peer"],
+                        "description": "Optional known request initiator. local means the local agent initiated the conversation; peer means the peer did. Omit when unknown.",
+                    },
+                    "reportType": {
+                        "type": "string",
+                        "enum": ["full", "excerpt"],
+                        "description": "Optional coverage claim. Use full only for the complete conversation and excerpt for a selected subset; omit when uncertain.",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Required for every new Agent call: one short topic phrase summarizing the supplied visible messages.",
+                    },
+                    "title": {"type": "string", "description": "Compatibility alias for topic. Prefer topic for new calls."},
+                    "peerProfile": {"type": "string", "description": "Optional public Peer Global Profile for Direct, or Peer World Membership Profile for World. Never include private/internal identifiers."},
+                    "worldContext": {"type": "string", "description": "Optional public World Context for World chat. Omit for Direct and when unavailable."},
+                    "localIdentity": {"type": "string", "description": "Optional public local/right-side identity, preferably Name#CODE when that public code is known."},
+                    "peerIdentity": {"type": "string", "description": "Optional public peer/left-side identity, preferably Name#CODE when that public code is known."},
+                    "localLabel": {"type": "string", "description": "Compatibility alias for localIdentity. Prefer localIdentity for new calls."},
+                    "peerLabel": {"type": "string", "description": "Compatibility alias for peerIdentity. Prefer peerIdentity for new calls."},
                 },
-                "required": ["messages", "title", "peerProfile", "localLabel", "peerLabel"],
+                "required": ["messages"],
                 "additionalProperties": False,
             },
             "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},
@@ -1027,6 +1097,7 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
         )
     else:
         raise ValueError(f"unsupported conversation action: {action}")
+    _persist_conversation_directions(cfg, payload)
     return _action_result("claworld_manage_conversations", action, payload)
 
 
@@ -1173,7 +1244,111 @@ def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
 
 
 def _render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
-    return render_transcript_report_artifact(cfg, args)
+    request_direction = _hydrate_stored_transcript_direction(cfg, args)
+    render_args = dict(args)
+    if request_direction:
+        render_args["initiatedBy"] = {
+            "inbound": "peer",
+            "outbound": "local",
+        }[request_direction]
+    return render_transcript_report_artifact(cfg, render_args)
+
+
+def _hydrate_stored_transcript_direction(cfg: ClaworldConfig, args: dict) -> str:
+    """Best-effort direction hydration so stored rendering remains one tool call."""
+
+    if _text(args.get("mode")) != "stored":
+        return ""
+    chat_request_id = _text(args.get("chatRequestId"))
+    if not chat_request_id:
+        return ""
+
+    root = cfg.memory_root_path()
+    index = read_session_index(root)
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    episode = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+    cached_viewer_agent = _text(episode.get("directionViewerAgentId"))
+    cached_viewer_account = _text(episode.get("directionViewerAccountId"))
+    current_viewer_agent = _agent_id(cfg, {})
+    current_viewer_account = _text(cfg.account_id)
+    cache_matches_view = not (
+        (cached_viewer_agent and current_viewer_agent and cached_viewer_agent != current_viewer_agent)
+        or (cached_viewer_account and current_viewer_account and cached_viewer_account != current_viewer_account)
+    )
+    local_direction = _normalized_request_direction(
+        episode.get("requestDirection") or episode.get("direction")
+    )
+    if local_direction and cache_matches_view:
+        return local_direction
+
+    try:
+        payload = request_json(
+            cfg,
+            "GET",
+            "/v1/chat-requests",
+            query=_drop_empty(
+                {
+                    "agentId": _agent_id(cfg, {}),
+                    "chatRequestId": chat_request_id,
+                }
+            ),
+        )
+    except Exception:
+        return ""
+
+    directions = _persist_conversation_directions(cfg, payload)
+    return directions.get(chat_request_id, "")
+
+
+def _persist_conversation_directions(cfg: ClaworldConfig, payload: Any) -> dict[str, str]:
+    """Persist structured directions returned by chat-request APIs."""
+
+    directions = _conversation_directions(payload)
+    root = cfg.memory_root_path()
+    viewer_agent_id = _agent_id(cfg, {})
+    viewer_account_id = _text(cfg.account_id)
+    for chat_request_id, direction in directions.items():
+        try:
+            record_chat_request_direction(
+                root,
+                chat_request_id,
+                direction,
+                viewer_agent_id=viewer_agent_id,
+                viewer_account_id=viewer_account_id,
+            )
+        except Exception:
+            # API results remain usable even if a local cache write is unavailable.
+            continue
+    return directions
+
+
+def _conversation_directions(payload: Any) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    candidates = [payload]
+    for key in ("chats", "items"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            candidates.extend(item for item in values if isinstance(item, dict))
+    directions: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for item in candidates:
+        chat_request_id = _text(item.get("chatRequestId"))
+        direction = _normalized_request_direction(item.get("direction"))
+        if not chat_request_id or not direction or chat_request_id in conflicts:
+            continue
+        current = directions.get(chat_request_id)
+        if current and current != direction:
+            directions.pop(chat_request_id, None)
+            conflicts.add(chat_request_id)
+            continue
+        directions[chat_request_id] = direction
+    return directions
+
+
+def _normalized_request_direction(value: Any) -> str:
+    direction = (_text(value) or "").lower()
+    return direction if direction in {"inbound", "outbound"} else ""
 
 
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:

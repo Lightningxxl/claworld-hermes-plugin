@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ def _build_delivery_entry(envelope) -> dict | None:
         "fromAgentCode": _text(metadata.get("fromAgentCode")) or None,
         "fromDisplayIdentity": _text(metadata.get("fromDisplayIdentity")) or None,
         "deliveryType": _text(metadata.get("deliveryType")) or None,
+        "worldId": _text(getattr(envelope, "world_id", None)) or _text(metadata.get("worldId")) or None,
         "commandText": _text(payload.get("commandText")) or None,
         "contextText": _text(payload.get("contextText")) or None,
         "createdAt": _text(getattr(envelope, "created_at", None)) or None,
@@ -333,6 +335,128 @@ def write_session_index(root: Path, data: dict) -> None:
     atomic_write_json(root / SESSIONS_DIR / "index.json", data)
 
 
+def _append_episode_conflict(
+    episode: dict,
+    *,
+    bucket: str,
+    field: str,
+    expected: str,
+    received: str,
+    delivery_id: str = "",
+    observed_at: str = "",
+) -> bool:
+    conflicts = list(episode.get(bucket) or [])
+    conflict = {
+        "field": field,
+        "expected": expected,
+        "received": received,
+        **({"deliveryId": delivery_id} if delivery_id else {}),
+        "observedAt": observed_at or iso_now(),
+    }
+    signature = (field, expected, received, delivery_id)
+    if any(
+        isinstance(item, dict)
+        and (item.get("field"), item.get("expected"), item.get("received"), item.get("deliveryId", ""))
+        == signature
+        for item in conflicts
+    ):
+        return False
+    conflicts.append(conflict)
+    episode[bucket] = conflicts
+    return True
+
+
+def _lock_episode_field(
+    episode: dict,
+    field: str,
+    value: str | None,
+    *,
+    delivery_id: str = "",
+    observed_at: str = "",
+) -> bool:
+    incoming = _text(value)
+    if not incoming:
+        return False
+    current = _text(episode.get(field))
+    if not current:
+        episode[field] = incoming
+        return True
+    if current == incoming:
+        return False
+    return _append_episode_conflict(
+        episode,
+        bucket="scopeConflicts",
+        field=field,
+        expected=current,
+        received=incoming,
+        delivery_id=delivery_id,
+        observed_at=observed_at,
+    )
+
+
+def record_chat_request_direction(
+    root: Path,
+    chat_request_id: str,
+    direction: str,
+    *,
+    viewer_agent_id: str = "",
+    viewer_account_id: str = "",
+) -> bool:
+    """Persist the backend-authored request direction for a transcript episode."""
+
+    request_id = _text(chat_request_id)
+    normalized_direction = _text(direction).lower()
+    if not request_id or normalized_direction not in {"inbound", "outbound"}:
+        return False
+
+    data = read_session_index(root)
+    episodes = data.setdefault("conversationEpisodes", {})
+    previous = episodes.get(request_id) if isinstance(episodes.get(request_id), dict) else {}
+    episode = dict(previous)
+    episode.setdefault("chatRequestId", request_id)
+    incoming_viewer_agent = _text(viewer_agent_id)
+    incoming_viewer_account = _text(viewer_account_id)
+    current_viewer_agent = _text(episode.get("directionViewerAgentId"))
+    current_viewer_account = _text(episode.get("directionViewerAccountId"))
+    viewer_conflict = (
+        bool(current_viewer_agent and incoming_viewer_agent and current_viewer_agent != incoming_viewer_agent)
+        or bool(current_viewer_account and incoming_viewer_account and current_viewer_account != incoming_viewer_account)
+    )
+    changed = False
+    if viewer_conflict:
+        changed = _append_episode_conflict(
+            episode,
+            bucket="directionConflicts",
+            field="receivingView",
+            expected=f"{current_viewer_account}:{current_viewer_agent}",
+            received=f"{incoming_viewer_account}:{incoming_viewer_agent}",
+        )
+    else:
+        if incoming_viewer_agent and not current_viewer_agent:
+            episode["directionViewerAgentId"] = incoming_viewer_agent
+            changed = True
+        if incoming_viewer_account and not current_viewer_account:
+            episode["directionViewerAccountId"] = incoming_viewer_account
+            changed = True
+        current_direction = _text(episode.get("requestDirection")).lower()
+        if not current_direction:
+            episode["requestDirection"] = normalized_direction
+            changed = True
+        elif current_direction != normalized_direction:
+            changed = _append_episode_conflict(
+                episode,
+                bucket="directionConflicts",
+                field="requestDirection",
+                expected=current_direction,
+                received=normalized_direction,
+            ) or changed
+    if not changed:
+        return False
+    episodes[request_id] = episode
+    write_session_index(root, data)
+    return True
+
+
 def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) -> None:
     data = read_session_index(root)
     now = iso_now()
@@ -366,6 +490,7 @@ def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) 
         if chat_request_id:
             episodes = data.setdefault("conversationEpisodes", {})
             previous = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+            episode = dict(previous)
             delivery_ids = list(previous.get("deliveryIds") or [])
             if envelope.delivery_id and envelope.delivery_id not in delivery_ids:
                 delivery_ids.append(envelope.delivery_id)
@@ -375,23 +500,53 @@ def record_claworld_route(root: Path, route, hermes_session_key: str, envelope) 
                 deliveries.append(delivery_entry)
             from_agent_code = _text(envelope.metadata.get("fromAgentCode"))
             from_display_identity = _text(envelope.metadata.get("fromDisplayIdentity"))
-            episodes[chat_request_id] = {
-                **previous,
-                "chatRequestId": chat_request_id,
-                "chatId": route.chat_id,
-                "lastActiveSessionKey": hermes_session_key,
-                "relaySessionKey": route.relay_session_key,
-                "conversationKey": route.conversation_key,
-                "targetAgentId": envelope.target_agent_id,
-                **({"fromAgentCode": from_agent_code} if from_agent_code else {}),
-                **({"fromDisplayIdentity": from_display_identity} if from_display_identity else {}),
-                "firstSeenAt": previous.get("firstSeenAt") or _text(getattr(envelope, "created_at", None)) or now,
-                "lastSeenAt": _text(getattr(envelope, "turn_created_at", None)) or _text(getattr(envelope, "updated_at", None)) or _text(getattr(envelope, "created_at", None)) or now,
-                "deliveryIds": delivery_ids,
-                "deliveryCount": len(delivery_ids),
-                "deliveries": deliveries,
-                "updatedAt": now,
-            }
+            peer_agent_id = _text(envelope.metadata.get("fromAgentId"))
+            world_id = _text(getattr(envelope, "world_id", None)) or _text(envelope.metadata.get("worldId"))
+            conversation_key = _text(route.conversation_key)
+            conversation_mode = (
+                "world"
+                if world_id
+                else "direct"
+                if re.search(r"(?:^|:)direct$", conversation_key, flags=re.IGNORECASE)
+                else ""
+            )
+            observed_at = (
+                _text(getattr(envelope, "turn_created_at", None))
+                or _text(getattr(envelope, "updated_at", None))
+                or _text(getattr(envelope, "created_at", None))
+                or now
+            )
+            for field, value in (
+                ("chatRequestId", chat_request_id),
+                ("chatId", route.chat_id),
+                ("relaySessionKey", route.relay_session_key),
+                ("conversationKey", conversation_key),
+                ("conversationMode", conversation_mode),
+                ("worldId", world_id),
+                ("targetAgentId", envelope.target_agent_id),
+                ("peerAgentId", peer_agent_id),
+                ("fromAgentCode", from_agent_code),
+                ("fromDisplayIdentity", from_display_identity),
+            ):
+                _lock_episode_field(
+                    episode,
+                    field,
+                    value,
+                    delivery_id=_text(envelope.delivery_id),
+                    observed_at=observed_at,
+                )
+            episode.update(
+                {
+                    "lastActiveSessionKey": hermes_session_key,
+                    "firstSeenAt": previous.get("firstSeenAt") or _text(getattr(envelope, "created_at", None)) or now,
+                    "lastSeenAt": observed_at,
+                    "deliveryIds": delivery_ids,
+                    "deliveryCount": len(delivery_ids),
+                    "deliveries": deliveries,
+                    "updatedAt": now,
+                }
+            )
+            episodes[chat_request_id] = episode
     write_session_index(root, data)
 
 

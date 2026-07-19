@@ -214,7 +214,11 @@ class RelayClient:
             self._resolve_ack_waiters(event, message)
             return
 
-        envelope = build_inbound_envelope(message)
+        try:
+            envelope = build_inbound_envelope(message)
+        except ValueError as exc:
+            self.logger.warning("claworld relay rejected invalid delivery envelope: %s", exc)
+            return
         if envelope is not None:
             self._dispatch_delivery(envelope)
 

@@ -10,6 +10,11 @@ Management, and Conversation sessions with the same user-visible outcomes.
 The implementation surface differs because Hermes and OpenClaw expose different
 session, skill, gateway, and inter-session APIs.
 
+For the Comic Grid title/passport feature introduced in
+`2026.7.17-testing.4`, use
+[Comic Grid Conversation Passport: feature, implementation, and OpenClaw handoff](comic-grid-conversation-passport-openclaw-handoff.md)
+as the cross-client product and renderer parity contract.
+
 ## Runtime Model
 
 OpenClaw gives the Claworld plugin direct access to OpenClaw session runtime

@@ -104,6 +104,77 @@ def obj(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+RELAY_SCOPE_ALIASES = {
+    "chatRequestId": (
+        "chatRequestId",
+        "chat_request_id",
+        "intentId",
+        "intent_id",
+    ),
+    "conversationKey": ("conversationKey", "conversation_key"),
+    "worldId": ("worldId", "world_id"),
+    "targetAgentId": ("targetAgentId", "target_agent_id"),
+}
+
+
+def _relay_scope_sources(message: dict, data: dict, payload: dict) -> list[dict]:
+    """Return every relay envelope surface allowed to carry scope fields.
+
+    Relays have historically moved routing metadata between envelope layers.
+    Reading all supported layers is compatible; silently choosing one of two
+    conflicting values is not.  Keep this traversal deliberately shallow so
+    arbitrary message content cannot become routing metadata.
+    """
+
+    sources: list[dict] = []
+    seen: set[int] = set()
+
+    def add(candidate: Any) -> None:
+        if not isinstance(candidate, dict) or id(candidate) in seen:
+            return
+        seen.add(id(candidate))
+        sources.append(candidate)
+
+    for container in (message, data, payload):
+        add(container)
+        add(container.get("metadata"))
+        add(container.get("meta"))
+
+    notifications: list[dict] = []
+    for container in tuple(sources):
+        notification = obj(container.get("notification"))
+        if notification:
+            notifications.append(notification)
+            add(notification)
+            add(notification.get("metadata"))
+            add(notification.get("meta"))
+
+    for container in (*tuple(sources), *notifications):
+        related = obj(container.get("relatedObjects"))
+        if related:
+            add(related)
+    return sources
+
+
+def _canonical_relay_scope(message: dict, data: dict, payload: dict) -> dict[str, str]:
+    sources = _relay_scope_sources(message, data, payload)
+    canonical: dict[str, str] = {}
+    for field, aliases in RELAY_SCOPE_ALIASES.items():
+        values: list[str] = []
+        for source in sources:
+            for alias in aliases:
+                normalized = text(source.get(alias))
+                if normalized and normalized not in values:
+                    values.append(normalized)
+        if len(values) > 1:
+            raise ValueError(
+                f"conflicting relay scope field {field}: " + ", ".join(repr(value) for value in values)
+            )
+        if values:
+            canonical[field] = values[0]
+    return canonical
+
+
 def stable_hash(value: str, length: int = 20) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
 
@@ -162,6 +233,11 @@ def build_inbound_envelope(message: dict) -> InboundEnvelope | None:
         ):
             if payload.get(key) is None and data.get(key) is not None:
                 payload[key] = data[key]
+    canonical_scope = _canonical_relay_scope(message, data, direct_payload or payload)
+    # Downstream code should consume one normalized object.  This assignment is
+    # as important as conflict validation: an empty inner metadata object must
+    # not hide a valid value carried by an outer relay layer.
+    payload.update(canonical_scope)
     metadata = obj(data.get("metadata")) or obj(payload.get("metadata")) or obj(data.get("meta"))
     notification = obj(payload.get("notification")) or obj(data.get("notification"))
     relay_event = text(message.get("event"), text(message.get("type")))
@@ -202,16 +278,22 @@ def build_inbound_envelope(message: dict) -> InboundEnvelope | None:
         return None
 
     related = obj(notification.get("relatedObjects"))
-    chat_request_id = extract_chat_request_id(data, payload, metadata, notification, related)
+    chat_request_id = canonical_scope.get("chatRequestId") or extract_chat_request_id(
+        data,
+        payload,
+        metadata,
+        notification,
+        related,
+    )
     return InboundEnvelope(
         event_type=event_type,
         event_name=first_text(data.get("eventName"), payload.get("eventName"), None if relay_event == "delivery" else relay_event),
         delivery_id=delivery_id or stable_hash(f"{event_type}:{session_key}:{json.dumps(payload, sort_keys=True, default=str)}"),
         session_key=session_key,
-        target_agent_id=first_text(data.get("targetAgentId"), payload.get("targetAgentId"), notification.get("targetAgentId"), metadata.get("targetAgentId")),
+        target_agent_id=canonical_scope.get("targetAgentId") or first_text(data.get("targetAgentId"), payload.get("targetAgentId"), notification.get("targetAgentId"), metadata.get("targetAgentId")),
         chat_request_id=chat_request_id,
-        conversation_key=first_text(data.get("conversationKey"), payload.get("conversationKey"), related.get("conversationKey")),
-        world_id=first_text(data.get("worldId"), payload.get("worldId"), related.get("worldId")),
+        conversation_key=canonical_scope.get("conversationKey") or first_text(data.get("conversationKey"), payload.get("conversationKey"), related.get("conversationKey")),
+        world_id=canonical_scope.get("worldId") or first_text(data.get("worldId"), payload.get("worldId"), related.get("worldId")),
         created_at=first_text(data.get("createdAt"), payload.get("createdAt"), data.get("availableAt"), payload.get("availableAt"), notification.get("createdAt")),
         updated_at=first_text(data.get("updatedAt"), payload.get("updatedAt"), notification.get("updatedAt")),
         turn_created_at=first_text(data.get("turnCreatedAt"), payload.get("turnCreatedAt")),
@@ -289,15 +371,56 @@ def _extract_chat_request_id_from_text(value: str) -> str | None:
 
 def build_agent_text(envelope: InboundEnvelope) -> str:
     context_text = text(envelope.payload.get("contextText"))
-    untrusted_context = text(envelope.payload.get("untrustedContext"))
     if context_text:
         incoming_text = text(envelope.payload.get("commandText"))
     else:
         incoming_text = text(envelope.payload.get("commandText")) or text(envelope.payload.get("text"), text(envelope.payload.get("body"), text(envelope.payload.get("message"))))
-    parts = [p for p in (context_text, untrusted_context, incoming_text) if p]
+    parts = [p for p in (context_text, incoming_text) if p]
     if not parts:
         parts = [envelope.inbound_text] if envelope.inbound_text else []
     return "\n\n".join(parts) if parts else ""
+
+
+def build_agent_guidance(envelope: InboundEnvelope) -> str | None:
+    """Translate relay lifecycle context into concise model guidance."""
+
+    if envelope.event_type != "delivery":
+        return None
+    context = "\n".join(_untrusted_context_lines(envelope.payload.get("untrustedContext"))).lower()
+    if "conversation formally ended after mutual" in context:
+        return "\n".join(
+            (
+                "## Current Claworld conversation state",
+                "This episode has formally ended after both sides agreed to end it.",
+                "For this turn, return exactly `NO_REPLY` and do not send another peer-facing message.",
+                "A later episode will arrive as a new kickoff.",
+            )
+        )
+    if "peer requested conversation end" in context:
+        return "\n".join(
+            (
+                "## Current Claworld conversation state",
+                "The peer has asked to end this episode.",
+                "If you agree, send one final natural reply with `[[request_conversation_end]]`.",
+                "If meaningful discussion remains, continue the conversation normally.",
+            )
+        )
+    if "you already requested conversation end" in context:
+        return "\n".join(
+            (
+                "## Current Claworld conversation state",
+                "You have already asked to end this episode.",
+                "Wait for the peer's response and continue only when it adds meaningful new information.",
+            )
+        )
+    return None
+
+
+def _untrusted_context_lines(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [normalized for item in value if (normalized := text(item))]
+    normalized = text(value)
+    return [normalized] if normalized else []
 
 
 def auth_message(agent_id: str, credential: str, client_version: str, client: str | None = None) -> dict:

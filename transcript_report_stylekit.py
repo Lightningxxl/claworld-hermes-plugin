@@ -18,6 +18,28 @@ RESVG_REQUIREMENT = "resvg_py>=0.3.3,<0.5"
 # emoji left so their ink does not collide with the following bold text.
 EMOJI_INLINE_UNITS = 1.12
 EMOJI_INLINE_X_OFFSET = -0.055
+SYMBOL_INLINE_UNITS = 1.0
+
+# Conservative advances for scripts whose shaped glyphs are often much wider
+# than a Latin character count suggests.  These are layout budgets, not font
+# metrics: final SVG/PNG rendering still uses the platform's real system font.
+SCRIPT_CLUSTER_UNITS = {
+    "devanagari": 1.30,
+    "bengali": 1.35,
+    "gurmukhi": 1.80,
+    "gujarati": 1.40,
+    "tamil": 2.50,
+    "telugu": 2.10,
+    "kannada": 2.00,
+    "malayalam": 1.80,
+    "thai": 1.10,
+    "lao": 1.15,
+    "myanmar": 2.30,
+    "ethiopic": 1.70,
+    "khmer": 1.45,
+    "hebrew": 0.90,
+    "arabic": 1.15,
+}
 
 SYSTEM_EMOJI_FONT_FAMILIES = (
     # Prefer each operating system's native color emoji face. The monochrome
@@ -27,6 +49,18 @@ SYSTEM_EMOJI_FONT_FAMILIES = (
     "Noto Color Emoji",
     "Noto Emoji",
     "Noto Sans Symbols 2",
+    "Symbola",
+)
+
+# Keep standalone text-presentation symbols out of adjacent Latin/digit runs.
+# resvg may otherwise select one symbol-capable fallback face for the complete
+# run; some of those faces give ASCII digits a full-em advance even though the
+# wrapping model correctly budgets them as proportional glyphs.
+SYSTEM_SYMBOL_FONT_FAMILIES = (
+    "Segoe UI Symbol",
+    "Noto Sans Symbols 2",
+    "Noto Sans Symbols",
+    "Apple Symbols",
     "Symbola",
 )
 
@@ -151,8 +185,21 @@ SCRIPT_FONT_FAMILIES = {
 }
 
 
+def sanitize_xml_text(value: Any) -> str:
+    """Replace characters forbidden by XML 1.0 before SVG serialization."""
+
+    result = []
+    for char in str(value or ""):
+        code = ord(char)
+        if code in {0x09, 0x0A, 0x0D} or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF:
+            result.append(char)
+        else:
+            result.append("\uFFFD")
+    return "".join(result)
+
+
 def esc(value: Any) -> str:
-    return html.escape(str(value or ""), quote=True)
+    return html.escape(sanitize_xml_text(value), quote=True)
 
 
 def _css_font_family(families: tuple[str, ...], generic: str) -> str:
@@ -172,6 +219,9 @@ def font_family_for_text(text: str) -> str:
 def font_family_for_script(script: str) -> str:
     if script == "emoji":
         return _css_font_family(SYSTEM_EMOJI_FONT_FAMILIES, "sans-serif")
+    if script == "symbol":
+        families = tuple(dict.fromkeys((*SYSTEM_SYMBOL_FONT_FAMILIES, *SYSTEM_UI_FONT_FAMILIES)))
+        return _css_font_family(families, "sans-serif")
     preferred = SCRIPT_FONT_FAMILIES.get(script, ())
     families = tuple(dict.fromkeys((*preferred, *SYSTEM_UI_FONT_FAMILIES)))
     return _css_font_family(families, "sans-serif")
@@ -200,7 +250,7 @@ def terminal_font_family() -> str:
 
 
 def _text_script(text: str) -> str:
-    codepoints = [ord(ch) for ch in str(text or "")]
+    codepoints = [ord(ch) for ch in sanitize_xml_text(text)]
     checks = (
         ("devanagari", ((0x0900, 0x097F), (0xA8E0, 0xA8FF))),
         ("bengali", ((0x0980, 0x09FF),)),
@@ -251,7 +301,7 @@ def _text_script(text: str) -> str:
 def grapheme_clusters(text: str) -> list[str]:
     """Keep emoji modifiers, flags, variation selectors, and ZWJ chains intact."""
 
-    value = str(text or "")
+    value = sanitize_xml_text(text)
     clusters: list[str] = []
     index = 0
     while index < len(value):
@@ -281,19 +331,26 @@ def grapheme_clusters(text: str) -> list[str]:
 
 
 def text_runs(text: str) -> list[tuple[str, str]]:
-    """Split one visible line into normal-script and color-emoji font runs."""
+    """Split one visible line into normal, symbol, and color-emoji font runs."""
 
     runs: list[tuple[str, str]] = []
     normal = ""
     for cluster in grapheme_clusters(text):
-        if is_emoji_cluster(cluster):
+        special_script = (
+            "emoji"
+            if is_emoji_cluster(cluster)
+            else "symbol"
+            if is_text_symbol_cluster(cluster)
+            else ""
+        )
+        if special_script:
             if normal:
                 runs.append((normal, _text_script(normal)))
                 normal = ""
-            if runs and runs[-1][1] == "emoji":
-                runs[-1] = (runs[-1][0] + cluster, "emoji")
+            if runs and runs[-1][1] == special_script:
+                runs[-1] = (runs[-1][0] + cluster, special_script)
             else:
-                runs.append((cluster, "emoji"))
+                runs.append((cluster, special_script))
             continue
         normal += cluster
     if normal:
@@ -322,6 +379,18 @@ def is_emoji_cluster(cluster: str) -> bool:
     if 0x20E3 in codes:
         return True
     return any(_is_emoji_codepoint(code) for code in codes)
+
+
+def is_text_symbol_cluster(cluster: str) -> bool:
+    """Return whether a text-presentation symbol needs an isolated font run."""
+
+    value = str(cluster or "")
+    if not value or is_emoji_cluster(value):
+        return False
+    return any(
+        0x2000 <= ord(ch) <= 0x2BFF and unicodedata.category(ch) == "So"
+        for ch in value
+    )
 
 
 def _is_grapheme_extend(ch: str) -> bool:
@@ -394,7 +463,7 @@ def _is_emoji_codepoint(code: int) -> bool:
 
 def wrap_text(text: str, max_units: float) -> list[str]:
     lines: list[str] = []
-    for paragraph in str(text or "").splitlines() or [""]:
+    for paragraph in sanitize_xml_text(text).splitlines() or [""]:
         current = ""
         current_units = 0.0
         for token in wrap_tokens(paragraph):
@@ -427,7 +496,7 @@ def wrap_text(text: str, max_units: float) -> list[str]:
 
 def wrap_terminal_text(text: str, max_cols: int) -> list[str]:
     lines: list[str] = []
-    for paragraph in str(text or "").splitlines() or [""]:
+    for paragraph in sanitize_xml_text(text).splitlines() or [""]:
         current = ""
         current_cols = 0
         for token in wrap_tokens(paragraph):
@@ -500,7 +569,7 @@ def char_cols(ch: str) -> int:
 
 
 def clip_display(text: str, max_cols: int) -> str:
-    value = str(text or "")
+    value = sanitize_xml_text(text)
     if display_cols(value) <= max_cols:
         return value
     suffix = "..."
@@ -528,7 +597,19 @@ def char_units(ch: str) -> float:
         return 0.35
     if unicodedata.east_asian_width(ch) in {"W", "F"}:
         return 1.0
-    return 0.55
+    if ch in {"W", "M"}:
+        return 0.95
+    if ch in {"w", "m"}:
+        return 0.82
+    if ch.isupper():
+        return 0.72
+    if ch.islower():
+        return 0.64
+    if ch.isdigit():
+        return 0.62
+    if unicodedata.category(ch).startswith("P"):
+        return 0.62
+    return 0.64
 
 
 def _is_nonspacing(ch: str) -> bool:
@@ -546,11 +627,22 @@ def text_units(text: str) -> float:
 def cluster_units(cluster: str) -> float:
     if is_emoji_cluster(cluster):
         return EMOJI_INLINE_UNITS
-    return sum(char_units(ch) for ch in cluster)
+    if is_text_symbol_cluster(cluster):
+        return SYMBOL_INLINE_UNITS
+    codes = [ord(ch) for ch in cluster]
+    # U+FDFD is a compatibility ligature whose rendered ink can approach ten
+    # em in common Arabic fallback fonts despite being one Unicode scalar.
+    if 0xFDFD in codes:
+        return 10.0
+    base_units = sum(char_units(ch) for ch in cluster)
+    script = _text_script(cluster)
+    if script == "arabic" and any(0xFB50 <= code <= 0xFDFF or 0xFE70 <= code <= 0xFEFF for code in codes):
+        return max(base_units, 2.8)
+    return max(base_units, SCRIPT_CLUSTER_UNITS.get(script, 0.0))
 
 
 def ellipsize_text(text: str, max_units: float, *, suffix: str = "...") -> str:
-    value = str(text or "")
+    value = sanitize_xml_text(text)
     if text_units(value) <= max_units:
         return value
     allowed = max(0.0, max_units - text_units(suffix))
