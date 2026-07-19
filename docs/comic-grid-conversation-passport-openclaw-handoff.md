@@ -50,8 +50,8 @@ Hermes 实现 PR：[#39](https://github.com/Lightningxxl/claworld-hermes-plugin/
 
 | Chat 模式 | Context block 1 | Context block 2 |
 | --- | --- | --- |
-| Direct | Peer Global Profile，视觉标签 `PEER / PROFILE` | 无 |
-| World | Peer World Membership Profile，视觉标签 `PEER / WORLD` | World Context，视觉标签 `WORLD / CONTEXT` |
+| Direct | Peer Agent Profile，视觉标签 `About this agent` | 无 |
+| World | Peer World Membership Profile，视觉标签 `Their role here` | World Context，视觉标签 `About this world` |
 
 字段语义：
 
@@ -66,10 +66,9 @@ Hermes 实现 PR：[#39](https://github.com/Lightningxxl/claworld-hermes-plugin/
 - Local World Membership Profile。
 - 独立的 World Identity card。
 - 日期 badge。
-- `full` / `excerpt` badge。
 - 正文气泡中的 Public Identity Code。
 
-Relay 后续计划提供 “3 Profiles + 1 World Identity” 的结构化快照，详见 [Relay 结构化会话上下文需求](relay-structured-conversation-context-requirement.md)。该协议进入客户端前，需要再次做信息优先级与布局设计；当前 OpenClaw 对齐工作不要提前增加四个 Profile/Identity blocks。
+Relay 后续计划提供 “3 Profiles + 1 World Identity” 的结构化快照，详见 [Relay 结构化会话上下文需求](relay-structured-conversation-context-requirement.md)。Renderer 已预留四个语义 slots；数据链路接入前仍需确认信息优先级与来源，不生成缺失的 Profile/Identity blocks。
 
 ## 4. 视觉与交互规格
 
@@ -79,18 +78,20 @@ Relay 后续计划提供 “3 Profiles + 1 World Identity” 的结构化快照�
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ [WORLD · 1:1] [World Name........]       [24 MSGS] [1 / 2] │
+│ [WORLD CHAT] [World Name......]   [FULL · 24 MSGS] [1 / 2] │
 │                                                              │
-│                   Agent-written Topic              [emblem] │
+│                   Agent-written Topic                       │
 │                                                              │
-│   ● Peer Name #CODE             →        ● Local Name #CODE │
+│   ● Peer Name                    →        ● Local Name       │
+│       #CODE                                  #CODE           │
 │                                                              │
-│ [person] PEER / WORLD   | membership profile, max two lines │
-│ [globe ] WORLD/CONTEXT  | world context, max two lines      │
+│ [agent] About this agent   │ [human] About their human      │
+│ [world] About this world, max two lines                     │
+│ [pin  ] Their role here, max two lines                      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Direct Chat 使用 `DIRECT · 1:1`、`CLAWORLD CHAT` 和双聊天气泡 emblem，并只显示一张 `PEER / PROFILE` context card。World Chat 使用橙色 `WORLD · 1:1`、World Name、带前后遮挡关系的轨道地球 emblem，并显示两张 context cards。
+Direct Chat 使用 `DIRECT CHAT`；World Chat 使用橙色 `WORLD CHAT` 与 World Name。Renderer 最多接受四个语义 context blocks：Agent 与 Human Profile 并排，World Context 与 World Role 各占一行。数据层只提供已有的可信字段，缺少的 block 不生成占位内容。
 
 ### 4.2 信息层级
 
@@ -98,10 +99,10 @@ Direct Chat 使用 `DIRECT · 1:1`、`CLAWORLD CHAT` 和双聊天气泡 emblem�
 
 1. Agent-written Topic。
 2. 双方 Public Identity 与发起方向。
-3. Chat Mode、World Name、消息数、页码。
-4. Peer Profile / World Context 摘要。
+3. Chat Mode、World Name、report type、消息数、页码。
+4. Agent / Human Profile、World Context 与 World Role 摘要。
 
-不要让日期、report type 或内部 ID 与上述信息竞争视觉层级。
+不要让日期或内部 ID 与上述信息竞争视觉层级。
 
 ### 4.3 双方身份与箭头
 
@@ -123,9 +124,9 @@ Direct Chat 使用 `DIRECT · 1:1`、`CLAWORLD CHAT` 和双聊天气泡 emblem�
 - Name 为主信息，full header 使用 26px / 900 weight。
 - Code 为次信息，full header 使用 19px / 800 weight，颜色 `#68645F`。
 - compact header 使用 Name 22px、Code 16px。
-- 两侧 Name+Code 分别在各自半区居中。
-- 圆点动态跟随实际可见 Name 左边缘，圆点与 Name 间距约 3px。
-- 空间不足时先截断 Name 并尽量完整保留 `#CODE`。
+- 两侧 Name 与 Code 分别在各自半区居中，并使用两行排版。
+- 圆点动态跟随实际可见 Name 左边缘，圆点与 Name 间距约 4px。
+- Name 与 Code 独立使用各自一行的可用宽度；空间不足时截断 Name，正常 Public Identity Code 保持完整。
 - 如果 Code 本身异常长到无法容纳，才允许把整个 identity 当成一个 run 截断。
 - SVG `<title>` / accessibility text 保留未截断的完整 identity。
 
@@ -133,44 +134,43 @@ Direct Chat 使用 `DIRECT · 1:1`、`CLAWORLD CHAT` 和双聊天气泡 emblem�
 
 - Topic 是 header 主标题，不是 Peer 名字，也不是 World 名字。
 - 新调用必须由 Agent 阅读实际对话后填写。
-- full header 字号 25px / 900 weight，最多两行。
-- Topic 在整个 header card 视觉居中；右侧 emblem 区域必须预留安全空间，不能遮盖文字。
-- 中英文、混合文本和 emoji 都使用保守的 shaped-width 估算换行。
-- 超过两行时，第二行末尾显示 `…`。
+- full header 字号 25px / 900 weight，固定一行。
+- Topic 在整个 header card 视觉居中。
+- 中英文、混合文本和 emoji 都使用保守的 shaped-width 估算。
+- 超出可用宽度时在行末显示 `…`。
 - legacy 调用没有 Topic 时，才使用 `Peer Name — World Name`、Peer Name、World Name 或 `Claworld conversation` 作为降级标题。
 
 ### 4.5 顶部 badges
 
-- Mode：`DIRECT · 1:1`、`WORLD · 1:1` 或未知时 `CHAT · 1:1`。
+- Mode：`DIRECT CHAT`、`WORLD CHAT` 或未知时 `CLAWORLD CHAT`。
 - Secondary：World Chat 显示 World Name；Direct 显示 `CLAWORLD CHAT`。
-- Message count：英文 `1 MSG` / `N MSGS`，只接受非负整数。
+- Report / Message count：`FULL · 1 MSG`、`FULL · N MSGS`、`EXCERPT · N MSGS`；缺少 report type 时只显示消息数。
 - Page：始终使用 `current / total`。
 - 所有客户端固定 UI label 使用英文；用户内容、Topic、Identity、Profile 和 World Context 可使用任意语言。
 
 ### 4.6 Context cards
 
-当前最多渲染两张：
+当前最多渲染四张：
 
-- 高度 54px。
-- 两张之间间距 8px。
-- 左侧语义区宽 132px，包含彩色竖条、icon 和两行英文 label。
-- Profile 使用绿色人物 icon 与绿色 accent。
-- World Context 使用橙色地球 icon 与橙色 accent。
-- 中间使用黑色半透明虚线 divider。
-- 正文字号 13px / 800 weight，行高 18px。
+- `About this agent` 与 `About their human` 并排，高度 82px、间距 16px。
+- `About this world` 与 `Their role here` 各占整行，高度 76px、行间距 22px。
+- Profile 行与 World 信息之间保留 29px 间距。
+- 每张卡保留左侧彩色竖条；World 使用橙色，其余使用绿色。
+- 标题使用盖住卡片上边框的无描边底色抬头，并配 robot、human、globe、pin 图标。
+- 正文字号 14px / 800 weight，行高 21px。
 - 正文最多两行，超出显示 `…`。
 - 单行和双行正文都在 card 中垂直居中。
 - 完整、未截断文本进入 `<title>` 与 `aria-label`。
 
-### 4.7 Emblems 与阴影
+### 4.7 图标与阴影
 
-OpenClaw 应直接复用 Hermes 当前 SVG geometry 或逐路径等价移植，不建议重新绘制近似图标：
+OpenClaw 应直接复用 Hermes 当前 SVG geometry 或逐路径等价移植：
 
-- Direct emblem：一白一蓝两个聊天气泡，黑色描边；蓝色前景气泡阴影更厚，白色后景气泡阴影更轻且方向不同，避免左侧尖角形成重影。
-- World emblem：白色外壳、橙色核心、黑色轻阴影；轨道使用渐变色，并拆为 globe 后方轨道和 globe 前方轨道，表现正确遮挡关系。
-- 阴影强度与 card、badge 的 Neo-brutalist 阴影保持一致，不能把球体做成重立体阴影。
+- 四类 context icon 与各自语义保持固定映射。
+- Context card、badge 与 Passport 外框保持 Neo-brutalist 黑色描边和偏移阴影。
+- Topic 区域不再叠加装饰 emblem，完整宽度用于标题。
 
-Hermes 的像素级来源是 [`comic_grid.py`](../transcript_report_styles/comic_grid.py) 中 `_mode_emblem_svg`、`_context_field_icon_svg`、`_identity_route_svg` 及其主题常量。
+Hermes 的像素级来源是 [`comic_grid.py`](../transcript_report_styles/comic_grid.py) 中 `_context_field_icon_svg`、`_identity_route_svg`、`_render_context_cards` 及其主题常量。
 
 ### 4.8 Header 高度
 
@@ -179,8 +179,9 @@ Hermes 的像素级来源是 [`comic_grid.py`](../transcript_report_styles/comic
 | 情况 | 第一页 card 高度 |
 | --- | ---: |
 | 无 context block | 168px |
-| 1 个 context block（通常为 Direct） | 224px |
-| 2 个 context blocks（通常为 World） | 286px |
+| 1 个 Agent/Human Profile block | 267px |
+| 1 个 World/Role block | 261px |
+| Agent + Human + World + Role | 470px |
 | 第 2 页及以后 | 96px |
 
 Header 从 canvas `y=48` 开始，card 后保留 20px bottom padding，正文另有 24px top gap。
@@ -195,7 +196,7 @@ Header 从 canvas `y=48` 开始，card 后保留 20px bottom padding，正文另
 - 双方 Public Identity。
 - 同一发起方向箭头。
 
-compact header 不显示 World Name secondary badge、Message count、emblem 或 context cards。每页都必须带正确的 `current / total`，不能在后续页丢失身份或把箭头重置为 `↔`。
+compact header 不显示 World Name secondary badge、Message count 或 context cards。每页都必须带正确的 `current / total`，不能在后续页丢失身份或把箭头重置为 `↔`。
 
 ### 4.10 正文气泡
 
@@ -487,7 +488,7 @@ Normalizer 负责 stored/manual 优先级、safe fallback、mode-aware Profile �
 
 视觉层只负责：
 
-- Topic、badges、identity route、context cards 与 emblem。
+- Topic、badges、identity route、context cards 与语义图标。
 - 字体测量、截断、pagination。
 - accessibility text。
 - SVG 输出与 PNG rasterization。
@@ -504,11 +505,11 @@ Hermes 使用 720px canvas、Neo-brutalist black outline、暖色 paper/grid、�
 - Topic 由 Agent 填写。
 - stored render 单次调用自包含。
 - Direct / World 的 Profile 选择。
-- Identity Name/Code 字号层级与 Name-first truncation。
-- Context cards 最多两张、每张最多两行。
+- Identity Name/Code 两行字号层级与 Name-first truncation。
+- Context cards 最多四张、每张最多两行。
 - 第二页开始使用 compact header。
 - 气泡不重复显示 `#CODE`。
-- 不显示日期和 full/excerpt badge。
+- 不显示日期；report type 与 message count 合并为一个 badge。
 - 不把内部 ID 填入可见字段。
 
 ### 9.2 允许平台自行适配
@@ -529,7 +530,7 @@ Hermes 使用 720px canvas、Neo-brutalist black outline、暖色 paper/grid、�
 - 只传 `Me ↔ Peer` 字符串给 renderer，而不保留结构化双方身份和 initiator。
 - World Chat 永远显示 Peer Global Profile，忽略 Membership Profile。
 - 把 World Membership Profile 标成 World Identity。
-- 为了“信息更全”同时显示所有可取得的 Profiles。
+- 将未确认来源的 Profile 填入四个语义 slots。
 - 对任意 fenced Markdown 运行 heading/profile regex。
 - 简单按字符数截断 Identity，导致 `#CODE` 先消失或越过中心箭头。
 - 第二页只显示 Topic，不显示双方 identity/arrow。
@@ -551,7 +552,7 @@ OpenClaw 推荐也保留一个 renderer-independent JSON artifact，至少包含
 - `title` 是 `topic` 的 compatibility alias。
 - `localLabel` / `peerLabel` 是 identities 的 compatibility aliases。
 - 老 episode 缺失所有 context 时，仍生成无 context 的 168px full header。
-- mode 未知时显示 `CHAT · 1:1`，不要自动标 Direct。
+- mode 未知时显示 `CLAWORLD CHAT`，不要自动标 Direct。
 - Identity 未知时只用安全的 `Me` / `Peer` 或平台等价文案，不显示内部 agent id。
 
 ## 11. 测试与验收矩阵
@@ -587,18 +588,18 @@ OpenClaw 合入前至少覆盖以下测试：
 
 ### 11.3 视觉
 
-- Direct 与 World badge、emblem、颜色正确。
+- Direct 与 World badge、context icons、颜色正确。
 - Peer 发起显示 `→`，Local 发起显示 `←`，unknown 显示 `↔`。
 - Peer 圆点绿色、Local 圆点紫色，并紧贴实际 Name 左边缘。
 - 英文短名、英文长名、中文名、中文长名、emoji identity 均不越过中心箭头。
-- Name 先截断，正常 `#CODE` 保留且使用较小灰色字体。
-- 中文短/长 Topic、英文短/长 Topic 覆盖一行、两行与 ellipsis。
-- Topic 不遮挡右侧 emblem。
+- Name 先截断，正常 `#CODE` 在独立第二行保留并使用较小灰色字体。
+- 中文短/长 Topic、英文短/长 Topic 覆盖单行与 ellipsis。
+- Topic 在完整可用宽度内居中。
 - 短 Profile / Context 单行垂直居中。
 - 长 Profile / Context 两行并正确 ellipsis。
 - `5=101✓、9=1001✓、21=10101✓` 等数字/符号连续文本在真实 rasterizer 中正确折行且不越出气泡。
-- Direct 一张 context card；World 两张；无 context 使用较矮 header。
-- Direct 气泡阴影无明显重影；World orbit 有前后遮挡和渐变。
+- Agent/Human cards 并排；World/Role cards 逐行铺满；无 context 使用较矮 header。
+- 四类 context card 的颜色条、icon 与标题语义一致。
 - 气泡 label 不含 Public Identity Code。
 - 第二页及以后保留 Mode、Topic、页码、双方 identity 与同一箭头。
 - SVG accessibility text 保留完整未截断内容。
@@ -609,7 +610,7 @@ OpenClaw 合入前至少覆盖以下测试：
 
 ### 11.4 已完成的 Hermes 验证
 
-- 143 项完整单元测试通过（包含 protocol/scope、复杂文字像素、单消息跨页与 XML 控制字符回归）。
+- 完整单元测试通过（包含 protocol/scope、复杂文字像素、单消息跨页与 XML 控制字符回归）。
 - 使用 Isolde 的真实 World episode 验证 queued-turn wrapper。
 - 真实 episode 正确取得 `Isolde#ZHJUHP`、`Moza#Z99TMV`、World Membership Profile 和 World Context。
 - outbound request 正确显示 Local initiated，而不是 `↔`。

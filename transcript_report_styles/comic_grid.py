@@ -19,7 +19,6 @@ from ..transcript_report_stylekit import (
     text_runs,
     text_units,
     wrap_text,
-    wrap_tokens,
     write_png_from_svg,
 )
 from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMessage
@@ -28,7 +27,7 @@ from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMess
 CANVAS_MARGIN = 24
 FRAME_MARGIN = 16
 HEADER_Y = 48
-HEADER_CARD_HEIGHT_FULL = 286
+HEADER_CARD_HEIGHT_FULL = 470
 HEADER_CARD_HEIGHT_NO_CONTEXT = 168
 HEADER_CARD_HEIGHT_COMPACT = 96
 HEADER_BOTTOM_PAD = 20
@@ -50,17 +49,16 @@ SMALL_FONT_SIZE = 12
 LABEL_FONT_SIZE = 15
 TITLE_FONT_SIZE = 25
 LINE_HEIGHT = 29
-HEADER_TOPIC_MAX_UNITS = 20.0
-HEADER_TOPIC_MAX_LINES = 2
-HEADER_TOPIC_LINE_HEIGHT = 26
-HEADER_TOPIC_EMBLEM_HALF_WIDTH = 28
-HEADER_TOPIC_EMBLEM_GAP = 12
+HEADER_TOPIC_MAX_UNITS = 26.0
 HEADER_COMPACT_TOPIC_MAX_UNITS = 26.0
-CONTEXT_CARD_HEIGHT = 54
-CONTEXT_CARD_GAP = 8
+CONTEXT_CARD_HEIGHT = 76
+CONTEXT_CARD_GAP = 22
+PROFILE_CARD_HEIGHT = 82
+PROFILE_CARD_GAP = 16
+PROFILE_TO_CONTEXT_GAP = 29
 CONTEXT_LABEL_FONT_SIZE = 12
-CONTEXT_TEXT_FONT_SIZE = 13
-CONTEXT_TEXT_LINE_HEIGHT = 18
+CONTEXT_TEXT_FONT_SIZE = 14
+CONTEXT_TEXT_LINE_HEIGHT = 21
 CONTEXT_TEXT_MAX_LINES = 2
 CONTEXT_TEXT_BASELINE_CENTER_OFFSET = 4
 TAG_HEIGHT = 58
@@ -69,12 +67,10 @@ TAG_ICON_GAP = 12
 TAG_ICON_TOP_GAP = 8
 TAG_FALLBACK_MAX_COLS = 10
 TEXT_UNIT_PX = 18.0
-IDENTITY_WIDTH_SAFETY = 1.14
-IDENTITY_CODE_GAP = 3.0
-IDENTITY_NAME_FONT_SIZE = 26
-IDENTITY_CODE_FONT_SIZE = 19
-IDENTITY_COMPACT_NAME_FONT_SIZE = 22
-IDENTITY_COMPACT_CODE_FONT_SIZE = 16
+IDENTITY_NAME_FONT_SIZE = 20
+IDENTITY_CODE_FONT_SIZE = 13
+IDENTITY_COMPACT_NAME_FONT_SIZE = 18
+IDENTITY_COMPACT_CODE_FONT_SIZE = 12
 BLACK = "#090909"
 
 THEME = {
@@ -435,18 +431,11 @@ def _render_full_header(page: LayoutPage) -> str:
     secondary_width = max(0, secondary_right - secondary_x)
 
     topic_center_x = x + w / 2
-    emblem_center_x = x + w - 47
-    topic_safe_right = emblem_center_x - HEADER_TOPIC_EMBLEM_HALF_WIDTH - HEADER_TOPIC_EMBLEM_GAP
-    topic_half_width = min(
-        topic_center_x - (x + 24),
-        topic_safe_right - topic_center_x,
-    )
     topic_max_units = max(
         8.0,
-        min(HEADER_TOPIC_MAX_UNITS, topic_half_width * 2 / TITLE_FONT_SIZE),
+        min(HEADER_TOPIC_MAX_UNITS, (w - 48) / TITLE_FONT_SIZE / 0.88),
     )
-    topic_lines = _topic_lines(data["topic"], max_units=topic_max_units)
-    topic_y = y + (71 if len(topic_lines) > 1 else 84)
+    topic = _ellipsize_topic_text(data["topic"], topic_max_units, suffix="…")
 
     parts = [
         '<g class="conversation-passport conversation-passport-full">',
@@ -471,25 +460,23 @@ def _render_full_header(page: LayoutPage) -> str:
             )
         )
     parts.append(_small_badge_svg(page_x, y + 15, page_width, page_label, "#F1E5FF", "page-badge"))
-    for idx, line in enumerate(topic_lines):
-        parts.append(
-            _render_inline_text_svg(
-                line,
-                topic_center_x,
-                topic_y + idx * HEADER_TOPIC_LINE_HEIGHT,
-                font_size=TITLE_FONT_SIZE,
-                font_weight=900,
-                fill=BLACK,
-                anchor="middle",
-                class_name="conversation-topic",
-            )
+    parts.append(
+        _render_inline_text_svg(
+            topic,
+            topic_center_x,
+            y + 80,
+            font_size=TITLE_FONT_SIZE,
+            font_weight=900,
+            fill=BLACK,
+            anchor="middle",
+            class_name="conversation-topic",
         )
+    )
     parts.extend(
         [
-            _mode_emblem_svg(x + w - 47, y + 82, data["mode"]),
             _identity_route_svg(
                 x + 18,
-                y + 104,
+                y + 96,
                 w - 36,
                 data["peer_identity"],
                 data["local_identity"],
@@ -501,7 +488,7 @@ def _render_full_header(page: LayoutPage) -> str:
         parts.append(
             _render_context_cards(
                 x + 18,
-                y + 156,
+                y + 153,
                 w - 36,
                 data["context_blocks"],
             )
@@ -560,16 +547,31 @@ def _render_context_cards(
     width: float,
     blocks: list[dict[str, str]],
 ) -> str:
-    visible = blocks[:2]
-    return "\n".join(
-        _render_context_card(
-            x,
-            y + index * (CONTEXT_CARD_HEIGHT + CONTEXT_CARD_GAP),
-            width,
-            block,
-        )
-        for index, block in enumerate(visible)
-    )
+    ordered = _ordered_context_blocks(blocks)
+    profile_blocks = [block for block in ordered if _context_card_role(block) in {"agent", "human"}]
+    detail_blocks = [block for block in ordered if _context_card_role(block) not in {"agent", "human"}]
+    parts: list[str] = []
+    next_y = y
+    if profile_blocks:
+        card_width = (width - PROFILE_CARD_GAP) / 2
+        by_role = {_context_card_role(block): block for block in profile_blocks}
+        for index, role in enumerate(("agent", "human")):
+            block = by_role.get(role)
+            if block:
+                parts.append(
+                    _render_context_card(
+                        x + index * (card_width + PROFILE_CARD_GAP),
+                        y,
+                        card_width,
+                        block,
+                        compact=True,
+                    )
+                )
+        next_y += PROFILE_CARD_HEIGHT + (PROFILE_TO_CONTEXT_GAP if detail_blocks else 0)
+    for block in detail_blocks:
+        parts.append(_render_context_card(x, next_y, width, block))
+        next_y += CONTEXT_CARD_HEIGHT + CONTEXT_CARD_GAP
+    return "\n".join(parts)
 
 
 def _render_context_card(
@@ -577,52 +579,47 @@ def _render_context_card(
     y: float,
     width: float,
     block: dict[str, str],
+    *,
+    compact: bool = False,
 ) -> str:
     kind = str(block.get("kind") or "profile")
-    label = str(block.get("label") or "Profile").strip().upper()
+    label = _context_card_label(kind, str(block.get("label") or "Profile"))
     text = " ".join(str(block.get("text") or "").split())
-    label_width = 132.0
-    divider_x = x + label_width
-    content_x = divider_x + 14
-    content_width = max(48.0, x + width - 14 - content_x)
+    card_height = PROFILE_CARD_HEIGHT if compact else CONTEXT_CARD_HEIGHT
+    content_x = x + 27
+    content_width = max(48.0, width - 54)
     lines = _bounded_context_lines(text, content_width)
-    label_lines = _context_field_label_lines(kind, label)
     class_kind = "".join(char.lower() if char.isalnum() else "-" for char in kind).strip("-") or "profile"
-    accent = THEME["world_badge"] if kind == "worldContext" else THEME["left_label"]
+    role = _context_card_role(block)
+    accent = THEME["world_badge"] if role == "world" else THEME["left_label"]
     accessible_text = ellipsize_text(text, 120.0, suffix="…")
     accessible = f"{label}: {accessible_text}" if accessible_text else label
+    legend_width = max(
+        64.0,
+        min(width - 40.0, 42.0 + _identity_name_render_width(label, CONTEXT_LABEL_FONT_SIZE)),
+    )
 
     parts = [
         f'<g class="passport-context-field context-{class_kind}" role="group" aria-label="{esc(accessible)}">',
         f"<title>{esc(accessible)}</title>",
-        f'<rect x="{x + 3:.1f}" y="{y + 3:.1f}" width="{width:.1f}" height="{CONTEXT_CARD_HEIGHT}" rx="15" fill="{BLACK}"/>',
-        f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{CONTEXT_CARD_HEIGHT}" rx="15" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="2.5"/>',
-        f'<rect x="{x + 6:.1f}" y="{y + 13:.1f}" width="6" height="28" rx="3" fill="{accent}"/>',
-        _context_field_icon_svg(x + 36, y + CONTEXT_CARD_HEIGHT / 2, kind),
-        f'<line x1="{divider_x:.1f}" y1="{y + 8:.1f}" x2="{divider_x:.1f}" y2="{y + CONTEXT_CARD_HEIGHT - 8:.1f}" stroke="{BLACK}" stroke-width="2" stroke-dasharray="3 3" opacity="0.45"/>',
+        f'<rect x="{x + 3:.1f}" y="{y + 3:.1f}" width="{width:.1f}" height="{card_height}" rx="15" fill="{BLACK}"/>',
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{card_height}" rx="15" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="2.5"/>',
+        f'<rect x="{x + 8:.1f}" y="{y + 10:.1f}" width="6" height="{card_height - 20}" rx="3" fill="{accent}"/>',
+        f'<rect class="context-field-legend" x="{x + 20:.1f}" y="{y - 10:.1f}" width="{legend_width:.1f}" height="22" fill="{THEME["header_fill"]}"/>',
+        _context_field_icon_svg(x + 34, y + 1, kind),
+        _render_inline_text_svg(
+            label,
+            x + 54,
+            y + 5,
+            font_size=CONTEXT_LABEL_FONT_SIZE,
+            font_weight=900,
+            fill="#68645F",
+            class_name="context-field-label",
+        ),
     ]
-    label_max_units = max(4.0, (label_width - 48) / CONTEXT_LABEL_FONT_SIZE)
-    label_start_y = y + (22 if len(label_lines) > 1 else 31)
-    for index, label_line in enumerate(label_lines):
-        parts.append(
-            _render_inline_text_svg(
-                ellipsize_text(label_line, label_max_units, suffix="…"),
-                x + 84,
-                label_start_y + index * 16,
-                font_size=CONTEXT_LABEL_FONT_SIZE,
-                font_weight=900,
-                fill=BLACK,
-                anchor="middle",
-                class_name=(
-                    "context-field-label context-field-label-primary"
-                    if index == 0
-                    else "context-field-label context-field-label-secondary"
-                ),
-            )
-        )
     content_start_y = (
         y
-        + CONTEXT_CARD_HEIGHT / 2
+        + card_height / 2
         + CONTEXT_TEXT_BASELINE_CENTER_OFFSET
         - max(0, len(lines) - 1) * CONTEXT_TEXT_LINE_HEIGHT / 2
     )
@@ -642,29 +639,77 @@ def _render_context_card(
     return "\n".join(parts)
 
 
-def _context_field_label_lines(kind: str, label: str) -> list[str]:
-    semantic_labels = {
-        "peerGlobalProfile": ["PEER", "PROFILE"],
-        "peerWorldMembershipProfile": ["PEER", "WORLD"],
-        "worldContext": ["WORLD", "CONTEXT"],
-    }
-    if kind in semantic_labels:
-        return semantic_labels[kind]
-    words = [word for word in label.replace("·", " ").split() if word]
-    if len(words) <= 1:
-        return words or ["PROFILE"]
-    return [words[0], " ".join(words[1:])]
+def _context_card_role(block: dict[str, str]) -> str:
+    kind = str(block.get("kind") or "").strip()
+    if kind in {"peerAgentProfile", "peerGlobalProfile", "agentProfile"}:
+        return "agent"
+    if kind in {"peerHumanProfile", "humanProfile"}:
+        return "human"
+    if kind in {"worldContext", "worldIdentity"}:
+        return "world"
+    if kind in {"peerWorldMembershipProfile", "peerWorldProfile", "worldAgentProfile"}:
+        return "role"
+    return "detail"
+
+
+def _ordered_context_blocks(blocks: list[dict[str, str]]) -> list[dict[str, str]]:
+    order = {"agent": 0, "human": 1, "world": 2, "role": 3, "detail": 4}
+    indexed = list(enumerate(blocks))
+    ordered = sorted(
+        indexed,
+        key=lambda item: (order[_context_card_role(item[1])], item[0]),
+    )
+    return [block for _index, block in ordered[:4]]
+
+
+def _context_card_label(kind: str, fallback: str) -> str:
+    role = _context_card_role({"kind": kind})
+    return {
+        "agent": "About this agent",
+        "human": "About their human",
+        "world": "About this world",
+        "role": "Their role here",
+    }.get(role, str(fallback or "Profile").strip().title())
 
 
 def _context_field_icon_svg(cx: float, cy: float, kind: str) -> str:
-    if kind == "worldContext":
-        return _context_icon_svg(cx, cy, "world")
     fill = THEME["left_label"]
+    role = _context_card_role({"kind": kind})
+    if role == "world":
+        fill = THEME["world_badge"]
+        return "\n".join(
+            [
+                '<g class="context-icon context-icon-world">',
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="7" fill="{fill}" stroke="{BLACK}" stroke-width="1.5"/>',
+                f'<path d="M{cx - 6:.1f} {cy:.1f} H{cx + 6:.1f} M{cx:.1f} {cy - 6:.1f} C{cx - 3:.1f} {cy - 2:.1f}, {cx - 3:.1f} {cy + 2:.1f}, {cx:.1f} {cy + 6:.1f} M{cx:.1f} {cy - 6:.1f} C{cx + 3:.1f} {cy - 2:.1f}, {cx + 3:.1f} {cy + 2:.1f}, {cx:.1f} {cy + 6:.1f}" fill="none" stroke="{BLACK}" stroke-width="1" stroke-linecap="round"/>',
+                "</g>",
+            ]
+        )
+    if role == "role":
+        return "\n".join(
+            [
+                '<g class="context-icon context-icon-role">',
+                f'<path d="M{cx:.1f} {cy + 8:.1f} C{cx - 5:.1f} {cy + 2:.1f}, {cx - 7:.1f} {cy - 1:.1f}, {cx - 7:.1f} {cy - 4:.1f} A7 7 0 1 1 {cx + 7:.1f} {cy - 4:.1f} C{cx + 7:.1f} {cy - 1:.1f}, {cx + 5:.1f} {cy + 2:.1f}, {cx:.1f} {cy + 8:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.5" stroke-linejoin="round"/>',
+                f'<circle cx="{cx:.1f}" cy="{cy - 4:.1f}" r="2.2" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="1.2"/>',
+                "</g>",
+            ]
+        )
+    if role == "agent":
+        return "\n".join(
+            [
+                '<g class="context-icon context-icon-agent">',
+                f'<line x1="{cx:.1f}" y1="{cy - 8:.1f}" x2="{cx:.1f}" y2="{cy - 5:.1f}" stroke="{BLACK}" stroke-width="1.4"/>',
+                f'<circle cx="{cx:.1f}" cy="{cy - 9:.1f}" r="1.4" fill="{fill}" stroke="{BLACK}" stroke-width="1"/>',
+                f'<rect x="{cx - 7:.1f}" y="{cy - 5:.1f}" width="14" height="11" rx="3" fill="{fill}" stroke="{BLACK}" stroke-width="1.5"/>',
+                f'<circle cx="{cx - 3:.1f}" cy="{cy:.1f}" r="1.2" fill="{BLACK}"/><circle cx="{cx + 3:.1f}" cy="{cy:.1f}" r="1.2" fill="{BLACK}"/>',
+                "</g>",
+            ]
+        )
     return "\n".join(
         [
-            '<g class="context-icon context-icon-profile">',
-            f'<circle cx="{cx:.1f}" cy="{cy - 6.5:.1f}" r="4.7" fill="{fill}" stroke="{BLACK}" stroke-width="1.9"/>',
-            f'<path d="M{cx - 8:.1f} {cy + 9:.1f} C{cx - 8:.1f} {cy + 2:.1f} {cx - 4:.1f} {cy - 0.5:.1f} {cx:.1f} {cy - 0.5:.1f} C{cx + 4:.1f} {cy - 0.5:.1f} {cx + 8:.1f} {cy + 2:.1f} {cx + 8:.1f} {cy + 9:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.9" stroke-linejoin="round"/>',
+            '<g class="context-icon context-icon-human">',
+            f'<circle cx="{cx:.1f}" cy="{cy - 4:.1f}" r="4" fill="{fill}" stroke="{BLACK}" stroke-width="1.5"/>',
+            f'<path d="M{cx - 7:.1f} {cy + 7:.1f} C{cx - 7:.1f} {cy + 1:.1f}, {cx - 4:.1f} {cy:.1f}, {cx:.1f} {cy:.1f} C{cx + 4:.1f} {cy:.1f}, {cx + 7:.1f} {cy + 1:.1f}, {cx + 7:.1f} {cy + 7:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.5" stroke-linejoin="round"/>',
             "</g>",
         ]
     )
@@ -675,6 +720,8 @@ def _bounded_context_lines(text: str, content_width: float) -> list[str]:
     if not value:
         return []
     max_units = max(4.0, content_width / CONTEXT_TEXT_FONT_SIZE)
+    if _is_latin_text(value):
+        max_units /= 0.82
     lines = wrap_text(value, max_units)
     visible = lines[:CONTEXT_TEXT_MAX_LINES]
     if len(lines) > CONTEXT_TEXT_MAX_LINES and visible:
@@ -688,6 +735,13 @@ def _bounded_context_lines(text: str, content_width: float) -> list[str]:
     return visible
 
 
+def _is_latin_text(text: str) -> bool:
+    runs = [(run, script) for run, script in text_runs(text) if run.strip()]
+    return bool(runs) and all(script == "default" for _run, script in runs) and any(
+        char.isalpha() for char in text
+    )
+
+
 def _header_height(*, compact: bool, header: Any | None = None, subtitle: str = "") -> int:
     if compact:
         card_height = HEADER_CARD_HEIGHT_COMPACT
@@ -699,11 +753,18 @@ def _header_height(*, compact: bool, header: Any | None = None, subtitle: str = 
 
 
 def _full_header_card_height(context_blocks: list[dict[str, str]]) -> int:
-    count = min(2, len(context_blocks))
-    if count == 0:
+    ordered = _ordered_context_blocks(context_blocks)
+    if not ordered:
         return HEADER_CARD_HEIGHT_NO_CONTEXT
-    content_height = count * CONTEXT_CARD_HEIGHT + (count - 1) * CONTEXT_CARD_GAP
-    return min(HEADER_CARD_HEIGHT_FULL, 156 + content_height + 14)
+    has_profile_row = any(_context_card_role(block) in {"agent", "human"} for block in ordered)
+    detail_count = sum(_context_card_role(block) not in {"agent", "human"} for block in ordered)
+    content_height = PROFILE_CARD_HEIGHT if has_profile_row else 0
+    if has_profile_row and detail_count:
+        content_height += PROFILE_TO_CONTEXT_GAP
+    if detail_count:
+        content_height += detail_count * CONTEXT_CARD_HEIGHT
+        content_height += max(0, detail_count - 1) * CONTEXT_CARD_GAP
+    return min(HEADER_CARD_HEIGHT_FULL, 153 + content_height + 32)
 
 
 def _passport_data(page: LayoutPage) -> dict[str, Any]:
@@ -711,7 +772,7 @@ def _passport_data(page: LayoutPage) -> dict[str, Any]:
     mode = _header_value(header, "chat_mode", "chatMode", "mode").lower()
     if mode not in {"direct", "world"}:
         mode = "chat"
-    mode_label = f"{mode.upper()} · 1:1"
+    mode_label = f"{mode.upper()} CHAT" if mode in {"direct", "world"} else "CLAWORLD CHAT"
     topic = _header_value(header, "topic") or _clean_header_title(page.title)
     world_name = _header_value(header, "world_name", "worldName")
     local_identity = _header_value(header, "local_identity", "localIdentity")
@@ -740,7 +801,10 @@ def _passport_data(page: LayoutPage) -> dict[str, Any]:
     report_type = _header_value(header, "report_type", "reportType").lower()
     date_label = _header_value(header, "date_label", "dateLabel")
     message_count = _header_value(header, "message_count", "messageCount")
-    count_label = _message_count_label(message_count)
+    message_count_label = _message_count_label(message_count)
+    count_label = " · ".join(
+        value for value in (report_type.upper(), message_count_label) if value
+    )
     meta = " · ".join(value for value in (date_label, count_label) if value)
     return {
         "mode": mode,
@@ -803,7 +867,7 @@ def _header_context_blocks(header: Any, *, fallback_text: str = "") -> list[dict
 
     if not blocks and fallback_text:
         blocks.append({"kind": "profile", "label": "Profile", "text": fallback_text, "source": "fallback"})
-    return blocks[:2]
+    return blocks[:4]
 
 
 def _header_value(header: Any, *names: str) -> str:
@@ -866,7 +930,7 @@ def _identity_route_svg(
     measured left edge of the (possibly truncated) text.
     """
 
-    height = 36 if compact else 40
+    height = 38 if compact else 44
     gap = 8 if compact else 12
     center_width = 42 if compact else 46
     route_center = x + width / 2
@@ -933,51 +997,27 @@ def _identity_label_svg(
 ) -> str:
     """Render a centered public identity with a dynamically positioned dot."""
 
-    height = 36 if compact else 40
-    dot_y = y + height / 2
+    dot_y = y + (10 if compact else 15)
     radius = 5 if compact else 6
-    dot_gap = 3
+    dot_gap = 4
     identity_font_size = IDENTITY_COMPACT_NAME_FONT_SIZE if compact else IDENTITY_NAME_FONT_SIZE
     code_font_size = IDENTITY_COMPACT_CODE_FONT_SIZE if compact else IDENTITY_CODE_FONT_SIZE
-    identity_y = y + (28 if compact else 30)
-    # The text itself stays centered in its half. Reserve the same amount on
-    # both sides for the left-hand dot so the entire group remains in-bounds.
+    name_y = y + (17 if compact else 21)
+    code_y = y + (32 if compact else 40)
     dot_reserve = radius * 2 + dot_gap + 2
     available_px = max(18.0, width - dot_reserve * 2)
-    _raw_name, raw_code = _split_identity(identity)
-    code_gap = IDENTITY_CODE_GAP if raw_code else 0.0
-    visible_name, visible_code = _ellipsize_identity_parts(
-        identity,
-        max(1.0, available_px / IDENTITY_WIDTH_SAFETY - code_gap),
-        name_font_size=identity_font_size,
-        code_font_size=code_font_size,
-    )
-    name_width = text_units(visible_name) * identity_font_size
-    code_width = text_units(visible_code) * code_font_size
-    visible_gap = IDENTITY_CODE_GAP if visible_code else 0.0
+    raw_name, raw_code = _split_identity(identity)
+    visible_name = _ellipsize_identity_name(raw_name, available_px, identity_font_size)
+    visible_code = ellipsize_text(raw_code, available_px / code_font_size, suffix="…")
     text_center_x = x + width / 2
-    if visible_code:
-        combined_width = name_width + visible_gap + code_width
-        divider_x = text_center_x - combined_width / 2 + name_width
-        name_left_x = divider_x - name_width
-    else:
-        name_left_x = text_center_x - name_width / 2
-
-    # Follow the display name itself, not the wider name + code run. SVG text
-    # anchored at ``end`` uses the font's shaped width, which is a little wider
-    # than ``text_units`` for Latin bold faces, so use a script-aware width for
-    # the dot while keeping wide CJK/emoji runs close to their measured edge.
-    conservative_name_width = _identity_name_render_width(
-        visible_name,
-        identity_font_size,
-    )
-    measured_name_left_x = name_left_x - (conservative_name_width - name_width)
-    dot_x = measured_name_left_x - dot_gap - radius
+    name_width = _identity_name_render_width(visible_name, identity_font_size)
+    dot_x = text_center_x - name_width / 2 - dot_gap - radius
     identity_svg = _render_identity_text_svg(
         visible_name,
         visible_code,
         text_center_x,
-        identity_y,
+        name_y,
+        code_y,
         name_font_size=identity_font_size,
         code_font_size=code_font_size,
         class_name=class_name,
@@ -1041,98 +1081,58 @@ def _identity_default_glyph_units(char: str) -> float:
     return max(0.5, text_units(char) * 1.08)
 
 
+def _ellipsize_identity_name(name: str, max_width: float, font_size: int) -> str:
+    if _identity_name_render_width(name, font_size) <= max_width:
+        return name
+    suffix = "…"
+    allowed = max(0.0, max_width - _identity_name_render_width(suffix, font_size))
+    kept = ""
+    for cluster in grapheme_clusters(name):
+        if _identity_name_render_width(kept + cluster, font_size) > allowed:
+            break
+        kept += cluster
+    return kept.rstrip() + suffix
+
+
 def _render_identity_text_svg(
     name: str,
     code: str,
     x: float,
-    y: float,
+    name_y: float,
+    code_y: float,
     *,
     name_font_size: int,
     code_font_size: int,
     class_name: str,
 ) -> str:
-    """Render identity parts around a shared divider without SVG tspans.
+    """Render the public name and code on independent centered rows."""
 
-    The bold name ends at the divider and the smaller code begins just after
-    it, so each side's real glyph shaping cannot overlap the other. The
-    existing inline renderer keeps mixed scripts and emoji in independent
-    text nodes, which is required by the supported usvg/resvg versions.
-    """
-
-    name_width = text_units(name) * name_font_size
-    if not code:
-        return _render_inline_text_svg(
+    parts = [
+        _render_inline_text_svg(
             name,
             x,
-            y,
+            name_y,
             font_size=name_font_size,
             font_weight=900,
             fill=BLACK,
             anchor="middle",
             class_name=f"{class_name}-name identity-name identity-text",
         )
-
-    code_width = text_units(code) * code_font_size
-    code_gap = IDENTITY_CODE_GAP
-    combined_width = name_width + code_gap + code_width
-    divider_x = x - combined_width / 2 + name_width
-    name_svg = _render_inline_text_svg(
-        name,
-        divider_x,
-        y,
-        font_size=name_font_size,
-        font_weight=900,
-        fill=BLACK,
-        anchor="end",
-        class_name=f"{class_name}-name identity-name identity-text",
-    )
-    code_svg = _render_inline_text_svg(
-        code,
-        divider_x + code_gap,
-        y,
-        font_size=code_font_size,
-        font_weight=800,
-        fill="#68645F",
-        class_name=f"{class_name}-code identity-code identity-text",
-    )
-    return f"{name_svg}\n{code_svg}"
-
-
-def _ellipsize_identity_parts(
-    identity: str,
-    max_width: float,
-    *,
-    name_font_size: int,
-    code_font_size: int,
-) -> tuple[str, str]:
-    """Fit a public identity while preserving a valid trailing ``#CODE``.
-
-    Width is measured in pixels because the name and code intentionally use
-    different font sizes. In normal public identities the complete code is
-    retained and truncation is applied to the display name first.
-    """
-
-    name, code = _split_identity(identity)
-    code_width = text_units(code) * code_font_size
-    name_width = text_units(name) * name_font_size
-    if name_width + code_width <= max_width:
-        return name, code
-
+    ]
     if code:
-        name_budget = max_width - code_width
-        ellipsis_width = text_units("…") * name_font_size
-        if name_budget >= ellipsis_width:
-            visible_name = ellipsize_text(
-                name,
-                name_budget / name_font_size,
-                suffix="…",
+        parts.append(
+            _render_inline_text_svg(
+                code,
+                x,
+                code_y,
+                font_size=code_font_size,
+                font_weight=800,
+                fill="#68645F",
+                anchor="middle",
+                class_name=f"{class_name}-code identity-code identity-text",
             )
-            return visible_name, code
-
-    # A pathological code can itself exceed the column. Fall back to one
-    # safely bounded run rather than allowing it to cross the center route.
-    value = str(identity or "").strip()
-    return ellipsize_text(value, max_width / name_font_size, suffix="…"), ""
+        )
+    return "\n".join(parts)
 
 
 def _split_identity(identity: str) -> tuple[str, str]:
@@ -1162,43 +1162,6 @@ def _ellipsize_identity(identity: str, max_units: float) -> str:
 def _clean_header_title(title: str) -> str:
     clean = str(title or "").strip()
     return clean[1:] if clean.startswith("@") else clean
-
-
-def _topic_lines(topic: str, *, max_units: float = HEADER_TOPIC_MAX_UNITS) -> list[str]:
-    lines = _wrap_topic_text(str(topic or "").strip(), max_units)
-    if len(lines) <= HEADER_TOPIC_MAX_LINES:
-        return lines or ["Claworld conversation"]
-    visible = lines[: HEADER_TOPIC_MAX_LINES - 1]
-    remainder = " ".join(line.strip() for line in lines[HEADER_TOPIC_MAX_LINES - 1 :] if line.strip())
-    visible.append(_ellipsize_topic_text(remainder, max_units, suffix="…"))
-    return visible
-
-
-def _wrap_topic_text(text: str, max_units: float) -> list[str]:
-    """Wrap a heavy title using conservative shaped-width estimates."""
-
-    lines: list[str] = []
-    for paragraph in str(text or "").splitlines() or [""]:
-        current = ""
-        for token in wrap_tokens(paragraph):
-            if token.isspace():
-                if current and _topic_render_units(current + " ") <= max_units:
-                    current += " "
-                continue
-            if current and _topic_render_units(current + token) > max_units:
-                lines.append(current.rstrip())
-                current = ""
-            if _topic_render_units(token) > max_units:
-                for cluster in grapheme_clusters(token):
-                    if current and _topic_render_units(current + cluster) > max_units:
-                        lines.append(current.rstrip())
-                        current = ""
-                    current += cluster
-            else:
-                current += token
-        if current or not lines:
-            lines.append(current.rstrip())
-    return lines
 
 
 def _ellipsize_topic_text(text: str, max_units: float, *, suffix: str) -> str:
@@ -1324,59 +1287,6 @@ def _connection_icon_svg(x: float, y: float, *, compact: bool = False) -> str:
             "</g>",
         ]
     )
-
-
-def _context_icon_svg(cx: float, cy: float, mode: str) -> str:
-    fill = THEME["world_badge"] if mode == "world" else THEME["direct_badge"]
-    if mode == "world":
-        return "\n".join(
-            [
-                '<g class="context-icon context-icon-world">',
-                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="8.2" fill="{fill}" stroke="{BLACK}" stroke-width="2"/>',
-                f'<path d="M{cx - 7.1:.1f} {cy:.1f} H{cx + 7.1:.1f} M{cx:.1f} {cy - 7.1:.1f} C{cx - 3.5:.1f} {cy - 2.4:.1f} {cx - 3.5:.1f} {cy + 2.4:.1f} {cx:.1f} {cy + 7.1:.1f} M{cx:.1f} {cy - 7.1:.1f} C{cx + 3.5:.1f} {cy - 2.4:.1f} {cx + 3.5:.1f} {cy + 2.4:.1f} {cx:.1f} {cy + 7.1:.1f}" fill="none" stroke="{BLACK}" stroke-width="1.3" stroke-linecap="round"/>',
-                "</g>",
-            ]
-        )
-    return "\n".join(
-        [
-            '<g class="context-icon context-icon-direct">',
-            f'<path d="M{cx - 7:.1f} {cy - 5:.1f} H{cx + 7:.1f} V{cy + 4:.1f} H{cx + 1:.1f} L{cx - 3:.1f} {cy + 8:.1f} V{cy + 4:.1f} H{cx - 7:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="2" stroke-linejoin="round"/>',
-            "</g>",
-        ]
-    )
-
-
-def _mode_emblem_svg(cx: float, cy: float, mode: str) -> str:
-    if mode == "world":
-        return "\n".join(
-            [
-                '<g class="mode-emblem mode-emblem-world">',
-                f'<circle class="mode-emblem-shadow mode-emblem-world-shadow" cx="{cx + 2:.1f}" cy="{cy + 2.5:.1f}" r="17" fill="{BLACK}"/>',
-                f'<ellipse class="mode-emblem-orbit mode-emblem-orbit-back" cx="{cx:.1f}" cy="{cy:.1f}" rx="25" ry="8" fill="none" stroke="url(#modeOrbitGradient)" stroke-width="5" transform="rotate(-13 {cx:.1f} {cy:.1f})"/>',
-                '<g class="mode-emblem-globe">',
-                f'<circle class="mode-emblem-planet-shell" cx="{cx:.1f}" cy="{cy:.1f}" r="17" fill="#FFFFFF" stroke="{BLACK}" stroke-width="3"/>',
-                f'<circle class="mode-emblem-planet-core" cx="{cx:.1f}" cy="{cy:.1f}" r="11" fill="{THEME["world_badge"]}" stroke="{BLACK}" stroke-width="2.5"/>',
-                "</g>",
-                f'<path class="mode-emblem-orbit mode-emblem-orbit-front" d="M{cx - 25:.1f} {cy:.1f} A25 8 0 0 0 {cx + 25:.1f} {cy:.1f}" fill="none" stroke="url(#modeOrbitGradient)" stroke-width="5" transform="rotate(-13 {cx:.1f} {cy:.1f})"/>',
-                "</g>",
-            ]
-        )
-    if mode == "direct":
-        translate_x = cx - 32
-        translate_y = cy - 26
-        return "\n".join(
-            [
-                f'<g class="mode-emblem mode-emblem-direct" transform="translate({translate_x:.1f} {translate_y:.1f})">',
-                '<g class="mode-emblem-shadow mode-emblem-direct-shadow">',
-                f'<path class="mode-emblem-direct-shadow-back" d="M8 15.7883L8.5 14.5L36 15.7883V38.5H23L15 46.5V38.5H8V15.7883Z" fill="{BLACK}"/>',
-                f'<path class="mode-emblem-direct-shadow-front" d="M32 23H43.5L59.5 23.5L60 25V44.8772H52V52L44 44.8772H35L32 42V23Z" fill="{BLACK}"/>',
-                "</g>",
-                f'<path class="mode-emblem-chat-bubble mode-emblem-chat-bubble-back" d="M10 15H38V34H25L17 42V34H10V15Z" fill="#FFFFFF" stroke="{BLACK}" stroke-width="3" stroke-linejoin="round"/>',
-                f'<path class="mode-emblem-chat-bubble mode-emblem-chat-bubble-front" d="M33 24H58V41H50V48L42 41H33V24Z" fill="{THEME["direct_badge"]}" stroke="{BLACK}" stroke-width="3" stroke-linejoin="round"/>',
-                "</g>",
-            ]
-        )
-    return _decorative_star_svg(cx, cy, 17, "#FFFFFF", "url(#headerAccent)")
 
 
 def _render_ellipsis_svg(page: LayoutPage, item: dict[str, Any]) -> str:
@@ -1658,7 +1568,6 @@ def _svg_defs(page: LayoutPage) -> str:
             '<pattern id="comicGridMinor" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#BED1D8" stroke-width="1" stroke-opacity="0.62"/></pattern>',
             '<pattern id="comicGridMajor" width="128" height="128" patternUnits="userSpaceOnUse"><path d="M 128 0 L 0 0 0 128" fill="none" stroke="#AABFC8" stroke-width="1.4" stroke-opacity="0.72"/></pattern>',
             '<linearGradient id="headerAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#47B6FF"/><stop offset="52%" stop-color="#FF4EB4"/><stop offset="100%" stop-color="#FF8A2A"/></linearGradient>',
-            '<linearGradient id="modeOrbitGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#8F72FF"/><stop offset="52%" stop-color="#FF4EB4"/><stop offset="100%" stop-color="#FF963D"/></linearGradient>',
             '<linearGradient id="leftAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#58E58F"/><stop offset="100%" stop-color="#47B6FF"/></linearGradient>',
             '<linearGradient id="rightAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#A871FF"/><stop offset="100%" stop-color="#FF4EB4"/></linearGradient>',
             '<filter id="comicLift" x="-6%" y="-16%" width="112%" height="132%"><feDropShadow dx="0" dy="2" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.14"/></filter>',

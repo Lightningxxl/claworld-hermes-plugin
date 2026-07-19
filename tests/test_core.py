@@ -682,12 +682,17 @@ class TranscriptReportTests(unittest.TestCase):
 
     def test_context_cards_bound_long_copy_and_use_dynamic_first_page_height(self):
         short_lines = claworld_comic_grid._bounded_context_lines("Short public profile.", 430)
+        latin_lines = claworld_comic_grid._bounded_context_lines(
+            "Consumer product strategist helping independent builders turn interviews into decisions.",
+            430,
+        )
         long_lines = claworld_comic_grid._bounded_context_lines(
             "World context with 中文、emoji 👨‍👩‍👧‍👦 and enough repeated detail " * 20,
             430,
         )
 
         self.assertEqual(short_lines, ["Short public profile."])
+        self.assertLessEqual(len(latin_lines), 2)
         self.assertEqual(len(long_lines), 2)
         self.assertTrue(long_lines[-1].endswith("…"))
         self.assertLessEqual(
@@ -704,24 +709,78 @@ class TranscriptReportTests(unittest.TestCase):
             claworld_comic_grid._full_header_card_height(
                 [{"kind": "peerGlobalProfile", "label": "Peer · Profile", "text": "Profile"}]
             ),
-            claworld_comic_grid._full_header_card_height(
-                [
-                    {"kind": "peerWorldMembershipProfile", "label": "Peer · World", "text": "Profile"},
-                    {"kind": "worldContext", "label": "World Context", "text": "Context"},
-                ]
-            ),
+            claworld_comic_grid.HEADER_CARD_HEIGHT_FULL,
         )
         self.assertEqual(
-            claworld_comic_grid._context_field_label_lines("peerGlobalProfile", "Peer · Profile"),
-            ["PEER", "PROFILE"],
+            claworld_comic_grid._context_card_label("peerGlobalProfile", "Peer · Profile"),
+            "About this agent",
         )
         self.assertEqual(
-            claworld_comic_grid._context_field_label_lines("peerWorldMembershipProfile", "Peer · World"),
-            ["PEER", "WORLD"],
+            claworld_comic_grid._context_card_label("peerHumanProfile", "Human Profile"),
+            "About their human",
         )
         self.assertEqual(
-            claworld_comic_grid._context_field_label_lines("worldContext", "World Context"),
-            ["WORLD", "CONTEXT"],
+            claworld_comic_grid._context_card_label("worldContext", "World Context"),
+            "About this world",
+        )
+
+        blocks = [
+            {"kind": "peerAgentProfile", "label": "Agent Profile", "text": "Agent profile."},
+            {"kind": "peerHumanProfile", "label": "Human Profile", "text": "Human profile."},
+            {"kind": "worldContext", "label": "World Context", "text": "World setting."},
+            {"kind": "peerWorldMembershipProfile", "label": "Peer · World", "text": "Role here."},
+        ]
+        self.assertEqual(
+            len(claworld_comic_grid._header_context_blocks({"contextBlocks": blocks})),
+            4,
+        )
+        layout_svg = ET.fromstring(
+            "<svg>" + claworld_comic_grid._render_context_cards(0, 0, 586, blocks) + "</svg>"
+        )
+        cards = [
+            node
+            for node in layout_svg
+            if "passport-context-field" in node.attrib.get("class", "").split()
+        ]
+        self.assertEqual(len(cards), 4)
+        card_rects = [
+            [node for node in card if node.tag == "rect"][1]
+            for card in cards
+        ]
+        self.assertEqual(
+            [(float(rect.attrib["x"]), float(rect.attrib["y"]), float(rect.attrib["width"])) for rect in card_rects],
+            [(0.0, 0.0, 285.0), (301.0, 0.0, 285.0), (0.0, 111.0, 586.0), (0.0, 209.0, 586.0)],
+        )
+        layout_text = " ".join(node.text or "" for node in layout_svg.iter("text"))
+        for label in ("About this agent", "About their human", "About this world", "Their role here"):
+            self.assertIn(label, layout_text)
+        for icon in ("context-icon-agent", "context-icon-human", "context-icon-world", "context-icon-role"):
+            self.assertIn(icon, ET.tostring(layout_svg, encoding="unicode"))
+        legends = [
+            node
+            for node in layout_svg.iter("rect")
+            if "context-field-legend" in node.attrib.get("class", "").split()
+        ]
+        self.assertEqual(len(legends), 4)
+        self.assertTrue(all("stroke" not in legend.attrib for legend in legends))
+        self.assertTrue(
+            all(legend.attrib["fill"] == claworld_comic_grid.THEME["header_fill"] for legend in legends)
+        )
+        labels = [
+            node
+            for node in layout_svg.iter("text")
+            if "context-field-label" in node.attrib.get("class", "").split()
+        ]
+        for legend, label in zip(legends, labels, strict=True):
+            label_right = float(label.attrib["x"]) + claworld_comic_grid._identity_name_render_width(
+                label.text or "",
+                claworld_comic_grid.CONTEXT_LABEL_FONT_SIZE,
+            )
+            legend_right = float(legend.attrib["x"]) + float(legend.attrib["width"])
+            self.assertAlmostEqual(legend_right - label_right, 8.0, places=1)
+        self.assertEqual(
+            claworld_comic_grid._full_header_card_height(blocks),
+            claworld_comic_grid.HEADER_CARD_HEIGHT_FULL,
         )
 
         single_line_svg = ET.fromstring(
@@ -743,7 +802,7 @@ class TranscriptReportTests(unittest.TestCase):
                 {
                     "kind": "worldContext",
                     "label": "World Context",
-                    "text": "A deliberately longer context sentence that wraps onto a second visible line.",
+                    "text": "A deliberately longer context sentence that uses the available width and still wraps onto a second visible line for the passport.",
                 },
             )
             + "</svg>"
@@ -756,112 +815,38 @@ class TranscriptReportTests(unittest.TestCase):
                 if "conversation-context" in node.attrib.get("class", "").split()
             ]
 
-        self.assertEqual(context_baselines(single_line_svg), [31.0])
-        self.assertEqual(context_baselines(two_line_svg), [22.0, 40.0])
+        self.assertEqual(context_baselines(single_line_svg), [42.0])
+        self.assertEqual(context_baselines(two_line_svg), [31.5, 52.5])
 
-    def test_full_header_titles_center_and_wrap_with_emblem_clearance(self):
+    def test_full_header_titles_center_and_ellipsize_on_one_line(self):
         max_units = 17.84
-        cases = {
-            "Project Lantern": 1,
-            "午夜档案室": 1,
-            "Matching two complementary builders": 2,
-            "连接独立开发者与互补项目并确定下一步协作方向": 2,
-        }
-        for topic, expected_lines in cases.items():
-            with self.subTest(topic=topic):
-                lines = claworld_comic_grid._topic_lines(topic, max_units=max_units)
-                self.assertEqual(len(lines), expected_lines)
-                self.assertTrue(
-                    all(claworld_comic_grid._topic_render_units(line) <= max_units for line in lines)
-                )
-
-        long_english = claworld_comic_grid._topic_lines(
+        self.assertEqual(
+            claworld_comic_grid._ellipsize_topic_text("Project Lantern", max_units, suffix="…"),
+            "Project Lantern",
+        )
+        long_english = claworld_comic_grid._ellipsize_topic_text(
             "Coordinate product experiments across independent builder communities "
             "and choose the next collaboration milestone",
-            max_units=max_units,
+            max_units,
+            suffix="…",
         )
-        long_chinese = claworld_comic_grid._topic_lines(
+        long_chinese = claworld_comic_grid._ellipsize_topic_text(
             "围绕产品实验连接独立开发者并确定下一步协作方向，同时同步所有关键决策与后续行动",
-            max_units=max_units,
+            max_units,
+            suffix="…",
         )
-        self.assertEqual(len(long_english), 2)
-        self.assertEqual(len(long_chinese), 2)
-        self.assertTrue(long_english[-1].endswith("…"))
-        self.assertTrue(long_chinese[-1].endswith("…"))
+        self.assertTrue(long_english.endswith("…"))
+        self.assertTrue(long_chinese.endswith("…"))
         self.assertTrue(
             all(
                 claworld_comic_grid._topic_render_units(line) <= max_units
-                for line in [*long_english, *long_chinese]
+                for line in (long_english, long_chinese)
             )
         )
 
         secondary = claworld_comic_grid._secondary_badge_svg(100, 20, 200, "Night Shift Builders")
         self.assertIn('x="200.0"', secondary)
         self.assertIn('text-anchor="middle"', secondary)
-
-    def test_mode_emblems_have_shadows_and_split_world_orbit_depth(self):
-        def emblem_group(mode):
-            root = ET.fromstring(
-                "<svg>" + claworld_comic_grid._mode_emblem_svg(50, 50, mode) + "</svg>"
-            )
-            return next(
-                node
-                for node in root
-                if "mode-emblem" in node.attrib.get("class", "").split()
-            )
-
-        direct_group = emblem_group("direct")
-        direct_layers = [set(child.attrib.get("class", "").split()) for child in direct_group]
-        self.assertEqual(sum("mode-emblem-shadow" in classes for classes in direct_layers), 1)
-        direct_shadow = next(
-            child
-            for child in direct_group
-            if "mode-emblem-shadow" in child.attrib.get("class", "").split()
-        )
-        self.assertEqual(direct_shadow.tag, "g")
-        self.assertEqual(len(direct_shadow), 2)
-        self.assertEqual(direct_group.attrib.get("transform"), "translate(18.0 24.0)")
-        self.assertTrue(all("transform" not in child.attrib for child in direct_shadow))
-        self.assertTrue(
-            all(child.attrib.get("fill") == claworld_comic_grid.BLACK for child in direct_shadow)
-        )
-        self.assertEqual(
-            sum(
-                "mode-emblem-chat-bubble" in child.attrib.get("class", "").split()
-                for child in direct_group
-            ),
-            2,
-        )
-
-        world_layers = [set(child.attrib.get("class", "").split()) for child in emblem_group("world")]
-        required = (
-            "mode-emblem-orbit-back",
-            "mode-emblem-shadow",
-            "mode-emblem-globe",
-            "mode-emblem-orbit-front",
-        )
-        indices = {}
-        for class_name in required:
-            matching = [
-                index
-                for index, classes in enumerate(world_layers)
-                if class_name in classes
-            ]
-            self.assertEqual(len(matching), 1, class_name)
-            indices[class_name] = matching[0]
-        self.assertLess(indices["mode-emblem-shadow"], indices["mode-emblem-orbit-back"])
-        self.assertLess(indices["mode-emblem-orbit-back"], indices["mode-emblem-globe"])
-        self.assertLess(indices["mode-emblem-globe"], indices["mode-emblem-orbit-front"])
-
-        world_orbits = [
-            child
-            for child in emblem_group("world")
-            if "mode-emblem-orbit" in child.attrib.get("class", "").split()
-        ]
-        self.assertEqual(len(world_orbits), 2)
-        self.assertTrue(
-            all(orbit.attrib.get("stroke") == "url(#modeOrbitGradient)" for orbit in world_orbits)
-        )
 
     def test_direct_manual_report_rejects_world_context(self):
         with self.assertRaisesRegex(ValueError, "manual.worldContext"):
@@ -1016,17 +1001,14 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertIn("…", truncated)
         self.assertTrue(truncated.endswith("#Z99TMV"))
         self.assertLessEqual(claworld_stylekit.text_units(truncated), 11.5)
-        visible_name, visible_code = claworld_comic_grid._ellipsize_identity_parts(
-            "Extremely long public display name#Z99TMV",
+        visible_name = claworld_comic_grid._ellipsize_identity_name(
+            "Extremely long public display name",
             150,
-            name_font_size=22,
-            code_font_size=16,
+            22,
         )
         self.assertTrue(visible_name.endswith("…"))
-        self.assertEqual(visible_code, "#Z99TMV")
         self.assertLessEqual(
-            claworld_stylekit.text_units(visible_name) * 22
-            + claworld_stylekit.text_units(visible_code) * 16,
+            claworld_comic_grid._identity_name_render_width(visible_name, 22),
             150,
         )
 
@@ -1111,16 +1093,16 @@ class TranscriptReportTests(unittest.TestCase):
             compact_code.attrib["font-size"],
             str(claworld_comic_grid.IDENTITY_COMPACT_CODE_FONT_SIZE),
         )
-        self.assertEqual(short_name.attrib["text-anchor"], "end")
-        self.assertEqual(long_name.attrib["text-anchor"], "end")
-        self.assertAlmostEqual(
-            float(short_code.attrib["x"]) - float(short_name.attrib["x"]),
-            claworld_comic_grid.IDENTITY_CODE_GAP,
-        )
-        self.assertAlmostEqual(
-            float(long_code.attrib["x"]) - float(long_name.attrib["x"]),
-            claworld_comic_grid.IDENTITY_CODE_GAP,
-        )
+        self.assertEqual(short_name.attrib["text-anchor"], "middle")
+        self.assertEqual(long_name.attrib["text-anchor"], "middle")
+        self.assertEqual(short_code.attrib["text-anchor"], "middle")
+        self.assertEqual(long_code.attrib["text-anchor"], "middle")
+        self.assertEqual(short_name.attrib["x"], short_code.attrib["x"])
+        self.assertEqual(long_name.attrib["x"], long_code.attrib["x"])
+        self.assertGreater(float(short_code.attrib["y"]), float(short_name.attrib["y"]))
+        self.assertGreater(float(long_code.attrib["y"]), float(long_name.attrib["y"]))
+        self.assertEqual(short_code.text, "#R07")
+        self.assertEqual(long_code.text, "#Z99TMV")
 
         def calculated_dot_gap(circle, name):
             estimated_name_left = float(name.attrib["x"]) - (
@@ -1128,7 +1110,7 @@ class TranscriptReportTests(unittest.TestCase):
                     name.text or "",
                     int(name.attrib["font-size"]),
                 )
-            )
+            ) / 2
             circle_right = float(circle.attrib["cx"]) + float(circle.attrib["r"])
             return estimated_name_left - circle_right
 
@@ -1544,8 +1526,8 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertEqual(header["messageCount"], 2)
             self.assertEqual([item["createdAt"] for item in spec["messages"] if item["kind"] == "text"], ["", ""])
             svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
-            self.assertIn("CHAT · 1:1", svg)
-            self.assertNotIn("DIRECT · 1:1", svg)
+            self.assertIn("CLAWORLD CHAT", svg)
+            self.assertNotIn("DIRECT CHAT", svg)
             self.assertNotIn('class="report-type-badge', svg)
             self.assertIn('class="message-count-badge"', svg)
             self.assertIn(">2 MSGS</text>", svg)
@@ -1747,16 +1729,13 @@ class TranscriptReportTests(unittest.TestCase):
                 for page in result["artifacts"]["svgPages"]
             )
             self.assertIn('class="conversation-passport conversation-passport-full"', visible_svg)
-            self.assertIn("WORLD · 1:1", visible_svg)
-            self.assertIn("PEER · WORLD", visible_svg)
-            self.assertIn("WORLD CONTEXT", visible_svg)
+            self.assertIn("WORLD CHAT", visible_svg)
+            self.assertIn("Their role here", visible_svg)
+            self.assertIn("About this world", visible_svg)
             self.assertIn("context-peerworldmembershipprofile", visible_svg)
             self.assertIn("context-worldcontext", visible_svg)
-            self.assertEqual(visible_svg.count("context-icon-profile"), 1)
+            self.assertEqual(visible_svg.count("context-icon-role"), 1)
             self.assertEqual(visible_svg.count("context-icon-world"), 1)
-            self.assertIn(">PEER</text>", visible_svg)
-            self.assertIn(">WORLD</text>", visible_svg)
-            self.assertIn(">CONTEXT</text>", visible_svg)
             for internal_value in (
                 "req-new",
                 "conversation-1",
@@ -1948,20 +1927,17 @@ class TranscriptReportTests(unittest.TestCase):
             )
             self.assertTrue(delivery["sourceSvgDocument"].startswith("[[as_document]]\nMEDIA:"))
             svg = Path(result["artifacts"]["svgPages"][0]["path"]).read_text(encoding="utf-8")
-            self.assertIn("DIRECT · 1:1", svg)
-            self.assertIn("PEER · PROFILE", svg)
+            self.assertIn("DIRECT CHAT", svg)
+            self.assertIn("About this agent", svg)
             self.assertIn("context-peerglobalprofile", svg)
-            self.assertEqual(svg.count("context-icon-profile"), 1)
-            self.assertIn(">PEER</text>", svg)
-            self.assertIn(">PROFILE</text>", svg)
+            self.assertEqual(svg.count("context-icon-agent"), 1)
             topic_nodes = [line for line in svg.splitlines() if 'class="conversation-topic' in line]
             self.assertTrue(topic_nodes)
             self.assertTrue(all('x="360.0"' in line for line in topic_nodes))
             self.assertTrue(all('text-anchor="middle"' in line for line in topic_nodes))
-            self.assertNotIn("WORLD CONTEXT", svg)
-            self.assertIn(">2 MSGS</text>", svg)
+            self.assertNotIn("About this world", svg)
+            self.assertIn(">EXCERPT · 2 MSGS</text>", svg)
             self.assertNotIn("FULL", svg)
-            self.assertNotIn("EXCERPT", svg)
             self.assertNotIn("完整", svg)
             self.assertNotIn("精选", svg)
             self.assertIn('class="conversation-relation relation-local"', svg)
@@ -2173,9 +2149,9 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertIn('class="conversation-passport conversation-passport-full"', svg_pages[0])
             self.assertNotIn("conversation-passport-compact", svg_pages[0])
             self.assertEqual(svg_pages[0].count('class="passport-context-field'), 1)
-            self.assertIn("PEER · WORLD", svg_pages[0])
-            self.assertNotIn("WORLD CONTEXT", svg_pages[0])
-            self.assertIn(">24 MSGS</text>", svg_pages[0])
+            self.assertIn("Their role here", svg_pages[0])
+            self.assertNotIn("About this world", svg_pages[0])
+            self.assertIn(">FULL · 24 MSGS</text>", svg_pages[0])
             self.assertIn('class="conversation-relation relation-peer"', svg_pages[0])
             self.assertIn(">→</text>", svg_pages[0])
             self.assertNotIn("STARTED", svg_pages[0])
@@ -2185,7 +2161,7 @@ class TranscriptReportTests(unittest.TestCase):
             self.assertNotIn(">LOCAL-AGENT#LOCAL01</text>", "\n".join(svg_pages))
             for page_no, svg in enumerate(svg_pages[1:], start=2):
                 self.assertIn('class="conversation-passport conversation-passport-compact"', svg)
-                self.assertIn("WORLD · 1:1", svg)
+                self.assertIn("WORLD CHAT", svg)
                 self.assertIn(f"{page_no} / {result['pageCount']}", svg)
                 self.assertIn('class="conversation-relation relation-peer"', svg)
                 self.assertIn(">→</text>", svg)
