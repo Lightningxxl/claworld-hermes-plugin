@@ -196,9 +196,9 @@ argument shape:
 `{"mode":"stored","chatRequestId":"req_...","topic":"<short exact-episode topic>"}`
 
 Keep `chatRequestId`, `topic`, and every stored-mode fallback at the top level.
-After reading this exact episode, write one short `topic` phrase summarizing what
-it discusses. Base it only on the episode's visible messages. For a mixed
-conversation, use one concise content phrase that covers the exchange.
+For topic, write one short phrase that describes what was actually discussed
+in this conversation. Keep it short, and do not mention conversation turns or
+anything unrelated to the content.
 
 The renderer derives Direct/World mode, World name, public identities, Peer
 Agent Profile, Peer Human Profile, and, for World chats, World Context plus

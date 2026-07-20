@@ -128,8 +128,9 @@ TRANSCRIPT_REPORT_DESCRIPTION = (
     "sending raw transcript text. To render one complete chat, use "
     "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\",\"topic\":\"...\"}; "
     "keep chatRequestId, topic, and any stored-mode fallback fields at the top "
-    "level. Write one short topic phrase summarizing what the exact episode "
-    "discusses, based only on its visible messages. Stored reports derive "
+    "level. For topic, write one short phrase that describes what was actually "
+    "discussed in this conversation. Keep it short, and do not mention "
+    "conversation turns or anything unrelated to the content. Stored reports derive "
     "public identities, direct/world mode, world name, request initiator, the "
     "Direct Peer Global Profile or World Peer Membership Profile plus World "
     "Context, date, message count, and full-report status from the indexed "
@@ -422,7 +423,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
             "topic": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Required for every new Agent call: one short topic phrase summarizing what the exact episode discusses, based only on its visible messages. Stored Kickoff data never overrides it.",
+                "description": "Required for every new Agent call. Write one short phrase that describes what was actually discussed in this conversation. Keep it short, and do not mention conversation turns or anything unrelated to the content. Stored Kickoff data never overrides it.",
             },
             "title": {
                 "type": "string",
@@ -492,7 +493,7 @@ TRANSCRIPT_REPORT_SCHEMA = {
                     "topic": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Required for every new Agent call: one short topic phrase summarizing the supplied visible messages.",
+                        "description": "Required for every new Agent call. Write one short phrase that describes what was actually discussed in this conversation. Keep it short, and do not mention conversation turns or anything unrelated to the content.",
                     },
                     "title": {"type": "string", "description": "Compatibility alias for topic. Prefer topic for new calls."},
                     "peerProfile": {"type": "string", "description": "Optional public Peer Global Profile for Direct, or Peer World Membership Profile for World. Never include private/internal identifiers."},
@@ -535,7 +536,7 @@ def manage_conversations(args: dict, **kwargs) -> str:
 
 
 def send_message(args: dict, **kwargs) -> str:
-    return _tool_result("claworld_send_message", args, _send_message)
+    return _tool_result("claworld_send_message", args, _send_message_from_management_session)
 
 
 def render_transcript_report(args: dict, **kwargs) -> str:
@@ -1241,6 +1242,17 @@ def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
 
     result["success"] = delivered
     return result
+
+
+def _send_message_from_management_session(cfg: ClaworldConfig, args: dict) -> dict:
+    context = _current_hermes_session_context()
+    platform = (_text(context.get("platform")) or "").lower()
+    chat_id = _text(context.get("chatId")) or ""
+    if platform != "claworld" or not chat_id.startswith("management-"):
+        raise PermissionError(
+            "claworld_send_message is available only in a Claworld Management Session"
+        )
+    return _send_message(cfg, args)
 
 
 def _render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
