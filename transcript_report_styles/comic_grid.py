@@ -51,6 +51,7 @@ TITLE_FONT_SIZE = 25
 LINE_HEIGHT = 29
 HEADER_TOPIC_MAX_UNITS = 26.0
 HEADER_COMPACT_TOPIC_MAX_UNITS = 26.0
+HEADER_TOPIC_SIDE_PADDING = 36
 CONTEXT_CARD_HEIGHT = 76
 CONTEXT_CARD_GAP = 22
 PROFILE_CARD_HEIGHT = 82
@@ -431,9 +432,12 @@ def _render_full_header(page: LayoutPage) -> str:
     secondary_width = max(0, secondary_right - secondary_x)
 
     topic_center_x = x + w / 2
+    topic_clip_x = x + HEADER_TOPIC_SIDE_PADDING
+    topic_clip_width = max(0, w - HEADER_TOPIC_SIDE_PADDING * 2)
+    topic_clip_id = f"conversation-topic-clip-{page.page}"
     topic_max_units = max(
         8.0,
-        min(HEADER_TOPIC_MAX_UNITS, (w - 48) / TITLE_FONT_SIZE / 0.88),
+        min(HEADER_TOPIC_MAX_UNITS, topic_clip_width / TITLE_FONT_SIZE),
     )
     topic = _ellipsize_topic_text(data["topic"], topic_max_units, suffix="…")
 
@@ -460,17 +464,22 @@ def _render_full_header(page: LayoutPage) -> str:
             )
         )
     parts.append(_small_badge_svg(page_x, y + 15, page_width, page_label, "#F1E5FF", "page-badge"))
-    parts.append(
-        _render_inline_text_svg(
-            topic,
-            topic_center_x,
-            y + 80,
-            font_size=TITLE_FONT_SIZE,
-            font_weight=900,
-            fill=BLACK,
-            anchor="middle",
-            class_name="conversation-topic",
-        )
+    parts.extend(
+        [
+            f'<defs><clipPath id="{topic_clip_id}"><rect x="{topic_clip_x}" y="{y + 50}" width="{topic_clip_width}" height="40"/></clipPath></defs>',
+            f'<g clip-path="url(#{topic_clip_id})">',
+            _render_inline_text_svg(
+                topic,
+                topic_center_x,
+                y + 80,
+                font_size=TITLE_FONT_SIZE,
+                font_weight=900,
+                fill=BLACK,
+                anchor="middle",
+                class_name="conversation-topic",
+            ),
+            "</g>",
+        ]
     )
     parts.extend(
         [
@@ -508,6 +517,8 @@ def _render_compact_header(page: LayoutPage) -> str:
     page_width = _small_badge_width(page_label, minimum=48)
     topic_x = x + 18 + mode_width + 12
     topic_right = x + w - 18 - page_width - 12
+    topic_clip_width = max(0, topic_right - topic_x)
+    topic_clip_id = f"conversation-topic-clip-{page.page}"
     topic_units = max(9.0, min(HEADER_COMPACT_TOPIC_MAX_UNITS, (topic_right - topic_x) / 18.0))
     topic = ellipsize_text(data["topic"], topic_units, suffix="…")
     return "\n".join(
@@ -517,6 +528,8 @@ def _render_compact_header(page: LayoutPage) -> str:
             f'<rect x="{x + 6}" y="{y + 5}" width="{w}" height="{h + 2}" rx="20" fill="url(#headerAccent)"/>',
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="20" fill="{THEME["header_fill"]}" stroke="{BLACK}" stroke-width="4"/>',
             _mode_badge_svg(x + 18, y + 12, data["mode"], data["mode_label"], compact=True),
+            f'<defs><clipPath id="{topic_clip_id}"><rect x="{topic_x}" y="{y + 8}" width="{topic_clip_width}" height="38"/></clipPath></defs>',
+            f'<g clip-path="url(#{topic_clip_id})">',
             _render_inline_text_svg(
                 topic,
                 topic_x,
@@ -526,6 +539,7 @@ def _render_compact_header(page: LayoutPage) -> str:
                 fill=BLACK,
                 class_name="conversation-topic",
             ),
+            "</g>",
             _small_badge_svg(x + w - 18 - page_width, y + 12, page_width, page_label, "#F1E5FF", "page-badge"),
             _identity_route_svg(
                 x + 18,

@@ -533,9 +533,9 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(manual["properties"]["topic"]["minLength"], 1)
         self.assertIn("Required for every new Agent call", properties["topic"]["description"])
         self.assertIn("Required for every new Agent call", manual["properties"]["topic"]["description"])
-        self.assertIn("exact episode discusses", properties["topic"]["description"])
-        self.assertIn("visible messages", properties["topic"]["description"])
-        self.assertIn("summarizing the supplied visible messages", manual["properties"]["topic"]["description"])
+        self.assertIn("what was actually discussed in this conversation", properties["topic"]["description"])
+        self.assertIn("anything unrelated to the content", properties["topic"]["description"])
+        self.assertIn("what was actually discussed in this conversation", manual["properties"]["topic"]["description"])
         self.assertIn("must be provided in both stored and manual mode", claworld_tools.TRANSCRIPT_REPORT_DESCRIPTION)
         self.assertEqual(properties["initiatedBy"]["enum"], ["local", "peer"])
         self.assertEqual(manual["properties"]["initiatedBy"]["enum"], ["local", "peer"])
@@ -904,6 +904,32 @@ class TranscriptReportTests(unittest.TestCase):
                 for line in (long_english, long_chinese)
             )
         )
+        self.assertEqual(claworld_comic_grid.HEADER_TOPIC_SIDE_PADDING, 36)
+        header_page = types.SimpleNamespace(
+            page=1,
+            page_count=2,
+            width=720,
+            title=long_chinese,
+            subtitle="",
+            header={
+                "chatMode": "direct",
+                "topic": long_chinese,
+                "peerIdentity": "Mira#PEER01",
+                "localIdentity": "Moza#LOCAL1",
+                "initiatedBy": "peer",
+                "messageCount": 2,
+                "reportType": "full",
+            },
+            items=[],
+        )
+        full_header_svg = claworld_comic_grid._render_full_header(header_page)
+        self.assertIn('<clipPath id="conversation-topic-clip-1">', full_header_svg)
+        self.assertIn('clip-path="url(#conversation-topic-clip-1)"', full_header_svg)
+        self.assertIn("…", full_header_svg)
+        header_page.page = 2
+        compact_header_svg = claworld_comic_grid._render_compact_header(header_page)
+        self.assertIn('<clipPath id="conversation-topic-clip-2">', compact_header_svg)
+        self.assertIn('clip-path="url(#conversation-topic-clip-2)"', compact_header_svg)
 
         secondary = claworld_comic_grid._secondary_badge_svg(100, 20, 200, "Night Shift Builders")
         self.assertIn('x="200.0"', secondary)
@@ -2534,14 +2560,8 @@ class PluginSkillTests(unittest.TestCase):
             )
             self.assertIn("every stored-mode fallback at the top level", skill)
             self.assertIn('top-level `initiatedBy="local"|"peer"`', skill)
-            self.assertIn(
-                "write one short `topic` phrase summarizing what",
-                skill,
-            )
-            self.assertIn(
-                "Base it only on the episode's visible messages",
-                skill,
-            )
+            self.assertIn("what was actually discussed", skill)
+            self.assertIn("anything unrelated to the content", skill)
             self.assertIn(
                 "Always provide top-level `topic` after reading the exact episode",
                 skill,
@@ -3199,6 +3219,10 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("## `.claworld/context/NOW.md`", conversation_prompt)
         self.assertIn("## `.claworld/context/MEMORY.md`", conversation_prompt)
         self.assertIn("## `.claworld/context/PROFILE.md`", conversation_prompt)
+        self.assertIn(
+            "You should never report your activity to the human or modify the claworld working memory.",
+            conversation_prompt,
+        )
         self.assertNotIn("claworld:claworld-main-session", conversation_prompt)
         self.assertNotIn("sessions/index.json summary", conversation_prompt)
         self.assertIn("This episode has formally ended", conversation_prompt)
@@ -3450,6 +3474,47 @@ class ClaworldSendMessageToolTests(unittest.TestCase):
             )
         )
 
+    def test_send_message_requires_claworld_management_session(self):
+        args = {
+            "target": "feishu:oc_owner",
+            "message": "Owner-visible report",
+        }
+        rejected_contexts = [
+            {},
+            {"platform": "feishu", "chatId": "oc_owner"},
+            {"platform": "claworld", "chatId": "conversation-abc"},
+        ]
+        for context in rejected_contexts:
+            with self.subTest(context=context), patch(
+                "claworld_hermes_plugin.tools.ClaworldConfig.load",
+                return_value=self._cfg(),
+            ), patch(
+                "claworld_hermes_plugin.tools._current_hermes_session_context",
+                return_value=context,
+            ), patch("claworld_hermes_plugin.tools._send_message") as send:
+                result = json.loads(claworld_tools.send_message(args))
+
+            send.assert_not_called()
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["error"]["type"], "PermissionError")
+            self.assertIn("Management Session", result["error"]["message"])
+
+        with patch(
+            "claworld_hermes_plugin.tools.ClaworldConfig.load",
+            return_value=self._cfg(),
+        ), patch(
+            "claworld_hermes_plugin.tools._current_hermes_session_context",
+            return_value={"platform": "claworld", "chatId": "management-abc"},
+        ), patch(
+            "claworld_hermes_plugin.tools._send_message",
+            return_value={"status": "delivered", "success": True},
+        ) as send:
+            result = json.loads(claworld_tools.send_message(args))
+
+        send.assert_called_once_with(self._cfg(), args)
+        self.assertEqual(result["status"], "delivered")
+        self.assertTrue(result["success"])
+
     def test_send_message_forwards_to_hermes_and_trusts_auto_mirror(self):
         args = {"action": "send", "target": "feishu:oc_owner:thread-1", "message": "Owner-visible report"}
         with patch("claworld_hermes_plugin.tools._call_send_message_tool", return_value={"success": True, "mirrored": True}) as send, patch(
@@ -3639,6 +3704,10 @@ class WorkingMemoryTests(unittest.TestCase):
             self.assertIn("## `.claworld/context/NOW.md`", context)
             self.assertIn("## `.claworld/context/MEMORY.md`", context)
             self.assertIn("## `.claworld/context/PROFILE.md`", context)
+            self.assertIn(
+                "You should never report your activity to the human or modify the claworld working memory.",
+                context,
+            )
             self.assertNotIn('skill_view("claworld:claworld-main-session")', context)
             self.assertNotIn("sessions/index.json summary", context)
 
@@ -3758,6 +3827,10 @@ class WorkingMemoryTests(unittest.TestCase):
         self.assertIn("### `.claworld/context/NOW.md`", management)
         self.assertNotIn("sessions/index.json summary", management)
         self.assertIn("# Claworld Conversation Startup Context", conversation)
+        self.assertIn(
+            "You should never report your activity to the human or modify the claworld working memory.",
+            conversation,
+        )
         self.assertNotIn('skill_view("claworld:claworld-main-session")', conversation)
 
     def test_post_tool_call_journals_successful_claworld_tools_with_redaction(self):

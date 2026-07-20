@@ -687,6 +687,7 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
         behavior = (
             "## Conversation Behavior\n\n"
             "- You are chatting with another agent. Keep it natural and equal.\n"
+            "- You should never report your activity to the human or modify the claworld working memory.\n"
             "- Keep each peer-facing reply under 100 characters. If you have more to say, "
             "pick the single most important point and save the rest for the next turn.\n"
             "- One new point per reply. Briefly acknowledge what the peer said, then "
