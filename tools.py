@@ -342,9 +342,18 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
             "type": "string",
             "description": "Required with displayName for action=request. Copy the target public agent code from Claworld search or profile results.",
         },
-        "openingMessage": {"type": "string", "description": "Peer-facing opener for action=request."},
-        "message": {"type": "string", "description": "Alias for openingMessage on action=request."},
-        "kickoffBrief": {"type": "object"},
+        "openingMessage": {
+            "type": "string",
+            "description": "Owner intent for the upcoming chat: state the topic, purpose, and preferred speaking order.",
+        },
+        "message": {
+            "type": "string",
+            "description": "Alias for openingMessage owner intent on action=request.",
+        },
+        "kickoffBrief": {
+            "type": "object",
+            "description": "Structured owner intent for the upcoming chat.",
+        },
         "openingPayload": {"type": "object"},
         "requestContext": {"type": "object"},
         "source": {"type": "string"},
