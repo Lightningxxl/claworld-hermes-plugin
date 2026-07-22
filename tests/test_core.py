@@ -2383,6 +2383,53 @@ class TranscriptReportTests(unittest.TestCase):
         self.assertEqual(summaries[0]["peerMessages"], 1)
         self.assertEqual(summaries[0]["localMessages"], 1)
 
+    def test_visible_episode_projection_matches_renderer_filtering(self):
+        messages = claworld_transcript.project_visible_episode_messages(
+            [
+                {
+                    "direction": "inbound",
+                    "deliveryType": "kickoff",
+                    "commandText": "Backend-authored Claworld command: internal",
+                },
+                {
+                    "direction": "inbound",
+                    "deliveryType": "turn",
+                    "commandText": "联系我 peer@example.com [[like]]",
+                    "turnCreatedAt": "2026-07-22T01:02:03Z",
+                },
+                {
+                    "direction": "outbound",
+                    "deliveryType": "reply",
+                    "commandText": "可以，继续聊。",
+                    "createdAt": "2026-07-22T01:03:04Z",
+                },
+                {
+                    "direction": "inbound",
+                    "deliveryType": "turn",
+                    "commandText": "NO_REPLY",
+                },
+            ],
+            ClaworldConfig(agent_id="agent-local"),
+        )
+
+        self.assertEqual(
+            messages,
+            [
+                {
+                    "from": "peer",
+                    "text": "联系我 [redacted-email]",
+                    "createdAt": "2026-07-22T01:02:03Z",
+                    "tags": ["like"],
+                },
+                {
+                    "from": "local",
+                    "text": "可以，继续聊。",
+                    "createdAt": "2026-07-22T01:03:04Z",
+                    "tags": [],
+                },
+            ],
+        )
+
     def test_header_scope_uses_exact_direct_suffix_and_ignores_untrusted_scope(self):
         world = claworld_transcript._extract_transcript_header_context(
             [
@@ -4696,6 +4743,70 @@ class ToolRoutingTests(unittest.TestCase):
 
         self.assertEqual(calls[0]["query"]["conversationKey"], "pair:a::b")
         self.assertEqual(result["action"], "get_state")
+
+    def test_get_state_with_exact_chat_request_returns_visible_local_episode_messages(self):
+        root = self.cfg.memory_root_path()
+        data = read_session_index(root)
+        data["conversationEpisodes"] = {
+            "stored-key": {
+                "chatRequestId": "req-exact",
+                "conversationKey": "pair:a::b",
+                "deliveries": [
+                    {
+                        "direction": "inbound",
+                        "deliveryType": "kickoff",
+                        "commandText": "backend kickoff",
+                    },
+                    {
+                        "direction": "inbound",
+                        "deliveryType": "turn",
+                        "commandText": "这轮在聊定价实验。 [[like]]",
+                        "turnCreatedAt": "2026-07-22T02:00:00Z",
+                    },
+                    {
+                        "direction": "outbound",
+                        "deliveryType": "reply",
+                        "commandText": "先比较两档价格。",
+                        "turnCreatedAt": "2026-07-22T02:01:00Z",
+                    },
+                    {
+                        "direction": "inbound",
+                        "deliveryType": "turn",
+                        "commandText": "NO_REPLY",
+                    },
+                ],
+            }
+        }
+        write_session_index(root, data)
+
+        with patch(
+            "claworld_hermes_plugin.tools.request_json",
+            return_value={"chats": [{"chatRequestId": "req-exact"}]},
+        ):
+            result = claworld_tools._manage_conversations(
+                self.cfg,
+                {"action": "get_state", "chatRequestId": "req-exact"},
+            )
+
+        self.assertEqual(result["localTranscriptEpisodes"][0]["chatRequestId"], "req-exact")
+        self.assertNotIn("messages", result["localTranscriptEpisodes"][0])
+        self.assertEqual(
+            result["localTranscriptEpisode"]["messages"],
+            [
+                {
+                    "from": "peer",
+                    "text": "这轮在聊定价实验。",
+                    "createdAt": "2026-07-22T02:00:00Z",
+                    "tags": ["like"],
+                },
+                {
+                    "from": "local",
+                    "text": "先比较两档价格。",
+                    "createdAt": "2026-07-22T02:01:00Z",
+                    "tags": [],
+                },
+            ],
+        )
 
     def test_get_state_persists_structured_request_direction_for_later_rendering(self):
         with patch(

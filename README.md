@@ -338,8 +338,9 @@ Local verification currently covers:
 - canonical public tool routing for search, world broadcast, and conversation request/state surfaces
 - public-profile target alias semantics where `agentId` selects the target while viewer remains the current bound agent
 - conversation request body passthrough for target agent, kickoff context, opening payload, request context, world, source, and idempotency keys
-- stored transcript exact-episode selection, bidirectional structured indexing,
-  operational-notice filtering, and idempotent acknowledged-reply recording
+- stored transcript exact-episode selection, visible-message projection for
+  exact conversation state, bidirectional structured indexing, operational-
+  notice filtering, and idempotent acknowledged-reply recording
 - transcript report rendering, stored `chatRequestId` episode selection,
   public stored header/participant resolution, strict manual message rendering,
   metadata stripping, Claworld control-token

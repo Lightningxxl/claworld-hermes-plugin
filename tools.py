@@ -11,7 +11,11 @@ from typing import Any
 from .config import ClaworldConfig, hermes_home_path
 from .http_client import download_share_card, public_error_payload, request_json
 from .protocol import classify_reply_content
-from .transcript_report import MAX_PAGE_HEIGHT, render_transcript_report as render_transcript_report_artifact
+from .transcript_report import (
+    MAX_PAGE_HEIGHT,
+    project_visible_episode_messages,
+    render_transcript_report as render_transcript_report_artifact,
+)
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
 from .working_memory import read_session_index, record_chat_request_direction, record_owner_route_from_context
 
@@ -106,7 +110,9 @@ MANAGE_CONVERSATIONS_DESCRIPTION = (
     "and the request appears Claworld-related. Before creating requests that "
     'depend on the human\'s preferences or goals, load '
     'skill_view("claworld:claworld-main-session"). Peer-facing opener/reply/'
-    "final text belongs to the Claworld conversation runtime. For action=request, "
+    "final text belongs to the Claworld conversation runtime. An exact get_state "
+    "query by chatRequestId includes localTranscriptEpisode.messages with the "
+    "ordered visible episode text. For action=request, "
     "copy the target displayName and agentCode from Claworld search/profile "
     "results; identity and agent ids are not request target fields. For Claworld "
     'problems or feedback, load skill_view("claworld:claworld-help").'
@@ -1125,6 +1131,10 @@ def _augment_conversation_payload_with_local_index(cfg: ClaworldConfig, payload:
             "episodeCount": len(matching),
             "chatRequestIds": [item["chatRequestId"] for item in matching if item.get("chatRequestId")],
         }
+    exact_chat_request_id = _text(filters.get("chatRequestId"))
+    exact_entry = _local_episode_entry(index, exact_chat_request_id) if exact_chat_request_id else None
+    if exact_entry:
+        result["localTranscriptEpisode"] = _local_episode_detail(cfg, exact_chat_request_id, exact_entry)
     if isinstance(result.get("items"), list):
         result["items"] = [_augment_conversation_item_with_local_index(item, local_episodes) for item in result["items"]]
     return result
@@ -1136,30 +1146,52 @@ def _local_episode_summaries(cfg: ClaworldConfig, index: dict) -> list[dict]:
     for chat_request_id, entry in episodes.items():
         if not isinstance(entry, dict):
             continue
-        deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
-        renderable = [d for d in deliveries if _renderable_transcript_delivery(d)]
-        peer_count = sum(1 for d in renderable if _text(d.get("direction")) != "outbound")
-        summary = _drop_empty(
-            {
-                "chatRequestId": entry.get("chatRequestId") or chat_request_id,
-                "chatId": entry.get("chatId"),
-                "conversationKey": entry.get("conversationKey"),
-                "relaySessionKey": entry.get("relaySessionKey"),
-                "lastActiveSessionKey": entry.get("lastActiveSessionKey"),
-                "targetAgentId": entry.get("targetAgentId"),
-                "fromAgentCode": entry.get("fromAgentCode"),
-                "fromDisplayIdentity": entry.get("fromDisplayIdentity"),
-                "firstSeenAt": entry.get("firstSeenAt"),
-                "lastSeenAt": entry.get("lastSeenAt"),
-                "deliveryCount": entry.get("deliveryCount"),
-                "renderableMessages": len(renderable),
-                "peerMessages": peer_count,
-                "localMessages": len(renderable) - peer_count,
-            }
-        )
-        summaries.append(summary)
+        summaries.append(_local_episode_summary(chat_request_id, entry))
     summaries.sort(key=lambda item: _text(item.get("lastSeenAt"), _text(item.get("firstSeenAt"), "")) or "", reverse=True)
     return summaries
+
+
+def _local_episode_summary(chat_request_id: str, entry: dict) -> dict:
+    deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
+    renderable = [delivery for delivery in deliveries if _renderable_transcript_delivery(delivery)]
+    peer_count = sum(1 for delivery in renderable if _text(delivery.get("direction")) != "outbound")
+    return _drop_empty(
+        {
+            "chatRequestId": entry.get("chatRequestId") or chat_request_id,
+            "chatId": entry.get("chatId"),
+            "conversationKey": entry.get("conversationKey"),
+            "relaySessionKey": entry.get("relaySessionKey"),
+            "lastActiveSessionKey": entry.get("lastActiveSessionKey"),
+            "targetAgentId": entry.get("targetAgentId"),
+            "fromAgentCode": entry.get("fromAgentCode"),
+            "fromDisplayIdentity": entry.get("fromDisplayIdentity"),
+            "firstSeenAt": entry.get("firstSeenAt"),
+            "lastSeenAt": entry.get("lastSeenAt"),
+            "deliveryCount": entry.get("deliveryCount"),
+            "renderableMessages": len(renderable),
+            "peerMessages": peer_count,
+            "localMessages": len(renderable) - peer_count,
+        }
+    )
+
+
+def _local_episode_entry(index: dict, chat_request_id: str) -> dict | None:
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    entry = episodes.get(chat_request_id)
+    if isinstance(entry, dict):
+        return entry
+    for candidate in episodes.values():
+        if isinstance(candidate, dict) and _text(candidate.get("chatRequestId")) == chat_request_id:
+            return candidate
+    return None
+
+
+def _local_episode_detail(cfg: ClaworldConfig, chat_request_id: str, entry: dict) -> dict:
+    deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
+    return {
+        **_local_episode_summary(chat_request_id, entry),
+        "messages": project_visible_episode_messages(deliveries, cfg),
+    }
 
 
 def _renderable_transcript_delivery(delivery: Any) -> bool:
