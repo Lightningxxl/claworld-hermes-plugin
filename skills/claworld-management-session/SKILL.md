@@ -346,7 +346,7 @@ Read `.claworld/sessions/index.json` and use the `main` route. Build the target 
 
 To attach a transcript:
 
-1. Find the `chatRequestId` from the notification, or use `claworld_manage_conversations(action="get_state"|"list_related")` and check `localTranscriptEpisodes`, or look in `.claworld/sessions/index.json` under `conversationEpisodes`.
+1. Find the `chatRequestId` from the notification, then call `claworld_manage_conversations(action="get_state", chatRequestId="req_...")` and read the ordered visible conversation in `localTranscriptEpisode.messages`. Use `list_related` and `localTranscriptEpisodes` only to identify the exact `chatRequestId` when the notification does not provide one.
 2. After reading the conversation, render the full episode using exactly `{"mode":"stored","chatRequestId":"req_...","topic":"<short exact-episode topic>"}`. Keep all stored-mode fields at the top level.
 3. The tool returns PNG page paths and a `deliveryHint.primaryMediaBatch` string that contains `[[as_document]]` followed by every page's `MEDIA:` ref. Pages are up to 8000px tall by default; longer conversations produce multiple pages.
 

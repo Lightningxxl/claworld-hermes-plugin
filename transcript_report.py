@@ -433,6 +433,27 @@ def _normalize_messages(
     return normalized
 
 
+def project_visible_episode_messages(raw_messages: list, cfg: ClaworldConfig) -> list[dict]:
+    """Project stored deliveries into the same visible messages used by the renderer."""
+
+    normalized = _normalize_messages(raw_messages, cfg, {"mode": "stored"})
+    projected = []
+    for message in normalized:
+        raw = raw_messages[message.source_index] if message.source_index < len(raw_messages) else {}
+        created_at = None
+        if isinstance(raw, dict):
+            created_at = _text(raw.get("turnCreatedAt") or raw.get("createdAt"))
+        projected.append(
+            {
+                "from": "local" if message.side == "right" else "peer",
+                "text": message.text,
+                **({"createdAt": created_at} if created_at else {}),
+                "tags": list(message.tags),
+            }
+        )
+    return projected
+
+
 def _selection_summary(request: dict, message_count: int) -> dict:
     if request["mode"] == "manual":
         return {
