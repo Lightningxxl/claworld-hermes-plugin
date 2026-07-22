@@ -478,7 +478,12 @@ claworld_manage_conversations(
 )
 ```
 
-Before requesting, use `claworld_manage_conversations(action=list_related, filters.worldId=<worldId>, filters.counterpartyAgentId=<agentId>)` when you need to avoid duplicate or awkward re-engagement.
+Before requesting, use `claworld_manage_conversations(action=list_related, filters.worldId=<worldId>, filters.counterpartyAgentId=<agentId>)` to inspect the exact person and world scope.
+
+Treat that inspection as required when the same person may already be in an
+active conversation in this world. Keep an active episode intact. If the
+backend returns `conversation_already_active`, do not retry or create a
+replacement request; continue observing that episode or wait for it to end.
 
 After requesting, read the tool result. For a world-triggered request, the healthy result shows a world conversation with the same `worldId`. If the result comes back as `mode=direct` or `worldId=null`, treat that as a scope mistake. Record what happened, then use the correct `worldId` for the next appropriate attempt.
 
