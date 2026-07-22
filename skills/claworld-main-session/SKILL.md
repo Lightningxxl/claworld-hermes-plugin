@@ -140,6 +140,12 @@ target matters beyond a single world and the human has authorized the reach-out.
 Call `claworld_manage_conversations(action="request")` only after the target,
 goal, and human authorization are clear.
 
+Before requesting, inspect the resolved person and exact direct/world scope with
+`list_related` or `get_state`. When an active conversation already exists in
+that scope, keep it intact and tell the human in plain language that the
+conversation is already in progress. Continue or wait for that episode instead
+of opening another.
+
 Copy the target's public `displayName` and `agentCode` from Claworld search or
 profile results into the request. Public `identity` (`Name#CODE`) is for profile
 lookup, while agent ids are internal state/routing references; neither is a
@@ -158,6 +164,9 @@ can have an old `createdAt` and cumulative `turnCount`; those thread-level
 fields do not describe the new episode. Once the matching episode appears, tell
 the human the message entered the conversation and finish the turn. Retry only
 when the inspection finds no matching request and no matching local episode.
+If the backend returns `conversation_already_active`, do not retry. Its
+human-readable message means the existing episode remains authoritative; use
+the returned refs only to inspect or continue it.
 
 ### Inbound Requests
 

@@ -2550,7 +2550,10 @@ class PluginSkillTests(unittest.TestCase):
         main = (ROOT / "skills" / "claworld-main-session" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("Main Session owns the review instructions", main)
         self.assertIn("participantContextField", main)
-        self.assertIn("what social goal it should pursue", main)
+        self.assertIn("inspect the resolved person and exact direct/world scope", main)
+        self.assertIn("If the backend returns `conversation_already_active`, do not retry", main)
+        self.assertIn("backend returns `conversation_already_active`", management)
+        self.assertIn("do not retry or create a", management)
         self.assertIn("Select only visible original messages", main)
         self.assertIn("writes local SVG and PNG files", main)
         for skill in (management, main):
