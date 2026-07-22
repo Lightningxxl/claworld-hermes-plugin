@@ -2486,6 +2486,115 @@ class PluginEntryTests(unittest.TestCase):
 
 
 class PluginSkillTests(unittest.TestCase):
+    def test_skill_heading_structure_is_stable(self):
+        expected = {
+            "claworld-help": [
+                "# Claworld Help Skill",
+                "## When to Use",
+                "## Prerequisites",
+                "## How to Run",
+                "## Quick Reference",
+                "## Procedure",
+                "### Install or Enable",
+                "### Upgrade",
+                "### Conversation or Request Trouble",
+                "### Feedback",
+                "## Pitfalls",
+                "## Verification",
+            ],
+            "claworld-main-session": [
+                "# Claworld Main Session Skill",
+                "## Your Role",
+                "## Sessions",
+                "## Talking To The Human",
+                "## Working Memory",
+                "## Tools",
+                "## Actions",
+                "### Discovering Worlds",
+                "### Joining a World",
+                "### Finding Members",
+                "### Starting a Conversation",
+                "### Inbound Requests",
+                "### Exporting a Transcript",
+                "### Following Up on Management Reports",
+                "## Contact Settings And Review Instructions",
+                "## Guardrails",
+                "## Verification",
+                "## Quick Reference",
+                "## When To Load This Skill",
+            ],
+            "claworld-manage-worlds": [
+                "# Claworld World Management Skill",
+                "## When to Use",
+                "## Prerequisites",
+                "## How to Run",
+                "## Quick Reference",
+                "## Procedure",
+                "### World Operation Confirmation",
+                "### Create or Update a World",
+                "### Minimum `worldContextText` Contract",
+                "### Joining a World",
+                "### Reviewing Received Invites",
+                "### Broadcast and Activity",
+                "## Pitfalls",
+                "## Verification",
+            ],
+            "claworld-management-session": [
+                "## Your Role",
+                "## Working Memory",
+                "## Wake Loop",
+                "## Handling Notifications",
+                "### Conversation Ended",
+                "#### What To Do",
+                "#### What To Report",
+                "### Chat Request Created",
+                "#### What To Do",
+                "#### What To Report",
+                "### World Invitation Received",
+                "#### What To Do",
+                "#### What To Report",
+                "### World Broadcast Published",
+                "#### What To Do",
+                "#### What To Report",
+                "### Other Notifications",
+                "## Reporting",
+                "### Report Principles",
+                "### What Every Report Should Cover",
+                "### Golden Quote",
+                "### Information Exchange Opportunity",
+                "### Openings: Never The Same Twice",
+                "### Weave Your Judgment Into The Narrative",
+                "### Combined Reports: Don't Sound Like An Assembly Line",
+                "### Quick Reference: Stiff vs. Natural",
+                "### Ending: Always Leave A CTA",
+                "### Full Examples",
+                "### Report Content Guardrails",
+                "## Delivery",
+                "### Finding the Main Session Route",
+                "### Transcript Rendering",
+                "### Stored And Manual Transcript Headers",
+                "### Sending the Report",
+                "### Handoff Context To Main Session",
+                "### After Sending",
+                "## Proactive Actions",
+                "### When to Reach Out",
+                "### Starting a World-Scoped Conversation",
+                "### Direct Conversations",
+                "## Tools",
+                "## Guardrails",
+                "## Quick Reference",
+            ],
+        }
+
+        for skill_name, expected_headings in expected.items():
+            text = (ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
+            headings = [
+                line
+                for line in text.splitlines()
+                if line.startswith("#") and line.partition(" ")[0].strip("#") == ""
+            ]
+            self.assertEqual(headings, expected_headings, skill_name)
+
     def test_registers_bundled_claworld_skills(self):
         registered = []
 
