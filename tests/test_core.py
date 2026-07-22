@@ -810,7 +810,37 @@ class TranscriptReportTests(unittest.TestCase):
         ]
         self.assertEqual(
             [(float(rect.attrib["x"]), float(rect.attrib["y"]), float(rect.attrib["width"])) for rect in card_rects],
-            [(0.0, 0.0, 285.0), (301.0, 0.0, 285.0), (0.0, 111.0, 586.0), (0.0, 209.0, 586.0)],
+            [(0.0, 0.0, 285.0), (301.0, 0.0, 285.0), (0.0, 110.0, 586.0), (0.0, 214.0, 586.0)],
+        )
+        direct_layout_svg = ET.fromstring(
+            "<svg>"
+            + claworld_comic_grid._render_context_cards(
+                0,
+                0,
+                586,
+                blocks[:2],
+                vertical_profiles=True,
+            )
+            + "</svg>"
+        )
+        direct_card_rects = [
+            [node for node in card if node.tag == "rect"][1]
+            for card in direct_layout_svg
+            if "passport-context-field" in card.attrib.get("class", "").split()
+        ]
+        self.assertEqual(
+            [
+                (float(rect.attrib["x"]), float(rect.attrib["y"]), float(rect.attrib["width"]))
+                for rect in direct_card_rects
+            ],
+            [(0.0, 0.0, 586.0), (0.0, 110.0, 586.0)],
+        )
+        self.assertEqual(
+            claworld_comic_grid._full_header_card_height(blocks[:2], chat_mode="direct"),
+            claworld_comic_grid.CONTEXT_CARDS_TOP
+            + 2 * claworld_comic_grid.PROFILE_CARD_HEIGHT
+            + claworld_comic_grid.PROFILE_CARD_STACK_GAP
+            + 32,
         )
         layout_text = " ".join(node.text or "" for node in layout_svg.iter("text"))
         for label in ("About this agent", "About their human", "About this world", "Their role here"):
@@ -823,9 +853,19 @@ class TranscriptReportTests(unittest.TestCase):
             if "context-field-legend" in node.attrib.get("class", "").split()
         ]
         self.assertEqual(len(legends), 4)
-        self.assertTrue(all("stroke" not in legend.attrib for legend in legends))
+        self.assertTrue(all(legend.attrib["stroke"] == claworld_comic_grid.BLACK for legend in legends))
+        self.assertTrue(all(float(legend.attrib["rx"]) == 13.0 for legend in legends))
         self.assertTrue(
-            all(legend.attrib["fill"] == claworld_comic_grid.THEME["header_fill"] for legend in legends)
+            all(legend.attrib["fill"] == claworld_comic_grid.THEME["passport_strip"] for legend in legends)
+        )
+        self.assertEqual(
+            [claworld_comic_grid._context_card_accent(role) for role in ("agent", "human", "world", "role")],
+            [
+                claworld_comic_grid.THEME["left_label"],
+                claworld_comic_grid.THEME["direct_badge"],
+                claworld_comic_grid.THEME["world_badge"],
+                claworld_comic_grid.THEME["role_badge"],
+            ],
         )
         labels = [
             node
@@ -1180,24 +1220,27 @@ class TranscriptReportTests(unittest.TestCase):
             compact_code.attrib["font-size"],
             str(claworld_comic_grid.IDENTITY_COMPACT_CODE_FONT_SIZE),
         )
-        self.assertEqual(short_name.attrib["text-anchor"], "middle")
+        self.assertNotIn("text-anchor", short_name.attrib)
         self.assertEqual(long_name.attrib["text-anchor"], "middle")
-        self.assertEqual(short_code.attrib["text-anchor"], "middle")
+        self.assertNotIn("text-anchor", short_code.attrib)
         self.assertEqual(long_code.attrib["text-anchor"], "middle")
-        self.assertEqual(short_name.attrib["x"], short_code.attrib["x"])
+        self.assertGreater(float(short_code.attrib["x"]), float(short_name.attrib["x"]))
         self.assertEqual(long_name.attrib["x"], long_code.attrib["x"])
-        self.assertGreater(float(short_code.attrib["y"]), float(short_name.attrib["y"]))
+        self.assertEqual(short_code.attrib["y"], short_name.attrib["y"])
         self.assertGreater(float(long_code.attrib["y"]), float(long_name.attrib["y"]))
+        self.assertEqual(compact_code.attrib["y"], compact_name.attrib["y"])
         self.assertEqual(short_code.text, "#R07")
         self.assertEqual(long_code.text, "#Z99TMV")
 
         def calculated_dot_gap(circle, name):
-            estimated_name_left = float(name.attrib["x"]) - (
-                claworld_comic_grid._identity_name_render_width(
-                    name.text or "",
-                    int(name.attrib["font-size"]),
-                )
-            ) / 2
+            estimated_name_left = float(name.attrib["x"])
+            if name.attrib.get("text-anchor") == "middle":
+                estimated_name_left -= (
+                    claworld_comic_grid._identity_name_render_width(
+                        name.text or "",
+                        int(name.attrib["font-size"]),
+                    )
+                ) / 2
             circle_right = float(circle.attrib["cx"]) + float(circle.attrib["r"])
             return estimated_name_left - circle_right
 

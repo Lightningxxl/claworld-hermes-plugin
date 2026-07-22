@@ -27,7 +27,7 @@ from ..transcript_report_types import LayoutPage, MeasuredBubble, TranscriptMess
 CANVAS_MARGIN = 24
 FRAME_MARGIN = 16
 HEADER_Y = 48
-HEADER_CARD_HEIGHT_FULL = 470
+HEADER_CARD_HEIGHT_FULL = 493
 HEADER_CARD_HEIGHT_NO_CONTEXT = 168
 HEADER_CARD_HEIGHT_COMPACT = 96
 HEADER_BOTTOM_PAD = 20
@@ -53,11 +53,14 @@ HEADER_TOPIC_MAX_UNITS = 26.0
 HEADER_COMPACT_TOPIC_MAX_UNITS = 26.0
 HEADER_TOPIC_SIDE_PADDING = 36
 CONTEXT_CARD_HEIGHT = 76
-CONTEXT_CARD_GAP = 22
+CONTEXT_CARD_GAP = 28
 PROFILE_CARD_HEIGHT = 82
 PROFILE_CARD_GAP = 16
-PROFILE_TO_CONTEXT_GAP = 29
+PROFILE_CARD_STACK_GAP = 28
+PROFILE_TO_CONTEXT_GAP = 28
+CONTEXT_CARDS_TOP = 171
 CONTEXT_LABEL_FONT_SIZE = 12
+CONTEXT_LEGEND_HEIGHT = 26
 CONTEXT_TEXT_FONT_SIZE = 14
 CONTEXT_TEXT_LINE_HEIGHT = 21
 CONTEXT_TEXT_MAX_LINES = 2
@@ -68,9 +71,9 @@ TAG_ICON_GAP = 12
 TAG_ICON_TOP_GAP = 8
 TAG_FALLBACK_MAX_COLS = 10
 TEXT_UNIT_PX = 18.0
-IDENTITY_NAME_FONT_SIZE = 20
+IDENTITY_NAME_FONT_SIZE = 22
 IDENTITY_CODE_FONT_SIZE = 13
-IDENTITY_COMPACT_NAME_FONT_SIZE = 18
+IDENTITY_COMPACT_NAME_FONT_SIZE = 19
 IDENTITY_COMPACT_CODE_FONT_SIZE = 12
 BLACK = "#090909"
 
@@ -95,6 +98,7 @@ THEME = {
     "time_accent_right": "#50D995",
     "direct_badge": "#67DDF1",
     "world_badge": "#FFB34F",
+    "role_badge": "#FF6A9A",
     "chat_badge": "#D3B7FF",
     "passport_strip": "#FFFDF7",
 }
@@ -418,7 +422,7 @@ def _render_full_header(page: LayoutPage) -> str:
     y = HEADER_Y
     w = page.width - (CANVAS_MARGIN + 26) * 2
     data = _passport_data(page)
-    h = _full_header_card_height(data["context_blocks"])
+    h = _full_header_card_height(data["context_blocks"], chat_mode=data["mode"])
     mode_width = _mode_badge_width(data["mode_label"])
     page_label = _page_label(page)
     page_width = _small_badge_width(page_label, minimum=48)
@@ -497,9 +501,10 @@ def _render_full_header(page: LayoutPage) -> str:
         parts.append(
             _render_context_cards(
                 x + 18,
-                y + 153,
+                y + CONTEXT_CARDS_TOP,
                 w - 36,
                 data["context_blocks"],
+                vertical_profiles=data["mode"] == "direct",
             )
         )
     parts.append("</g>")
@@ -560,6 +565,8 @@ def _render_context_cards(
     y: float,
     width: float,
     blocks: list[dict[str, str]],
+    *,
+    vertical_profiles: bool = False,
 ) -> str:
     ordered = _ordered_context_blocks(blocks)
     profile_blocks = [block for block in ordered if _context_card_role(block) in {"agent", "human"}]
@@ -567,11 +574,24 @@ def _render_context_cards(
     parts: list[str] = []
     next_y = y
     if profile_blocks:
-        card_width = (width - PROFILE_CARD_GAP) / 2
         by_role = {_context_card_role(block): block for block in profile_blocks}
-        for index, role in enumerate(("agent", "human")):
-            block = by_role.get(role)
-            if block:
+        visible_profiles = [by_role[role] for role in ("agent", "human") if role in by_role]
+        if vertical_profiles:
+            for index, block in enumerate(visible_profiles):
+                parts.append(
+                    _render_context_card(
+                        x,
+                        y + index * (PROFILE_CARD_HEIGHT + PROFILE_CARD_STACK_GAP),
+                        width,
+                        block,
+                        compact=True,
+                    )
+                )
+            next_y += len(visible_profiles) * PROFILE_CARD_HEIGHT
+            next_y += max(0, len(visible_profiles) - 1) * PROFILE_CARD_STACK_GAP
+        else:
+            card_width = (width - PROFILE_CARD_GAP) / 2
+            for index, block in enumerate(visible_profiles):
                 parts.append(
                     _render_context_card(
                         x + index * (card_width + PROFILE_CARD_GAP),
@@ -581,7 +601,9 @@ def _render_context_cards(
                         compact=True,
                     )
                 )
-        next_y += PROFILE_CARD_HEIGHT + (PROFILE_TO_CONTEXT_GAP if detail_blocks else 0)
+            next_y += PROFILE_CARD_HEIGHT
+        if detail_blocks:
+            next_y += PROFILE_TO_CONTEXT_GAP
     for block in detail_blocks:
         parts.append(_render_context_card(x, next_y, width, block))
         next_y += CONTEXT_CARD_HEIGHT + CONTEXT_CARD_GAP
@@ -605,12 +627,12 @@ def _render_context_card(
     lines = _bounded_context_lines(text, content_width)
     class_kind = "".join(char.lower() if char.isalnum() else "-" for char in kind).strip("-") or "profile"
     role = _context_card_role(block)
-    accent = THEME["world_badge"] if role == "world" else THEME["left_label"]
+    accent = _context_card_accent(role)
     accessible_text = ellipsize_text(text, 120.0, suffix="…")
     accessible = f"{label}: {accessible_text}" if accessible_text else label
     legend_width = max(
         64.0,
-        min(width - 40.0, 42.0 + _identity_name_render_width(label, CONTEXT_LABEL_FONT_SIZE)),
+        min(width - 40.0, 40.0 + _identity_name_render_width(label, CONTEXT_LABEL_FONT_SIZE)),
     )
 
     parts = [
@@ -619,12 +641,12 @@ def _render_context_card(
         f'<rect x="{x + 3:.1f}" y="{y + 3:.1f}" width="{width:.1f}" height="{card_height}" rx="15" fill="{BLACK}"/>',
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{card_height}" rx="15" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="2.5"/>',
         f'<rect x="{x + 8:.1f}" y="{y + 10:.1f}" width="6" height="{card_height - 20}" rx="3" fill="{accent}"/>',
-        f'<rect class="context-field-legend" x="{x + 20:.1f}" y="{y - 10:.1f}" width="{legend_width:.1f}" height="22" fill="{THEME["header_fill"]}"/>',
-        _context_field_icon_svg(x + 34, y + 1, kind),
+        f'<rect class="context-field-legend" x="{x + 20:.1f}" y="{y - 12.5:.1f}" width="{legend_width:.1f}" height="{CONTEXT_LEGEND_HEIGHT}" rx="{CONTEXT_LEGEND_HEIGHT / 2:.1f}" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="2.2"/>',
+        _context_field_icon_svg(x + 35, y + 0.5, kind),
         _render_inline_text_svg(
             label,
-            x + 54,
-            y + 5,
+            x + 52,
+            y + 4.5,
             font_size=CONTEXT_LABEL_FONT_SIZE,
             font_weight=900,
             fill="#68645F",
@@ -687,15 +709,14 @@ def _context_card_label(kind: str, fallback: str) -> str:
 
 
 def _context_field_icon_svg(cx: float, cy: float, kind: str) -> str:
-    fill = THEME["left_label"]
     role = _context_card_role({"kind": kind})
+    fill = _context_card_accent(role)
     if role == "world":
-        fill = THEME["world_badge"]
         return "\n".join(
             [
                 '<g class="context-icon context-icon-world">',
-                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="7" fill="{fill}" stroke="{BLACK}" stroke-width="1.5"/>',
-                f'<path d="M{cx - 6:.1f} {cy:.1f} H{cx + 6:.1f} M{cx:.1f} {cy - 6:.1f} C{cx - 3:.1f} {cy - 2:.1f}, {cx - 3:.1f} {cy + 2:.1f}, {cx:.1f} {cy + 6:.1f} M{cx:.1f} {cy - 6:.1f} C{cx + 3:.1f} {cy - 2:.1f}, {cx + 3:.1f} {cy + 2:.1f}, {cx:.1f} {cy + 6:.1f}" fill="none" stroke="{BLACK}" stroke-width="1" stroke-linecap="round"/>',
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="5.5" fill="{fill}" stroke="{BLACK}" stroke-width="1.2"/>',
+                f'<path d="M{cx - 4.7:.1f} {cy:.1f} H{cx + 4.7:.1f} M{cx:.1f} {cy - 4.7:.1f} C{cx - 2.4:.1f} {cy - 1.6:.1f}, {cx - 2.4:.1f} {cy + 1.6:.1f}, {cx:.1f} {cy + 4.7:.1f} M{cx:.1f} {cy - 4.7:.1f} C{cx + 2.4:.1f} {cy - 1.6:.1f}, {cx + 2.4:.1f} {cy + 1.6:.1f}, {cx:.1f} {cy + 4.7:.1f}" fill="none" stroke="{BLACK}" stroke-width="0.9" stroke-linecap="round"/>',
                 "</g>",
             ]
         )
@@ -703,8 +724,8 @@ def _context_field_icon_svg(cx: float, cy: float, kind: str) -> str:
         return "\n".join(
             [
                 '<g class="context-icon context-icon-role">',
-                f'<path d="M{cx:.1f} {cy + 8:.1f} C{cx - 5:.1f} {cy + 2:.1f}, {cx - 7:.1f} {cy - 1:.1f}, {cx - 7:.1f} {cy - 4:.1f} A7 7 0 1 1 {cx + 7:.1f} {cy - 4:.1f} C{cx + 7:.1f} {cy - 1:.1f}, {cx + 5:.1f} {cy + 2:.1f}, {cx:.1f} {cy + 8:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.5" stroke-linejoin="round"/>',
-                f'<circle cx="{cx:.1f}" cy="{cy - 4:.1f}" r="2.2" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="1.2"/>',
+                f'<path d="M{cx:.1f} {cy + 6.2:.1f} C{cx - 4:.1f} {cy + 1.7:.1f}, {cx - 5.5:.1f} {cy - 0.8:.1f}, {cx - 5.5:.1f} {cy - 3.2:.1f} A5.5 5.5 0 1 1 {cx + 5.5:.1f} {cy - 3.2:.1f} C{cx + 5.5:.1f} {cy - 0.8:.1f}, {cx + 4:.1f} {cy + 1.7:.1f}, {cx:.1f} {cy + 6.2:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.2" stroke-linejoin="round"/>',
+                f'<circle cx="{cx:.1f}" cy="{cy - 3.2:.1f}" r="1.7" fill="{THEME["passport_strip"]}" stroke="{BLACK}" stroke-width="0.9"/>',
                 "</g>",
             ]
         )
@@ -712,21 +733,29 @@ def _context_field_icon_svg(cx: float, cy: float, kind: str) -> str:
         return "\n".join(
             [
                 '<g class="context-icon context-icon-agent">',
-                f'<line x1="{cx:.1f}" y1="{cy - 8:.1f}" x2="{cx:.1f}" y2="{cy - 5:.1f}" stroke="{BLACK}" stroke-width="1.4"/>',
-                f'<circle cx="{cx:.1f}" cy="{cy - 9:.1f}" r="1.4" fill="{fill}" stroke="{BLACK}" stroke-width="1"/>',
-                f'<rect x="{cx - 7:.1f}" y="{cy - 5:.1f}" width="14" height="11" rx="3" fill="{fill}" stroke="{BLACK}" stroke-width="1.5"/>',
-                f'<circle cx="{cx - 3:.1f}" cy="{cy:.1f}" r="1.2" fill="{BLACK}"/><circle cx="{cx + 3:.1f}" cy="{cy:.1f}" r="1.2" fill="{BLACK}"/>',
+                f'<line x1="{cx:.1f}" y1="{cy - 6.2:.1f}" x2="{cx:.1f}" y2="{cy - 4:.1f}" stroke="{BLACK}" stroke-width="1.1"/>',
+                f'<circle cx="{cx:.1f}" cy="{cy - 7.2:.1f}" r="1.1" fill="{fill}" stroke="{BLACK}" stroke-width="0.8"/>',
+                f'<rect x="{cx - 5.5:.1f}" y="{cy - 4:.1f}" width="11" height="9" rx="2.4" fill="{fill}" stroke="{BLACK}" stroke-width="1.2"/>',
+                f'<circle cx="{cx - 2.3:.1f}" cy="{cy:.1f}" r="0.9" fill="{BLACK}"/><circle cx="{cx + 2.3:.1f}" cy="{cy:.1f}" r="0.9" fill="{BLACK}"/>',
                 "</g>",
             ]
         )
     return "\n".join(
         [
             '<g class="context-icon context-icon-human">',
-            f'<circle cx="{cx:.1f}" cy="{cy - 4:.1f}" r="4" fill="{fill}" stroke="{BLACK}" stroke-width="1.5"/>',
-            f'<path d="M{cx - 7:.1f} {cy + 7:.1f} C{cx - 7:.1f} {cy + 1:.1f}, {cx - 4:.1f} {cy:.1f}, {cx:.1f} {cy:.1f} C{cx + 4:.1f} {cy:.1f}, {cx + 7:.1f} {cy + 1:.1f}, {cx + 7:.1f} {cy + 7:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.5" stroke-linejoin="round"/>',
+            f'<circle cx="{cx:.1f}" cy="{cy - 3.2:.1f}" r="3.2" fill="{fill}" stroke="{BLACK}" stroke-width="1.2"/>',
+            f'<path d="M{cx - 5.5:.1f} {cy + 5.5:.1f} C{cx - 5.5:.1f} {cy + 1:.1f}, {cx - 3.2:.1f} {cy:.1f}, {cx:.1f} {cy:.1f} C{cx + 3.2:.1f} {cy:.1f}, {cx + 5.5:.1f} {cy + 1:.1f}, {cx + 5.5:.1f} {cy + 5.5:.1f} Z" fill="{fill}" stroke="{BLACK}" stroke-width="1.2" stroke-linejoin="round"/>',
             "</g>",
         ]
     )
+
+
+def _context_card_accent(role: str) -> str:
+    return {
+        "human": THEME["direct_badge"],
+        "world": THEME["world_badge"],
+        "role": THEME["role_badge"],
+    }.get(role, THEME["left_label"])
 
 
 def _bounded_context_lines(text: str, content_width: float) -> list[str]:
@@ -760,25 +789,37 @@ def _header_height(*, compact: bool, header: Any | None = None, subtitle: str = 
     if compact:
         card_height = HEADER_CARD_HEIGHT_COMPACT
     else:
-        card_height = _full_header_card_height(
-            _header_context_blocks(header, fallback_text=subtitle if header is None else "")
+        context_blocks = _header_context_blocks(
+            header,
+            fallback_text=subtitle if header is None else "",
         )
+        chat_mode = _header_value(header, "chat_mode", "chatMode", "mode").lower()
+        card_height = _full_header_card_height(context_blocks, chat_mode=chat_mode)
     return HEADER_Y + card_height + HEADER_BOTTOM_PAD
 
 
-def _full_header_card_height(context_blocks: list[dict[str, str]]) -> int:
+def _full_header_card_height(
+    context_blocks: list[dict[str, str]],
+    *,
+    chat_mode: str = "",
+) -> int:
     ordered = _ordered_context_blocks(context_blocks)
     if not ordered:
         return HEADER_CARD_HEIGHT_NO_CONTEXT
     has_profile_row = any(_context_card_role(block) in {"agent", "human"} for block in ordered)
     detail_count = sum(_context_card_role(block) not in {"agent", "human"} for block in ordered)
-    content_height = PROFILE_CARD_HEIGHT if has_profile_row else 0
+    profile_count = sum(_context_card_role(block) in {"agent", "human"} for block in ordered)
+    if has_profile_row and chat_mode == "direct":
+        content_height = profile_count * PROFILE_CARD_HEIGHT
+        content_height += max(0, profile_count - 1) * PROFILE_CARD_STACK_GAP
+    else:
+        content_height = PROFILE_CARD_HEIGHT if has_profile_row else 0
     if has_profile_row and detail_count:
         content_height += PROFILE_TO_CONTEXT_GAP
     if detail_count:
         content_height += detail_count * CONTEXT_CARD_HEIGHT
         content_height += max(0, detail_count - 1) * CONTEXT_CARD_GAP
-    return min(HEADER_CARD_HEIGHT_FULL, 153 + content_height + 32)
+    return min(HEADER_CARD_HEIGHT_FULL, CONTEXT_CARDS_TOP + content_height + 32)
 
 
 def _passport_data(page: LayoutPage) -> dict[str, Any]:
@@ -1011,31 +1052,53 @@ def _identity_label_svg(
 ) -> str:
     """Render a centered public identity with a dynamically positioned dot."""
 
-    dot_y = y + (10 if compact else 15)
     radius = 5 if compact else 6
     dot_gap = 4
     identity_font_size = IDENTITY_COMPACT_NAME_FONT_SIZE if compact else IDENTITY_NAME_FONT_SIZE
     code_font_size = IDENTITY_COMPACT_CODE_FONT_SIZE if compact else IDENTITY_CODE_FONT_SIZE
     name_y = y + (17 if compact else 21)
     code_y = y + (32 if compact else 40)
+    inline_y = y + (25 if compact else 29)
     dot_reserve = radius * 2 + dot_gap + 2
     available_px = max(18.0, width - dot_reserve * 2)
     raw_name, raw_code = _split_identity(identity)
-    visible_name = _ellipsize_identity_name(raw_name, available_px, identity_font_size)
-    visible_code = ellipsize_text(raw_code, available_px / code_font_size, suffix="…")
     text_center_x = x + width / 2
-    name_width = _identity_name_render_width(visible_name, identity_font_size)
-    dot_x = text_center_x - name_width / 2 - dot_gap - radius
-    identity_svg = _render_identity_text_svg(
-        visible_name,
-        visible_code,
-        text_center_x,
-        name_y,
-        code_y,
-        name_font_size=identity_font_size,
-        code_font_size=code_font_size,
-        class_name=class_name,
-    )
+    name_width = _identity_name_render_width(raw_name, identity_font_size)
+    code_width = _identity_name_render_width(raw_code, code_font_size) if raw_code else 0.0
+    inline_gap = 5.0 if raw_code else 0.0
+    inline_width = name_width + inline_gap + code_width
+    use_inline = inline_width <= available_px
+    if use_inline:
+        text_left = text_center_x - inline_width / 2
+        dot_y = inline_y - (6 if compact else 7)
+        dot_x = text_left - dot_gap - radius
+        identity_svg = _render_inline_identity_svg(
+            raw_name,
+            raw_code,
+            text_left,
+            inline_y,
+            name_width=name_width,
+            gap=inline_gap,
+            name_font_size=identity_font_size,
+            code_font_size=code_font_size,
+            class_name=class_name,
+        )
+    else:
+        visible_name = _ellipsize_identity_name(raw_name, available_px, identity_font_size)
+        visible_code = ellipsize_text(raw_code, available_px / code_font_size, suffix="…")
+        visible_name_width = _identity_name_render_width(visible_name, identity_font_size)
+        dot_y = y + (10 if compact else 15)
+        dot_x = text_center_x - visible_name_width / 2 - dot_gap - radius
+        identity_svg = _render_identity_text_svg(
+            visible_name,
+            visible_code,
+            text_center_x,
+            name_y,
+            code_y,
+            name_font_size=identity_font_size,
+            code_font_size=code_font_size,
+            class_name=class_name,
+        )
     return "\n".join(
         [
             f'<g class="identity-label {class_name}">',
@@ -1045,6 +1108,46 @@ def _identity_label_svg(
             "</g>",
         ]
     )
+
+
+def _render_inline_identity_svg(
+    name: str,
+    code: str,
+    x: float,
+    y: float,
+    *,
+    name_width: float,
+    gap: float,
+    name_font_size: int,
+    code_font_size: int,
+    class_name: str,
+) -> str:
+    """Render a short public identity on one centered line."""
+
+    parts = [
+        _render_inline_text_svg(
+            name,
+            x,
+            y,
+            font_size=name_font_size,
+            font_weight=900,
+            fill=BLACK,
+            class_name=f"{class_name}-name identity-name identity-text identity-inline",
+        )
+    ]
+    if code:
+        parts.append(
+            _render_inline_text_svg(
+                code,
+                x + name_width + gap,
+                y,
+                font_size=code_font_size,
+                font_weight=800,
+                fill="#68645F",
+                class_name=f"{class_name}-code identity-code identity-text identity-inline",
+            )
+        )
+    return "\n".join(parts)
 
 
 def _identity_name_render_width(name: str, font_size: int) -> float:
