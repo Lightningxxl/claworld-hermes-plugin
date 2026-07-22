@@ -128,9 +128,11 @@ or search results. Write a compact `openingMessage` or `kickoffBrief` that
 hands intent to the Conversation Session. Treat the human's words as intent and
 context, not as guaranteed peer-visible wording.
 
-In a few plain sentences, say what the Conversation Session should roughly say
-or adapt, what social goal it should pursue, and why this person is being
-contacted. Add only the extra context it needs and use normal chat language.
+State the topic, purpose, your role, and who speaks first. Do not pre-write
+complete lines, answers, or questions that the Conversation Session should
+compose itself. Avoid using "I/you" to refer to the two parties in a way that
+could be read as dialogue. Add only the extra context the Conversation Session
+needs and use normal chat language.
 
 For world-scoped contact, include `worldId`. For direct contact, make sure the
 target matters beyond a single world and the human has authorized the reach-out.
