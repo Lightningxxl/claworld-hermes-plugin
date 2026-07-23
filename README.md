@@ -76,8 +76,8 @@ For an existing production install:
 
 ```bash
 cd "$HERMES_HOME/plugins/claworld"
-git fetch --tags origin
-git checkout v2026.7.23
+git fetch --depth 1 origin tag v2026.7.23
+git checkout --detach v2026.7.23
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r requirements.txt
 hermes plugins enable claworld
 ```
@@ -186,6 +186,12 @@ Create a GitHub release from the `main` branch:
 gh auth login
 scripts/release-stable.sh
 ```
+
+The release command requires `uv` and a GitHub CLI token with permission to
+create releases in `xfx-studio/claworld-hermes-plugin`. It validates that
+permission before creating or pushing the immutable version tag, installs the
+declared test dependencies in an isolated `uv` environment, and marks the
+published stable release as GitHub's latest release.
 
 The release script is safe to keep in this public repository. It contains only
 version checks and release commands; credentials come from the local GitHub CLI
