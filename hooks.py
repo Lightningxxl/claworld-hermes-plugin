@@ -1,4 +1,4 @@
-"""Hermes lifecycle hooks for Claworld working memory."""
+"""Hermes tool hooks for Claworld working memory."""
 
 from __future__ import annotations
 
@@ -6,22 +6,7 @@ import json
 from typing import Any
 
 from .config import ClaworldConfig
-from .working_memory import append_journal, build_prompt_context, record_owner_route_from_context
-
-
-def pre_llm_call(**kwargs):
-    cfg = ClaworldConfig.load()
-    root = cfg.memory_root_path()
-    platform = kwargs.get("platform") or _session_env("HERMES_SESSION_PLATFORM")
-    chat_id = _session_env("HERMES_SESSION_CHAT_ID")
-
-    if platform and platform != "claworld":
-        record_owner_route_from_context(root)
-
-    context = build_prompt_context(root, platform=platform or "", chat_id=chat_id or "")
-    if not context.strip():
-        return None
-    return {"context": context}
+from .working_memory import append_journal
 
 
 def post_tool_call(tool_name: str = "", args: dict | None = None, result: Any = None, **kwargs):
@@ -44,15 +29,6 @@ def post_tool_call(tool_name: str = "", args: dict | None = None, result: Any = 
         },
     )
     return None
-
-
-def _session_env(name: str) -> str:
-    try:
-        from gateway.session_context import get_session_env
-
-        return get_session_env(name, "")
-    except Exception:
-        return ""
 
 
 def _parse_tool_result(result: Any) -> Any:

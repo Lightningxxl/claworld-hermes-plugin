@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import socket
 import ssl
@@ -10,16 +11,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from .config import ClaworldConfig
 from .protocol import normalize_http_base_url
+from .version import PLUGIN_CLIENT, PLUGIN_VERSION, USER_AGENT, infer_client_channel
 
-PLUGIN_VERSION = "claworld-hermes-plugin/0.1.0"
-PLUGIN_VERSION_HEADER = "x-claworld-plugin-version"
-USER_AGENT = f"{PLUGIN_VERSION} hermes-agent"
+CLIENT_HEADER = "x-claworld-client"
+CLIENT_VERSION_HEADER = "x-claworld-client-version"
+CLIENT_CHANNEL_HEADER = "x-claworld-client-channel"
 RETRY_BASE_DELAY_SECONDS = 0.2
 RETRY_MAX_DELAY_SECONDS = 1.0
+TRANSPORT_RETRY_METHODS = frozenset({"GET", "HEAD"})
 TRANSPORT_ERRORS = (
     urllib.error.URLError,
     http.client.RemoteDisconnected,
@@ -28,6 +32,13 @@ TRANSPORT_ERRORS = (
     ConnectionResetError,
     socket.timeout,
 )
+SHARE_CARD_MAX_BYTES = 10 * 1024 * 1024
+SHARE_CARD_EXTENSIONS = {
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 
 
 class ClaworldHttpError(RuntimeError):
@@ -41,7 +52,9 @@ def auth_headers(config: ClaworldConfig, base: dict | None = None) -> dict:
     headers = dict(base or {})
     if not any(name.lower() == "user-agent" for name in headers):
         headers["User-Agent"] = USER_AGENT
-    headers[PLUGIN_VERSION_HEADER] = PLUGIN_VERSION
+    headers[CLIENT_HEADER] = PLUGIN_CLIENT
+    headers[CLIENT_VERSION_HEADER] = PLUGIN_VERSION
+    headers[CLIENT_CHANNEL_HEADER] = infer_client_channel()
     if config.api_key:
         headers["x-api-key"] = config.api_key
     if config.app_token:
@@ -60,19 +73,22 @@ def request_json(
     timeout: float = 30.0,
 ) -> dict:
     url = build_url(config, path, query=query)
+    normalized_method = str(method or "GET").strip().upper() or "GET"
     data = None
     headers = auth_headers(config, {"accept": "application/json"})
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["content-type"] = "application/json"
 
-    try:
-        retry_count = int(config.http_retries)
-    except (TypeError, ValueError):
-        retry_count = 0
+    retry_count = 0
+    if normalized_method in TRANSPORT_RETRY_METHODS:
+        try:
+            retry_count = int(config.http_retries)
+        except (TypeError, ValueError):
+            retry_count = 0
     attempts = max(1, retry_count + 1)
     for attempt in range(attempts):
-        request = urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
+        request = urllib.request.Request(url, data=data, method=normalized_method, headers=headers)
         try:
             with _build_opener(config).open(request, timeout=timeout) as response:
                 payload = response.read().decode("utf-8")
@@ -89,6 +105,61 @@ def request_json(
                 raise
             time.sleep(min(RETRY_BASE_DELAY_SECONDS * (attempt + 1), RETRY_MAX_DELAY_SECONDS))
     return {}
+
+
+def download_share_card(
+    config: ClaworldConfig,
+    image_url: str,
+    destination_dir: Path,
+    *,
+    timeout: float = 30.0,
+    max_bytes: int = SHARE_CARD_MAX_BYTES,
+) -> Path:
+    """Download a backend-issued share-card image into Hermes media cache."""
+
+    parsed = urllib.parse.urlparse(str(image_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("share-card image URL must use http or https")
+
+    request = urllib.request.Request(
+        image_url,
+        method="GET",
+        headers={"accept": "image/*", "user-agent": USER_AGENT},
+    )
+    with _build_opener(config).open(request, timeout=timeout) as response:
+        content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if content_type not in SHARE_CARD_EXTENSIONS:
+            raise ValueError(f"share-card response is not a supported image: {content_type or 'unknown'}")
+        content_length = response.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > max_bytes:
+                    raise ValueError("share-card image exceeds the delivery size limit")
+            except ValueError as exc:
+                if "exceeds" in str(exc):
+                    raise
+
+        chunks = []
+        total = 0
+        while True:
+            chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("share-card image exceeds the delivery size limit")
+            chunks.append(chunk)
+
+    if not chunks:
+        raise ValueError("share-card image response was empty")
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(image_url.encode("utf-8")).hexdigest()[:20]
+    path = destination_dir / f"claworld-share-card-{digest}{SHARE_CARD_EXTENSIONS[content_type]}"
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_bytes(b"".join(chunks))
+    temporary.replace(path)
+    return path
 
 
 def _build_opener(config: ClaworldConfig) -> urllib.request.OpenerDirector:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 SKILL_DESCRIPTIONS = {
-    "claworld-help": "Diagnose Claworld setup and support issues.",
+    "claworld-help": "Install, upgrade, remove, repair, or diagnose Claworld.",
     "claworld-main-session": "Use Claworld worlds, people, and conversations.",
     "claworld-management-session": "Handle Claworld background notifications.",
     "claworld-manage-worlds": "Create and manage Claworld worlds.",

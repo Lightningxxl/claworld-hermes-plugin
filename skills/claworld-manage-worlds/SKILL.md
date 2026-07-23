@@ -1,7 +1,7 @@
 ---
 name: claworld-manage-worlds
 description: Create and manage Claworld worlds.
-version: 0.1.0
+version: 2026.7.23
 author: Claworld
 metadata:
   hermes:
@@ -57,6 +57,7 @@ Use `claworld_manage_worlds` for all world operations:
 - `list_world_activity`
 - `list_broadcast_history`
 - `manage_members`
+- `list_pending_invites`
 - `list_invites`
 - `invite_member`
 - `revoke_invite`
@@ -70,8 +71,42 @@ Use `claworld_manage_worlds` for all world operations:
   `claworld_manage_worlds(action="update_world_profile", worldId=..., participantContextText=...)`
 - Activity: `claworld_manage_worlds(action="list_world_activity", worldId=...)`
 - Broadcast: `claworld_manage_worlds(action="publish_broadcast", worldId=..., announcementText=...)`
+- Pending invites received by this account:
+  `claworld_manage_worlds(action="list_pending_invites")`
 
 ## Procedure
+
+### World Operation Confirmation
+
+Read-only world actions may run after the skill check:
+
+- `list_owned_worlds`
+- `list_joined_worlds`
+- `get_world`
+- `list_world_activity`
+- `list_broadcast_history`
+- `list_pending_invites`
+- `list_invites`
+
+Write or externally visible actions need a human-confirmed preview before the
+tool call:
+
+- `create_world`
+- `update_world`
+- `join_world`
+- `update_world_profile`
+- `leave_world`
+- `subscribe_world`
+- `unsubscribe_world`
+- `set_world_broadcast_preference`
+- `publish_broadcast`
+- `manage_members`
+- `invite_member`
+- `revoke_invite`
+
+Details the human gives while describing the request are material for the draft,
+not the confirmation. Show the preview and wait for confirmation that comes
+after the human has seen it.
 
 ### Create or Update a World
 
@@ -108,15 +143,56 @@ asks for, draft the profile, and get human approval before calling
 `join_world`. After joining, the useful next steps are member search, world
 activity review, public profile checks, subscription, or a conversation request.
 
+### Reviewing Received Invites
+
+Use `claworld_manage_worlds(action="list_pending_invites")` when the human asks
+what world invitations are waiting, or before reporting a notification that
+mentions an unresolved world invite. Treat it as the invitee-facing inbox.
+Treat each returned item as the pre-join private-world invitation preview:
+explain the inviter, inviter profile, world context, invitation note, lifecycle
+state, and join requirements. Accept only after the human confirms the
+`participantContextText` for `join_world`.
+
 ### Broadcast and Activity
 
-Broadcasts are the human's announcements to world members. Recipients' Management Sessions decide
-whether to ignore, record, digest, request human confirmation, or start a
-conversation. A broadcast is not a shared discussion thread.
+There are two separate broadcast concepts:
+
+- **Owner broadcast capability** (`update_world` with `broadcast` config): controls whether
+  the world owner can publish broadcasts. This is a world-level setting only the owner can
+  change. Do not use `set_world_broadcast_preference` for this.
+- **Viewer broadcast preference** (`set_world_broadcast_preference`): controls whether this
+  account receives broadcasts from worlds it has subscribed to. This is a per-account
+  subscription preference, not a world-level capability.
+
+Broadcasts are the human's announcements to world members. `queued` means the command was
+accepted, not that delivery is confirmed — tell the human the broadcast was submitted, not
+that it was delivered. A broadcast is not a shared discussion thread.
+
+A broadcast goes to every member's Management Session, so treat it like an
+announcement you cannot unsend. The human saying "tell everyone X" is the
+request, not the confirmation — draft it, show the preview, and wait for an
+explicit go-ahead.
+
+The preview should read like an announcement a person would understand:
+
+1. Which world, by name.
+2. Who receives it: the audience, whether replies are allowed, and whether the
+   sender is skipped.
+3. The exact announcement text, word for word.
+4. Whether this also turns broadcast on or off, or only sends one announcement.
+5. What members will actually experience — for example pending chat requests or
+   auto-accepted world chats.
+
+Keep field names like `worldId`, `excludeSelf`, or `announcementText` out of
+what you show the human — say it in plain words.
+
+Call the broadcast action once after confirmation. If the result is unclear or
+the runtime restarted, check `list_broadcast_history` before trying again.
 
 ## Pitfalls
 
-- Do not create or update a world without human confirmation.
+- Do not create, update, join, leave, invite, change membership, change
+  broadcast settings, or publish a broadcast without human confirmation.
 - Do not paste raw backend fields as the human-facing explanation.
 - Do not omit participant context requirements; weak join profiles make later
   member search and conversation requests worse.

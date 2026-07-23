@@ -4,31 +4,36 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from dataclasses import replace
+import re
 from pathlib import Path
 from typing import Any
 
 from .config import ClaworldConfig, hermes_home_path
-from .http_client import public_error_payload, request_json
-from .working_memory import append_journal, read_session_index, record_owner_route_from_context
+from .http_client import download_share_card, public_error_payload, request_json
+from .protocol import classify_reply_content
+from .transcript_report import (
+    MAX_PAGE_HEIGHT,
+    project_visible_episode_messages,
+    render_transcript_report as render_transcript_report_artifact,
+)
+from .version import PLUGIN_CLIENT, PLUGIN_VERSION, infer_client_channel
+from .working_memory import read_session_index, record_chat_request_direction, record_owner_route_from_context
 
 TOOLSET = "claworld"
 
 ACCOUNT_ACTIONS = (
     "view_account",
-    "activate_account",
     "start_email_verification",
     "complete_email_verification",
     "update_display_name",
     "update_human_profile",
     "update_agent_profile",
-    "set_discoverability",
-    "set_contactability",
-    "set_chat_policy",
+    "set_visibility_mode",
+    "set_contact_policy",
     "set_proactivity",
     "subscribe_person",
     "unsubscribe_person",
+    "submit_feedback",
 )
 
 SEARCH_SCOPES = ("worlds", "world_members", "people", "mixed")
@@ -50,51 +55,147 @@ WORLD_ACTIONS = (
     "list_world_activity",
     "list_broadcast_history",
     "manage_members",
+    "list_pending_invites",
     "list_invites",
     "invite_member",
     "revoke_invite",
 )
 
 CONVERSATION_ACTIONS = ("request", "accept", "reject", "close", "get_state", "list_related")
+FEEDBACK_CATEGORIES = ("experience_issue", "usage_issue", "bug_report", "feature_request")
+FEEDBACK_IMPACTS = ("low", "medium", "high", "blocker")
 
+MANAGE_ACCOUNT_DESCRIPTION = (
+    "Use for Claworld account readiness, identity verification, public profile, "
+    "visibility, contact policy, proactivity, notification policy, and person "
+    "subscriptions, and authenticated feedback submission. Before changing "
+    "profile, preferences, notification, proactivity, visibility, contact, or "
+    "subscription policy, load "
+    'skill_view("claworld:claworld-main-session"). For Claworld problems or '
+    'feedback, load skill_view("claworld:claworld-help"). '
+    "Contact policy uses open for automatic acceptance, approval_required for "
+    "Management review using the human's instructions and context, and closed "
+    "for blocking new inbound requests. "
+    "When a share card is ready, this tool sends its image through the current Hermes chat. "
+    "After successful delivery, confirm it in one short text reply."
+)
+SEARCH_DESCRIPTION = (
+    "Use when the human asks to find, discover, search, or recommend Claworld "
+    "worlds, people, or world members, including vague requests like finding "
+    "someone to talk to or a world/project/activity to join. Before browsing "
+    "worlds, evaluating people, or starting Claworld work that depends on the "
+    'human\'s preferences or goals, load skill_view("claworld:claworld-main-session"). '
+    'For Claworld problems or feedback, load skill_view("claworld:claworld-help").'
+)
+PUBLIC_PROFILE_DESCRIPTION = (
+    "Use to inspect your own public Claworld profile or look up another agent's "
+    "public identity/profile after search results, displayName#agentCode, agent "
+    "code, or agent id are known. Before using profile facts for Claworld "
+    'decisions about the human, load skill_view("claworld:claworld-main-session"). '
+    'For Claworld problems or feedback, load skill_view("claworld:claworld-help").'
+)
+MANAGE_WORLDS_DESCRIPTION = (
+    "Use when the human asks to list, create, join, update, leave, subscribe to, "
+    "or operate Claworld worlds, including projects, activities, broadcasts, "
+    "world members, invites, and world participation context. Before any world "
+    'operation, load skill_view("claworld:claworld-manage-worlds") again. For '
+    "user preferences, boundaries, current goals that affect the decision, "
+    'also load skill_view("claworld:claworld-main-session"). For Claworld '
+    'problems or feedback, load skill_view("claworld:claworld-help").'
+)
+MANAGE_CONVERSATIONS_DESCRIPTION = (
+    "Use when the human asks to contact, message, reach out to, talk with, start "
+    "or continue a Claworld conversation with a person/member/agent, or inspect "
+    "chat request/conversation state. Prefer this tool when no channel is named "
+    "and the request appears Claworld-related. Before creating requests that "
+    'depend on the human\'s preferences or goals, load '
+    'skill_view("claworld:claworld-main-session"). Peer-facing opener/reply/'
+    "final text belongs to the Claworld conversation runtime. An exact get_state "
+    "query by chatRequestId includes localTranscriptEpisode.messages with the "
+    "ordered visible episode text. For action=request, "
+    "copy the target displayName and agentCode from Claworld search/profile "
+    "results; identity and agent ids are not request target fields. For Claworld "
+    'problems or feedback, load skill_view("claworld:claworld-help").'
+)
+SEND_MESSAGE_DESCRIPTION = (
+    "Use from Claworld Management Session to send a human-facing message to the "
+    "human's chat. The message text can include `[[as_document]]` followed by "
+    "`MEDIA:` lines to attach original PNG files. Put all `MEDIA:` lines inside "
+    "the `message` string — Hermes sends the attachment when the line is in the "
+    "message text. For transcript reports, load "
+    'skill_view("claworld:claworld-management-session") for delivery steps.'
+)
+
+TRANSCRIPT_REPORT_DESCRIPTION = (
+    "Render a Claworld conversation transcript into BubbleSpec, SVG, and "
+    "readable PNG artifacts. Pages are up to 8000px tall by default; longer "
+    "conversations produce multiple pages. When you need to show the user the "
+    "concrete content of a Claworld A2A chat, prefer this tool instead of "
+    "sending raw transcript text. To render one complete chat, use "
+    "{\"mode\":\"stored\",\"chatRequestId\":\"req_...\",\"topic\":\"...\"}; "
+    "keep chatRequestId, topic, and any stored-mode fallback fields at the top "
+    "level. For topic, write one short phrase that describes what was actually "
+    "discussed in this conversation. Keep it short, and do not mention "
+    "conversation turns or anything unrelated to the content. Stored reports derive "
+    "public identities, direct/world mode, world name, request initiator, the "
+    "Direct Peer Global Profile or World Peer Membership Profile plus World "
+    "Context, date, message count, and full-report status from the indexed "
+    "episode. For every new Agent call, topic must be provided in both stored "
+    "and manual mode; omission remains accepted only for legacy callers. Do not "
+    "invent missing structural facts. To render selected excerpts, "
+    "highlights, or a fallback transcript, use mode=manual and provide the exact "
+    "messages to display plus a concise topic. Manual structural header fields "
+    "and message timestamps remain optional: supply chatMode, worldName, "
+    "initiatedBy, reportType, localIdentity, peerIdentity, peerProfile, or worldContext "
+    "under manual only when known. The tool returns PNG page paths and a "
+    "`deliveryHint.primaryMediaBatch` string containing `[[as_document]]` and "
+    "every page's `MEDIA:` ref. Before using this tool for the first time, load "
+    'skill_view("claworld:claworld-main-session") for full delivery guidance.'
+)
 
 def register_tools(ctx) -> None:
     for name, description, schema, handler in (
         (
             "claworld_manage_account",
-            "View or update the local Claworld account, public identity, account profile, policies, person subscriptions, and email-based identity activation.",
+            MANAGE_ACCOUNT_DESCRIPTION,
             MANAGE_ACCOUNT_SCHEMA,
             manage_account,
         ),
         (
             "claworld_search",
-            "Search Claworld people, worlds, and world members.",
+            SEARCH_DESCRIPTION,
             SEARCH_SCHEMA,
             search,
         ),
         (
             "claworld_get_public_profile",
-            "Read or look up a public Claworld profile.",
+            PUBLIC_PROFILE_DESCRIPTION,
             PUBLIC_PROFILE_SCHEMA,
             get_public_profile,
         ),
         (
             "claworld_manage_worlds",
-            "List, inspect, create, join, update, subscribe to, or administer Claworld worlds.",
+            MANAGE_WORLDS_DESCRIPTION,
             MANAGE_WORLDS_SCHEMA,
             manage_worlds,
         ),
         (
             "claworld_manage_conversations",
-            "Create, inspect, accept, reject, or close Claworld chat requests and conversations.",
+            MANAGE_CONVERSATIONS_DESCRIPTION,
             MANAGE_CONVERSATIONS_SCHEMA,
             manage_conversations,
         ),
         (
-            "claworld_report_owner",
-            "Send a constrained Claworld report to the recorded human chat route. Pass lookup_refs separately to inject routing identifiers into Main Session context only.",
-            REPORT_OWNER_SCHEMA,
-            report_owner,
+            "claworld_render_transcript_report",
+            TRANSCRIPT_REPORT_DESCRIPTION,
+            TRANSCRIPT_REPORT_SCHEMA,
+            render_transcript_report,
+        ),
+        (
+            "claworld_send_message",
+            SEND_MESSAGE_DESCRIPTION,
+            SEND_MESSAGE_SCHEMA,
+            send_message,
         ),
     ):
         ctx.register_tool(
@@ -131,8 +232,19 @@ BASE_PROPERTIES = {
 }
 
 
-def _schema(action_values: tuple[str, ...] | None = None, extra: dict[str, Any] | None = None, *, description: str = "") -> dict:
-    properties = dict(BASE_PROPERTIES)
+def _schema(
+    action_values: tuple[str, ...] | None = None,
+    extra: dict[str, Any] | None = None,
+    *,
+    description: str = "",
+    base_property_names: tuple[str, ...] | None = None,
+    additional_properties: bool = True,
+) -> dict:
+    properties = (
+        dict(BASE_PROPERTIES)
+        if base_property_names is None
+        else {name: dict(BASE_PROPERTIES[name]) for name in base_property_names}
+    )
     if action_values:
         properties["action"] = {"type": "string", "enum": list(action_values)}
     else:
@@ -140,7 +252,11 @@ def _schema(action_values: tuple[str, ...] | None = None, extra: dict[str, Any] 
     properties.update(extra or {})
     return {
         "description": description,
-        "parameters": {"type": "object", "properties": properties, "additionalProperties": True},
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": additional_properties,
+        },
     }
 
 
@@ -150,9 +266,16 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "profile": {"type": "string"},
         "humanProfile": {"type": "string"},
         "agentProfile": {"type": "string"},
-        "discoverable": {"type": "boolean"},
-        "contactable": {"type": "boolean"},
-        "chatRequestApprovalPolicy": {"type": "object"},
+        "visibilityMode": {"type": "string", "enum": ["public", "unlisted", "private"]},
+        "contactPolicy": {
+            "type": "string",
+            "enum": ["open", "approval_required", "closed"],
+            "description": (
+                "Inbound contact policy: open auto-accepts eligible requests; "
+                "approval_required routes pending requests to Management review; "
+                "closed blocks new inbound requests."
+            ),
+        },
         "proactivitySettings": {"type": "object"},
         "subscriptionId": {"type": "string"},
         "generateShareCard": {"type": "boolean"},
@@ -160,8 +283,18 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
         "expiresInSeconds": {"type": "integer", "minimum": 1},
         "email": {"type": "string"},
         "code": {"type": "string"},
+        "category": {"type": "string", "enum": list(FEEDBACK_CATEGORIES)},
+        "title": {"type": "string"},
+        "goal": {"type": "string"},
+        "actualBehavior": {"type": "string"},
+        "expectedBehavior": {"type": "string"},
+        "impact": {"type": "string", "enum": list(FEEDBACK_IMPACTS)},
+        "details": {"type": "string"},
+        "reproductionSteps": {"type": "array", "items": {"type": "string"}},
+        "context": {"type": "object"},
+        "redactionNotes": {"type": "string"},
     },
-    description="View or update the local Claworld account, public identity, account profile, policies, person subscriptions, and email-based identity activation.",
+    description=MANAGE_ACCOUNT_DESCRIPTION,
 )
 SEARCH_SCHEMA = _schema(
     None,
@@ -178,9 +311,9 @@ SEARCH_SCHEMA = _schema(
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "page": {"type": "integer", "minimum": 1},
     },
-    description="Search Claworld people, worlds, and world members.",
+    description=SEARCH_DESCRIPTION,
 )
-PUBLIC_PROFILE_SCHEMA = _schema(PUBLIC_PROFILE_ACTIONS, description="Read or look up a public Claworld profile.")
+PUBLIC_PROFILE_SCHEMA = _schema(PUBLIC_PROFILE_ACTIONS, description=PUBLIC_PROFILE_DESCRIPTION)
 MANAGE_WORLDS_SCHEMA = _schema(
     WORLD_ACTIONS,
     {
@@ -196,34 +329,205 @@ MANAGE_WORLDS_SCHEMA = _schema(
         "joinPolicy": {"type": "string"},
         "approvalPolicy": {"type": "string"},
         "broadcastEnabled": {"type": "boolean"},
-        "broadcast": {"type": "object"},
+        "broadcast": {"type": "object", "description": "Owner broadcast capability config for update_world only (enabled, audience, replyPolicy, excludeSelf). Not for set_world_broadcast_preference."},
         "subscriptionId": {"type": "string"},
         "inviteMessage": {"type": "string"},
         "status": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
     },
-    description="List, inspect, create, join, update, subscribe to, or administer Claworld worlds.",
+    description=MANAGE_WORLDS_DESCRIPTION,
 )
 MANAGE_CONVERSATIONS_SCHEMA = _schema(
     CONVERSATION_ACTIONS,
     {
-        "openingMessage": {"type": "string"},
-        "kickoffBrief": {"type": "object"},
+        "displayName": {
+            "type": "string",
+            "description": "Required with agentCode for action=request. Copy the target public display name from Claworld search or profile results.",
+        },
+        "agentCode": {
+            "type": "string",
+            "description": "Required with displayName for action=request. Copy the target public agent code from Claworld search or profile results.",
+        },
+        "openingMessage": {
+            "type": "string",
+            "description": "Owner intent for the upcoming chat: state the topic, purpose, and preferred speaking order.",
+        },
+        "message": {
+            "type": "string",
+            "description": "Alias for openingMessage owner intent on action=request.",
+        },
+        "kickoffBrief": {
+            "type": "object",
+            "description": "Structured owner intent for the upcoming chat.",
+        },
         "openingPayload": {"type": "object"},
         "requestContext": {"type": "object"},
         "source": {"type": "string"},
         "idempotencyKey": {"type": "string"},
         "dedupeKey": {"type": "string"},
+        "clientRequestId": {"type": "string"},
+        "worldId": {"type": "string", "description": "World scope for action=request, or use filters.worldId when reading state."},
         "direction": {"type": "string", "enum": ["inbound", "outbound"]},
         "filters": {"type": "object"},
+        "chatRequestId": {"type": "string"},
+        "conversationKey": {"type": "string"},
+        "localSessionKey": {"type": "string"},
     },
-    description="Create, inspect, accept, reject, or close Claworld chat requests and conversations.",
+    description=MANAGE_CONVERSATIONS_DESCRIPTION,
+    base_property_names=(),
+    additional_properties=False,
 )
-REPORT_OWNER_SCHEMA = _schema(
-    None,
-    {"report_text": {"type": "string"}, "lookup_refs": {"type": "string"}, "deliver": {"type": "boolean"}},
-    description="Send a constrained Claworld report to the recorded human chat route. Pass lookup_refs separately to inject them into Main Session context only — they will not appear in the human-facing message.",
-)
+SEND_MESSAGE_SCHEMA = {
+    "description": SEND_MESSAGE_DESCRIPTION,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "Hermes send_message action. Defaults to send.",
+            },
+            "target": {
+                "type": "string",
+                "description": "Hermes send target such as platform:chatId or platform:chatId:threadId.",
+            },
+            "message": {
+                "type": "string",
+                "description": "The exact human-facing text to send and mirror into Main Session context. Keep [[as_document]] in transcript-report messages so every PNG MEDIA attachment is sent as an original file across Hermes channels.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Compatibility alias for message.",
+            },
+            "mirrorUserId": {"type": "string"},
+            "mirrorSessionId": {"type": "string"},
+            "mirrorThreadId": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+
+TRANSCRIPT_REPORT_SCHEMA = {
+    "description": TRANSCRIPT_REPORT_DESCRIPTION,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["stored", "manual"],
+                "description": "Required. Use stored to render one indexed local Claworld episode by chatRequestId. Use manual to render exactly the messages supplied in manual.messages.",
+            },
+            "chatRequestId": {
+                "type": "string",
+                "description": "Required for mode=stored. Top-level Claworld chat request / episode id.",
+            },
+            "chatMode": {
+                "type": "string",
+                "enum": ["direct", "world"],
+                "description": "Optional top-level fallback only when an older stored episode has no trusted mode context. Parsed stored context wins.",
+            },
+            "worldName": {
+                "type": "string",
+                "description": "Optional top-level public World-name fallback for an older stored World episode. Parsed stored context wins; omit for Direct.",
+            },
+            "initiatedBy": {
+                "type": "string",
+                "enum": ["local", "peer"],
+                "description": "Optional top-level fallback for an older stored episode with no request direction. Trusted stored requestDirection wins.",
+            },
+            "topic": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Required for every new Agent call. Write one short phrase that describes what was actually discussed in this conversation. Keep it short, and do not mention conversation turns or anything unrelated to the content. Stored Kickoff data never overrides it.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Top-level compatibility alias for topic. Prefer topic for new stored calls.",
+            },
+            "peerProfile": {
+                "type": "string",
+                "description": "Optional top-level public profile fallback. Direct uses the Peer Global Profile; World uses the Peer World Membership Profile. Parsed stored context wins.",
+            },
+            "worldContext": {
+                "type": "string",
+                "description": "Optional top-level public World Context fallback for an older stored World episode. Parsed stored context wins; omit for Direct.",
+            },
+            "localIdentity": {
+                "type": "string",
+                "description": "Optional top-level public local/right-side identity fallback, preferably Name#CODE. Parsed stored identity wins.",
+            },
+            "peerIdentity": {
+                "type": "string",
+                "description": "Optional top-level public peer/left-side identity fallback, preferably Name#CODE. Parsed stored identity wins.",
+            },
+            "localLabel": {
+                "type": "string",
+                "description": "Top-level compatibility alias for localIdentity. Prefer localIdentity for new calls.",
+            },
+            "peerLabel": {
+                "type": "string",
+                "description": "Top-level compatibility alias for peerIdentity. Prefer peerIdentity for new calls.",
+            },
+            "manual": {
+                "type": "object",
+                "description": "Manual transcript content. New Agent calls must provide messages and topic; other public header fields are supplied when known.",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "description": "Required for mode=manual. Ordered visible transcript rows.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": {"type": "string", "enum": ["peer", "local"], "description": "peer=left; local=right."},
+                                "text": {"type": "string", "description": "Visible message text."},
+                                "createdAt": {"type": "string", "description": "Optional real message timestamp, preferably ISO 8601. Omit rather than inventing one."},
+                            },
+                            "required": ["from", "text"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "chatMode": {
+                        "type": "string",
+                        "enum": ["direct", "world"],
+                        "description": "Optional known chat context. Omit when unknown; the renderer will use a neutral chat badge.",
+                    },
+                    "worldName": {
+                        "type": "string",
+                        "description": "Optional public World name. Providing it without chatMode implies world; do not provide it for direct chats.",
+                    },
+                    "initiatedBy": {
+                        "type": "string",
+                        "enum": ["local", "peer"],
+                        "description": "Optional known request initiator. local means the local agent initiated the conversation; peer means the peer did. Omit when unknown.",
+                    },
+                    "reportType": {
+                        "type": "string",
+                        "enum": ["full", "excerpt"],
+                        "description": "Optional coverage claim. Use full only for the complete conversation and excerpt for a selected subset; omit when uncertain.",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Required for every new Agent call. Write one short phrase that describes what was actually discussed in this conversation. Keep it short, and do not mention conversation turns or anything unrelated to the content.",
+                    },
+                    "title": {"type": "string", "description": "Compatibility alias for topic. Prefer topic for new calls."},
+                    "peerProfile": {"type": "string", "description": "Optional public Peer Global Profile for Direct, or Peer World Membership Profile for World. Never include private/internal identifiers."},
+                    "worldContext": {"type": "string", "description": "Optional public World Context for World chat. Omit for Direct and when unavailable."},
+                    "localIdentity": {"type": "string", "description": "Optional public local/right-side identity, preferably Name#CODE when that public code is known."},
+                    "peerIdentity": {"type": "string", "description": "Optional public peer/left-side identity, preferably Name#CODE when that public code is known."},
+                    "localLabel": {"type": "string", "description": "Compatibility alias for localIdentity. Prefer localIdentity for new calls."},
+                    "peerLabel": {"type": "string", "description": "Compatibility alias for peerIdentity. Prefer peerIdentity for new calls."},
+                },
+                "required": ["messages"],
+                "additionalProperties": False,
+            },
+            "style": {"type": "string", "enum": ["claworld-comic-grid"], "description": "Optional. Defaults to claworld-comic-grid."},
+            "maxPageHeight": {"type": "integer", "minimum": 900, "maximum": MAX_PAGE_HEIGHT, "description": "Optional maximum page height in pixels. Defaults to 8000. Pages remain content-height when shorter and continue on additional pages when taller. Accepted values range from 900 through 32000."},
+        },
+        "required": ["mode"],
+        "additionalProperties": False,
+    },
+}
 
 
 def manage_account(args: dict, **kwargs) -> str:
@@ -246,8 +550,12 @@ def manage_conversations(args: dict, **kwargs) -> str:
     return _tool_result("claworld_manage_conversations", args, _manage_conversations)
 
 
-def report_owner(args: dict, **kwargs) -> str:
-    return _tool_result("claworld_report_owner", args, _report_owner)
+def send_message(args: dict, **kwargs) -> str:
+    return _tool_result("claworld_send_message", args, _send_message_from_management_session)
+
+
+def render_transcript_report(args: dict, **kwargs) -> str:
+    return _tool_result("claworld_render_transcript_report", args, _render_transcript_report)
 
 
 def _tool_result(tool: str, args: dict, fn) -> str:
@@ -281,17 +589,15 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
     if args.get("endpoint"):
         return _generic(cfg, args)
     action = _normalize_account_action(args)
+    _validate_account_policy_payload(action, args)
     account_id = _account_id(cfg, args)
 
     if action == "start_email_verification":
         email = _text(args.get("email"))
         _require(email, "email is required for action=start_email_verification")
-        payload = request_json(
-            cfg,
-            "POST",
-            "/v1/identity/email/start",
-            body=_drop_empty({"email": email, "displayName": args.get("displayName")}),
-        )
+        from .setup import start_email_verification
+
+        payload = start_email_verification(email, server_url=cfg.server_url)
         return _action_result("claworld_manage_account", action, payload)
 
     if action == "complete_email_verification":
@@ -299,24 +605,19 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         code = _text(args.get("code"))
         _require(email, "email is required for action=complete_email_verification")
         _require(code, "code is required for action=complete_email_verification")
-        payload = request_json(
-            cfg,
-            "POST",
-            "/v1/identity/email/verify",
-            body=_drop_empty({"email": email, "code": code}),
-        )
-        activated_token = _text(payload.get("appToken"))
-        activated_agent_id = _text(payload.get("agentId"))
-        if activated_token and activated_agent_id:
-            activated_cfg = replace(cfg, app_token=activated_token, agent_id=activated_agent_id)
-            persistence = _persist_activation_env(activated_token, activated_agent_id)
-            payload["credentialPersistence"] = persistence
+        from .setup import complete_email_verification, persist_setup_credentials
+
+        verified = complete_email_verification(email, code, server_url=cfg.server_url)
+        persistence = persist_setup_credentials(verified)
+        payload = _verification_tool_payload(verified)
+        payload["credentialPersistence"] = persistence
         return _action_result("claworld_manage_account", action, payload)
 
-    if action == "activate_account" and not cfg.app_token:
-        return _activate_account_without_token(cfg, args, account_id)
-
     agent_id = _agent_id(cfg, args)
+
+    if action == "submit_feedback":
+        payload = _submit_feedback(cfg, args, account_id, agent_id)
+        return _action_result("claworld_manage_account", action, payload)
 
     if action == "view_account":
         payload = request_json(
@@ -334,7 +635,7 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
             ),
         )
         payload = _augment_account_binding(payload, cfg=cfg, account_id=account_id, agent_id=agent_id)
-        return _action_result("claworld_manage_account", action, payload)
+        return _deliver_account_share_card(cfg, _action_result("claworld_manage_account", action, payload))
 
     if action == "subscribe_person":
         target_id = _text(args.get("targetAgentId"), _text(args.get("targetId")))
@@ -360,7 +661,6 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         return _action_result("claworld_manage_account", action, payload)
 
     backend_action = {
-        "activate_account": "update_identity",
         "update_display_name": "update_identity",
     }.get(action, action)
     body = _drop_empty(
@@ -372,11 +672,10 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
             "profile": args.get("profile"),
             "humanProfile": args.get("humanProfile"),
             "agentProfile": args.get("agentProfile"),
-            "discoverable": args.get("discoverable"),
-            "contactable": args.get("contactable"),
-            "chatRequestApprovalPolicy": args.get("chatRequestApprovalPolicy"),
+            "visibilityMode": args.get("visibilityMode"),
+            "contactPolicy": args.get("contactPolicy"),
             "proactivitySettings": args.get("proactivitySettings"),
-            "generateShareCard": args.get("generateShareCard", action in {"activate_account", "update_display_name"}),
+            "generateShareCard": args.get("generateShareCard", action == "update_display_name"),
             "shareCardVariant": args.get("shareCardVariant"),
             "expiresInSeconds": args.get("expiresInSeconds"),
         }
@@ -385,7 +684,112 @@ def _manage_account(cfg: ClaworldConfig, args: dict) -> dict:
         body["profile"] = args.get("agentProfile")
     payload = request_json(cfg, "POST", "/v1/account", body=body)
     payload = _augment_account_binding(payload, cfg=cfg, account_id=account_id, agent_id=agent_id)
-    return _action_result("claworld_manage_account", action, payload)
+    return _deliver_account_share_card(cfg, _action_result("claworld_manage_account", action, payload))
+
+
+def _deliver_account_share_card(cfg: ClaworldConfig, result: dict) -> dict:
+    profile = result.get("profile") if isinstance(result.get("profile"), dict) else None
+    share_card = result.get("shareCard") if isinstance(result.get("shareCard"), dict) else None
+    nested_share_card = profile.get("shareCard") if profile and isinstance(profile.get("shareCard"), dict) else None
+    share_card = share_card or nested_share_card
+    if not share_card or _text(share_card.get("status")) != "ready":
+        return result
+
+    image_url = _text(share_card.get("imageUrl"), _text(share_card.get("downloadUrl")))
+    if not image_url:
+        raise RuntimeError("share card is ready but has no deliverable image URL")
+
+    session = _current_hermes_session_context()
+    platform = _text(session.get("platform"))
+    chat_id = _text(session.get("chatId"))
+    if not platform or not chat_id or platform == "claworld":
+        raise RuntimeError("share-card delivery requires an active human chat route")
+
+    media_dir = hermes_home_path() / "cache" / "images" / "claworld_share_cards"
+    image_path = download_share_card(cfg, image_url, media_dir)
+    target = f"{platform}:{chat_id}"
+    thread_id = _text(session.get("threadId"))
+    if thread_id:
+        target = f"{target}:{thread_id}"
+    send_result = _call_send_message_tool(
+        {
+            "action": "send",
+            "target": target,
+            "message": f"MEDIA:{image_path}",
+        }
+    )
+    if not _send_succeeded(send_result):
+        error = _text(send_result.get("error")) if isinstance(send_result, dict) else None
+        raise RuntimeError(f"share-card image delivery failed: {error or 'Hermes send engine returned no success'}")
+
+    delivered_share_card = {
+        **share_card,
+        "description": (
+            "分享卡图片已通过当前聊天渠道发送给用户。"
+            "请只用一句普通文本确认分享卡已生成；不要下载、再次发送或输出 MEDIA:。"
+        ),
+        "delivery": {
+            "status": "delivered",
+            "channel": platform,
+            "messageId": send_result.get("message_id") or send_result.get("messageId"),
+        },
+    }
+    delivered = dict(result)
+    if nested_share_card is share_card and profile is not None:
+        delivered["profile"] = {**profile, "shareCard": delivered_share_card}
+    else:
+        delivered["shareCard"] = delivered_share_card
+    return delivered
+
+
+def _submit_feedback(cfg: ClaworldConfig, args: dict, account_id: str, agent_id: str | None) -> dict:
+    _require(cfg.app_token, "submit_feedback requires a configured Claworld app token; run account setup first")
+    _require(agent_id, "submit_feedback requires a bound Claworld agent id; run account setup first")
+    category = _text(args.get("category"))
+    impact = _text(args.get("impact"), "medium")
+    _require(category, "category is required for action=submit_feedback")
+    if category not in FEEDBACK_CATEGORIES:
+        raise ValueError(f"category must be one of {', '.join(FEEDBACK_CATEGORIES)}")
+    if impact not in FEEDBACK_IMPACTS:
+        raise ValueError(f"impact must be one of {', '.join(FEEDBACK_IMPACTS)}")
+    for key in ("title", "goal", "actualBehavior", "expectedBehavior"):
+        _require(args.get(key), f"{key} is required for action=submit_feedback")
+
+    payload = request_json(
+        cfg,
+        "POST",
+        "/v1/feedback",
+        body=_drop_empty(
+            {
+                "agentId": agent_id,
+                "accountId": account_id,
+                "category": category,
+                "title": _text(args.get("title")),
+                "goal": _text(args.get("goal")),
+                "actualBehavior": _text(args.get("actualBehavior")),
+                "expectedBehavior": _text(args.get("expectedBehavior")),
+                "impact": impact,
+                "details": _text(args.get("details")),
+                "reproductionSteps": _feedback_steps(args.get("reproductionSteps")),
+                "context": _feedback_context(args),
+                "source": "hermes_account_tool",
+                "runtimeContext": _drop_empty(
+                    {
+                        "channelId": "claworld",
+                        "toolName": "claworld_manage_account",
+                        "accountToolAction": "submit_feedback",
+                        "pluginClient": PLUGIN_CLIENT,
+                        "pluginVersion": PLUGIN_VERSION,
+                        "clientChannel": infer_client_channel(),
+                        "accountId": account_id,
+                        "serverUrl": cfg.server_url,
+                        "relayAgentId": agent_id,
+                    }
+                ),
+            }
+        ),
+    )
+    return _project_feedback_submission(payload)
 
 
 def _search(cfg: ClaworldConfig, args: dict) -> dict:
@@ -470,6 +874,20 @@ def _manage_worlds(cfg: ClaworldConfig, args: dict) -> dict:
             "GET",
             "/v1/world-memberships",
             query=_drop_empty({"agentId": agent_id, "status": args.get("status"), "includeDisabled": args.get("includeDisabled")}),
+        )
+    elif action == "list_pending_invites":
+        payload = request_json(
+            cfg,
+            "GET",
+            "/v1/world-invitations",
+            query=_drop_empty(
+                {
+                    "agentId": agent_id,
+                    "status": args.get("status", "pending"),
+                    "includeDisabled": args.get("includeDisabled"),
+                    "limit": args.get("limit"),
+                }
+            ),
         )
     elif action == "get_world":
         _require(world_id, "worldId is required for action=get_world")
@@ -558,14 +976,15 @@ def _manage_worlds(cfg: ClaworldConfig, args: dict) -> dict:
         payload = _delete_subscription(cfg, agent_id, args.get("subscriptionId"), "world", world_id)
     elif action in {"list_world_activity", "list_broadcast_history"}:
         _require(world_id, f"worldId is required for action={action}")
+        query = _drop_empty({"agentId": agent_id, "limit": args.get("limit")})
+        if action == "list_broadcast_history":
+            query["activityType"] = "world_broadcast_published"
         payload = request_json(
             cfg,
             "GET",
             f"/v1/worlds/{world_id}/activity",
-            query=_drop_empty({"agentId": agent_id, "limit": args.get("limit")}),
+            query=query,
         )
-        if action == "list_broadcast_history" and isinstance(payload.get("items"), list):
-            payload = {**payload, "items": [item for item in payload["items"] if "broadcast" in str(item.get("activityType") or item.get("type") or "").lower()]}
     elif action == "publish_broadcast":
         _require(world_id, "worldId is required for action=publish_broadcast")
         _require(args.get("announcementText"), "announcementText is required for action=publish_broadcast")
@@ -636,16 +1055,16 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
     action = _normalize_conversation_action(args)
     agent_id = _agent_id(cfg, args)
     if action == "request":
-        target_agent_id = _text(args.get("targetAgentId"), _text(args.get("targetId")))
+        _validate_conversation_request_args(args)
         request_context = _conversation_request_context(cfg, args)
         payload = request_json(
             cfg,
             "POST",
             "/v1/chat-requests",
+            timeout=60.0,
             body=_drop_empty(
                 {
                     "fromAgentId": agent_id,
-                    "targetAgentId": target_agent_id,
                     "displayName": args.get("displayName"),
                     "agentCode": args.get("agentCode"),
                     "kickoffBrief": args.get("kickoffBrief"),
@@ -667,6 +1086,7 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
             "/v1/chat-requests",
             query=_drop_empty({"agentId": agent_id, **_conversation_filters(args, action)}),
         )
+        payload = _augment_conversation_payload_with_local_index(cfg, payload, args)
     elif action in {"accept", "reject"}:
         chat_request_id = _text(args.get("chatRequestId"))
         _require(chat_request_id, f"chatRequestId is required for action={action}")
@@ -693,240 +1113,295 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
         )
     else:
         raise ValueError(f"unsupported conversation action: {action}")
+    _persist_conversation_directions(cfg, payload)
     return _action_result("claworld_manage_conversations", action, payload)
 
 
-def _report_owner(cfg: ClaworldConfig, args: dict) -> dict:
-    root = cfg.memory_root_path()
-    route = record_owner_route_from_context(root)
-    index = read_session_index(root)
-    route = route or index.get("main") or {}
-    report_text = args.get("report_text") or args.get("message") or ""
-    lookup_refs = args.get("lookup_refs") or ""
+def _augment_conversation_payload_with_local_index(cfg: ClaworldConfig, payload: dict, args: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    index = read_session_index(cfg.memory_root_path())
+    local_episodes = _local_episode_summaries(cfg, index)
+    filters = _conversation_filters(args, _text(args.get("action"), "list_related") or "list_related")
+    matching = _filter_local_episodes(local_episodes, filters)
+    result = dict(payload)
+    if matching:
+        result["localTranscriptEpisodes"] = matching
+        result["localTranscriptSummary"] = {
+            "episodeCount": len(matching),
+            "chatRequestIds": [item["chatRequestId"] for item in matching if item.get("chatRequestId")],
+        }
+    exact_chat_request_id = _text(filters.get("chatRequestId"))
+    exact_entry = _local_episode_entry(index, exact_chat_request_id) if exact_chat_request_id else None
+    if exact_entry:
+        result["localTranscriptEpisode"] = _local_episode_detail(cfg, exact_chat_request_id, exact_entry)
+    if isinstance(result.get("items"), list):
+        result["items"] = [_augment_conversation_item_with_local_index(item, local_episodes) for item in result["items"]]
+    return result
 
-    delivery = None
-    if args.get("deliver", True) is not False and route.get("platform") and route.get("chatId"):
-        delivery = _send_owner_route(route, report_text)
 
-    context_text = report_text
-    if lookup_refs:
-        context_text = f"{report_text}\n\nLookup refs: {lookup_refs}."
-    transcript = _append_main_session_context(route, context_text)
-    append_journal(
-        root,
+def _local_episode_summaries(cfg: ClaworldConfig, index: dict) -> list[dict]:
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    summaries = []
+    for chat_request_id, entry in episodes.items():
+        if not isinstance(entry, dict):
+            continue
+        summaries.append(_local_episode_summary(chat_request_id, entry))
+    summaries.sort(key=lambda item: _text(item.get("lastSeenAt"), _text(item.get("firstSeenAt"), "")) or "", reverse=True)
+    return summaries
+
+
+def _local_episode_summary(chat_request_id: str, entry: dict) -> dict:
+    deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
+    renderable = [delivery for delivery in deliveries if _renderable_transcript_delivery(delivery)]
+    peer_count = sum(1 for delivery in renderable if _text(delivery.get("direction")) != "outbound")
+    return _drop_empty(
         {
-            "kind": "owner_report",
-            "ownerRoute": route,
-            "delivery": delivery,
-            "mainContext": {"transcript": transcript},
-        },
+            "chatRequestId": entry.get("chatRequestId") or chat_request_id,
+            "chatId": entry.get("chatId"),
+            "conversationKey": entry.get("conversationKey"),
+            "relaySessionKey": entry.get("relaySessionKey"),
+            "lastActiveSessionKey": entry.get("lastActiveSessionKey"),
+            "targetAgentId": entry.get("targetAgentId"),
+            "fromAgentCode": entry.get("fromAgentCode"),
+            "fromDisplayIdentity": entry.get("fromDisplayIdentity"),
+            "firstSeenAt": entry.get("firstSeenAt"),
+            "lastSeenAt": entry.get("lastSeenAt"),
+            "deliveryCount": entry.get("deliveryCount"),
+            "renderableMessages": len(renderable),
+            "peerMessages": peer_count,
+            "localMessages": len(renderable) - peer_count,
+        }
     )
-    return {
-        "ownerRoute": route,
-        "delivery": delivery,
-        "mainContext": {"transcript": transcript},
-    }
 
 
-def _activate_account_without_token(cfg: ClaworldConfig, args: dict, account_id: str | None) -> dict:
-    display_name = _text(args.get("displayName"), "Claworld Agent")
-    activation = request_json(
-        cfg,
-        "POST",
-        "/v1/onboarding/activate",
-        body=_drop_empty({"displayName": display_name, "shareInstanceId": args.get("shareInstanceId")}),
-    )
-    activated_token = _text(activation.get("appToken"))
-    activated_agent_id = _text(activation.get("agentId"))
-    if not activated_token or not activated_agent_id:
-        raise ValueError("claworld activation did not return appToken and agentId")
-
-    activated_cfg = replace(cfg, app_token=activated_token, agent_id=activated_agent_id)
-    persistence = _persist_activation_env(activated_token, activated_agent_id)
-    payload = request_json(
-        activated_cfg,
-        "POST",
-        "/v1/account",
-        body=_drop_empty(
-            {
-                "accountId": account_id,
-                "agentId": activated_agent_id,
-                "action": "update_identity",
-                "displayName": display_name,
-                "generateShareCard": args.get("generateShareCard", True),
-                "shareCardVariant": args.get("shareCardVariant"),
-                "expiresInSeconds": args.get("expiresInSeconds"),
-            }
-        ),
-    )
-    payload = _augment_account_binding(payload, cfg=activated_cfg, account_id=account_id, agent_id=activated_agent_id)
-    payload["runtimeActivation"] = {
-        "status": "activated",
-        "agentId": activated_agent_id,
-        "bindingSource": activation.get("bindingSource"),
-        "created": activation.get("created"),
-    }
-    payload["credentialPersistence"] = persistence
-    return _action_result("claworld_manage_account", "activate_account", payload)
-
-
-def _persist_activation_env(app_token: str, agent_id: str) -> dict:
-    os.environ["CLAWORLD_APP_TOKEN"] = app_token
-    os.environ["CLAWORLD_AGENT_ID"] = agent_id
-    env_path = hermes_home_path() / ".env"
-    try:
-        _write_dotenv_values(
-            env_path,
-            {
-                "CLAWORLD_APP_TOKEN": app_token,
-                "CLAWORLD_AGENT_ID": agent_id,
-            },
-        )
-        return {"status": "saved_to_hermes_env", "path": str(env_path), "restartRequired": True}
-    except Exception as exc:
-        return {"status": "env_updated_for_current_process", "path": str(env_path), "restartRequired": True, "error": str(exc)}
-
-
-def _write_dotenv_values(path: Path, values: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    updated_keys = set()
-    lines: list[str] = []
-    for line in existing:
-        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
-        if key in values:
-            lines.append(f"{key}={_dotenv_value(values[key])}")
-            updated_keys.add(key)
-        else:
-            lines.append(line)
-    for key, value in values.items():
-        if key not in updated_keys:
-            lines.append(f"{key}={_dotenv_value(value)}")
-
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines).rstrip() + "\n")
-        os.replace(tmp_name, path)
-    finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-
-
-def _dotenv_value(value: str) -> str:
-    value = str(value).replace("\n", "").replace("\r", "")
-    if any(ch.isspace() or ch in {'"', "#", "'"} for ch in value):
-        return json.dumps(value)
-    return value
-
-
-def _send_owner_route(route: dict, message: str):
-    try:
-        from tools.send_message_tool import send_message_tool
-    except Exception as exc:
-        return {"ok": False, "error": f"send_message engine unavailable: {exc}"}
-    target = f"{route['platform']}:{route['chatId']}"
-    if route.get("threadId"):
-        target = f"{target}:{route['threadId']}"
-    try:
-        raw = send_message_tool({"action": "send", "target": target, "message": message})
-        try:
-            return {"ok": True, "result": json.loads(raw)}
-        except Exception:
-            return {"ok": True, "result": raw}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-
-def _append_main_session_context(route: dict, report_text: str) -> dict:
-    """Write the human-facing report into the recorded Main Session transcript.
-
-    Hermes send_message may mirror sent text into a target session, but that is
-    best-effort. Claworld human-facing reports need the stronger OpenClaw
-    sessions_send-style property: the human sees the report and Main has
-    durable context for later follow-up questions.
-    """
-
-    session_id = _resolve_owner_session_id(route)
-    if not session_id:
-        return {"status": "skipped", "reason": "owner_session_not_found"}
-    if not str(report_text or "").strip():
-        return {"status": "skipped", "reason": "empty_report", "sessionId": session_id}
-    db = None
-    try:
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        if not db.get_session(session_id):
-            return {"status": "skipped", "reason": "session_missing_in_db", "sessionId": session_id}
-        if _transcript_contains(db, session_id, report_text):
-            return {"status": "already_present", "sessionId": session_id, "role": "assistant"}
-        message_id = db.append_message(session_id=session_id, role="assistant", content=report_text)
-        return {"status": "appended", "sessionId": session_id, "role": "assistant", "messageId": message_id}
-    except Exception as exc:
-        return {"status": "error", "sessionId": session_id, "error": str(exc)}
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
-
-
-def _resolve_owner_session_id(route: dict) -> str | None:
-    if not isinstance(route, dict):
-        return None
-    direct = _text(route.get("sessionId"), _text(route.get("session_id")))
-    if direct:
-        return direct
-
-    session_key = _text(route.get("sessionKey"), _text(route.get("session_key")))
-    if session_key:
-        resolved = _session_id_from_sessions_index(session_key)
-        if resolved:
-            return resolved
-
-    platform = _text(route.get("platform"))
-    chat_id = _text(route.get("chatId"), _text(route.get("chat_id")))
-    if platform and chat_id:
-        try:
-            from gateway.mirror import _find_session_id
-
-            return _find_session_id(
-                platform,
-                chat_id,
-                thread_id=_text(route.get("threadId"), _text(route.get("thread_id"))),
-                user_id=_text(route.get("userId"), _text(route.get("user_id"))),
-            )
-        except Exception:
-            return None
+def _local_episode_entry(index: dict, chat_request_id: str) -> dict | None:
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    entry = episodes.get(chat_request_id)
+    if isinstance(entry, dict):
+        return entry
+    for candidate in episodes.values():
+        if isinstance(candidate, dict) and _text(candidate.get("chatRequestId")) == chat_request_id:
+            return candidate
     return None
 
 
-def _session_id_from_sessions_index(session_key: str) -> str | None:
-    try:
-        data = json.loads((hermes_home_path() / "sessions" / "sessions.json").read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    entry = data.get(session_key) if isinstance(data, dict) else None
-    if not isinstance(entry, dict):
-        return None
-    return _text(entry.get("session_id"), _text(entry.get("sessionId")))
+def _local_episode_detail(cfg: ClaworldConfig, chat_request_id: str, entry: dict) -> dict:
+    deliveries = entry.get("deliveries") if isinstance(entry.get("deliveries"), list) else []
+    return {
+        **_local_episode_summary(chat_request_id, entry),
+        "messages": project_visible_episode_messages(deliveries, cfg),
+    }
 
 
-def _transcript_contains(db, session_id: str, report_text: str) -> bool:
-    try:
-        recent = db.get_messages_as_conversation(session_id)[-30:]
-    except Exception:
+def _renderable_transcript_delivery(delivery: Any) -> bool:
+    if not isinstance(delivery, dict) or _text(delivery.get("deliveryType")) == "kickoff":
         return False
-    expected = str(report_text or "").strip()
-    for message in recent:
-        if str(message.get("role") or "") != "assistant":
+    text = _text(delivery.get("commandText"))
+    return bool(text and not classify_reply_content(text).silence_reason)
+
+
+def _filter_local_episodes(episodes: list[dict], filters: dict) -> list[dict]:
+    if not filters:
+        return episodes[:25]
+    result = []
+    for episode in episodes:
+        if _matches_local_episode_filters(episode, filters):
+            result.append(episode)
+    return result[:25]
+
+
+def _matches_local_episode_filters(episode: dict, filters: dict) -> bool:
+    checks = {
+        "chatRequestId": "chatRequestId",
+        "conversationKey": "conversationKey",
+        "localSessionKey": "relaySessionKey",
+        "counterpartyAgentId": "targetAgentId",
+    }
+    for filter_key, episode_key in checks.items():
+        expected = _text(filters.get(filter_key))
+        if expected and _text(episode.get(episode_key)) != expected:
+            return False
+    return True
+
+
+def _augment_conversation_item_with_local_index(item: Any, episodes: list[dict]) -> Any:
+    if not isinstance(item, dict):
+        return item
+    filters = _conversation_item_filters(item)
+    if not filters:
+        return item
+    matches = _filter_local_episodes(episodes, filters)
+    if not matches:
+        return item
+    return {**item, "localTranscriptEpisodes": matches, "localTranscriptSummary": {"episodeCount": len(matches), "chatRequestIds": [match["chatRequestId"] for match in matches if match.get("chatRequestId")]}}
+
+
+def _conversation_item_filters(item: dict) -> dict:
+    filters = {}
+    for key in ("chatRequestId", "conversationKey", "localSessionKey", "counterpartyAgentId"):
+        value = _text(item.get(key))
+        if value:
+            filters[key] = value
+    if not filters:
+        related = item.get("relatedObjects") if isinstance(item.get("relatedObjects"), dict) else {}
+        for key in ("chatRequestId", "conversationKey", "localSessionKey", "counterpartyAgentId"):
+            value = _text(related.get(key))
+            if value:
+                filters[key] = value
+    return filters
+
+
+def _send_message(cfg: ClaworldConfig, args: dict) -> dict:
+    payload = dict(args or {})
+    action = _text(payload.get("action"), "send")
+    target = _text(payload.get("target"))
+    message = _text(payload.get("message"), _text(payload.get("text")))
+    _require(target, "target is required for claworld_send_message")
+    _require(message, "message is required for claworld_send_message")
+
+    payload["action"] = action
+    payload["target"] = target
+    payload["message"] = message
+
+    send_result = _call_send_message_tool(payload)
+    result = dict(send_result) if isinstance(send_result, dict) else {"result": send_result}
+    delivered = _send_succeeded(result)
+
+    if action == "send":
+        auto_mirrored = bool(result.get("mirrored"))
+        fallback_mirror = {"attempted": False}
+        if delivered and not auto_mirrored:
+            fallback_mirror = _fallback_mirror_send_message(payload)
+            if fallback_mirror.get("success"):
+                result["mirrored"] = True
+        result.setdefault("mirrored", auto_mirrored)
+        result["autoMirrored"] = auto_mirrored
+        result["fallbackMirror"] = fallback_mirror
+        result["delivered"] = delivered
+        result["status"] = "delivered" if delivered else "delivery_failed"
+
+    result["success"] = delivered
+    return result
+
+
+def _send_message_from_management_session(cfg: ClaworldConfig, args: dict) -> dict:
+    context = _current_hermes_session_context()
+    platform = (_text(context.get("platform")) or "").lower()
+    chat_id = _text(context.get("chatId")) or ""
+    if platform != "claworld" or not chat_id.startswith("management-"):
+        raise PermissionError(
+            "claworld_send_message is available only in a Claworld Management Session"
+        )
+    return _send_message(cfg, args)
+
+
+def _render_transcript_report(cfg: ClaworldConfig, args: dict) -> dict:
+    request_direction = _hydrate_stored_transcript_direction(cfg, args)
+    render_args = dict(args)
+    if request_direction:
+        render_args["initiatedBy"] = {
+            "inbound": "peer",
+            "outbound": "local",
+        }[request_direction]
+    return render_transcript_report_artifact(cfg, render_args)
+
+
+def _hydrate_stored_transcript_direction(cfg: ClaworldConfig, args: dict) -> str:
+    """Best-effort direction hydration so stored rendering remains one tool call."""
+
+    if _text(args.get("mode")) != "stored":
+        return ""
+    chat_request_id = _text(args.get("chatRequestId"))
+    if not chat_request_id:
+        return ""
+
+    root = cfg.memory_root_path()
+    index = read_session_index(root)
+    episodes = index.get("conversationEpisodes") if isinstance(index.get("conversationEpisodes"), dict) else {}
+    episode = episodes.get(chat_request_id) if isinstance(episodes.get(chat_request_id), dict) else {}
+    cached_viewer_agent = _text(episode.get("directionViewerAgentId"))
+    cached_viewer_account = _text(episode.get("directionViewerAccountId"))
+    current_viewer_agent = _agent_id(cfg, {})
+    current_viewer_account = _text(cfg.account_id)
+    cache_matches_view = not (
+        (cached_viewer_agent and current_viewer_agent and cached_viewer_agent != current_viewer_agent)
+        or (cached_viewer_account and current_viewer_account and cached_viewer_account != current_viewer_account)
+    )
+    local_direction = _normalized_request_direction(
+        episode.get("requestDirection") or episode.get("direction")
+    )
+    if local_direction and cache_matches_view:
+        return local_direction
+
+    try:
+        payload = request_json(
+            cfg,
+            "GET",
+            "/v1/chat-requests",
+            query=_drop_empty(
+                {
+                    "agentId": _agent_id(cfg, {}),
+                    "chatRequestId": chat_request_id,
+                }
+            ),
+        )
+    except Exception:
+        return ""
+
+    directions = _persist_conversation_directions(cfg, payload)
+    return directions.get(chat_request_id, "")
+
+
+def _persist_conversation_directions(cfg: ClaworldConfig, payload: Any) -> dict[str, str]:
+    """Persist structured directions returned by chat-request APIs."""
+
+    directions = _conversation_directions(payload)
+    root = cfg.memory_root_path()
+    viewer_agent_id = _agent_id(cfg, {})
+    viewer_account_id = _text(cfg.account_id)
+    for chat_request_id, direction in directions.items():
+        try:
+            record_chat_request_direction(
+                root,
+                chat_request_id,
+                direction,
+                viewer_agent_id=viewer_agent_id,
+                viewer_account_id=viewer_account_id,
+            )
+        except Exception:
+            # API results remain usable even if a local cache write is unavailable.
             continue
-        content = message.get("content")
-        if isinstance(content, str) and content.strip() == expected:
-            return True
-    return False
+    return directions
+
+
+def _conversation_directions(payload: Any) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    candidates = [payload]
+    for key in ("chats", "items"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            candidates.extend(item for item in values if isinstance(item, dict))
+    directions: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for item in candidates:
+        chat_request_id = _text(item.get("chatRequestId"))
+        direction = _normalized_request_direction(item.get("direction"))
+        if not chat_request_id or not direction or chat_request_id in conflicts:
+            continue
+        current = directions.get(chat_request_id)
+        if current and current != direction:
+            directions.pop(chat_request_id, None)
+            conflicts.add(chat_request_id)
+            continue
+        directions[chat_request_id] = direction
+    return directions
+
+
+def _normalized_request_direction(value: Any) -> str:
+    direction = (_text(value) or "").lower()
+    return direction if direction in {"inbound", "outbound"} else ""
 
 
 def _generic(cfg: ClaworldConfig, args: dict) -> dict:
@@ -993,6 +1468,127 @@ def _conversation_request_context(cfg: ClaworldConfig, args: dict) -> Any:
     return context
 
 
+def _call_send_message_tool(args: dict) -> dict:
+    try:
+        from tools.send_message_tool import send_message_tool
+    except Exception as exc:
+        return {"success": False, "error": f"Hermes send engine unavailable: {exc}"}
+    try:
+        raw = send_message_tool(args)
+    except Exception as exc:
+        return {"success": False, "error": f"Hermes send engine failed: {exc}"}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {"success": False, "error": str(parsed)}
+        except Exception:
+            return {"success": False, "error": raw}
+    return {"success": bool(raw), "result": raw}
+
+
+def _send_succeeded(send_result: Any) -> bool:
+    return isinstance(send_result, dict) and send_result.get("success") is True and not send_result.get("error")
+
+
+def _fallback_mirror_send_message(args: dict) -> dict:
+    message = _message_for_mirror(_text(args.get("message")))
+    target = _parse_send_target_for_mirror(args)
+    platform = _text(target.get("platform")) or ""
+    chat_id = _text(target.get("chatId")) or ""
+    thread_id = _text(target.get("threadId"))
+    user_id = _text(target.get("userId"))
+
+    if not message:
+        return {"attempted": False, "success": False, "method": "none", "error": "message is empty"}
+
+    mirror_error = ""
+    if platform and chat_id:
+        try:
+            from gateway.mirror import mirror_to_session
+
+            if mirror_to_session(
+                platform,
+                chat_id,
+                message,
+                source_label="claworld",
+                thread_id=thread_id,
+                user_id=user_id,
+            ):
+                return {"attempted": True, "success": True, "method": "gateway_mirror"}
+        except Exception as exc:
+            mirror_error = str(exc)
+
+    session_id = _text(target.get("sessionId"))
+    if not session_id:
+        return {
+            "attempted": bool(platform or chat_id),
+            "success": False,
+            "method": "none",
+            "error": mirror_error or "No mirrorable target or Main Session sessionId was provided.",
+        }
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            message_id = db.append_message(session_id=session_id, role="assistant", content=message)
+        finally:
+            db.close()
+        return {"attempted": True, "success": True, "method": "session_db", "sessionId": session_id, "messageId": message_id}
+    except Exception as exc:
+        return {"attempted": True, "success": False, "method": "session_db", "sessionId": session_id, "error": str(exc)}
+
+
+def _message_for_mirror(message: str | None) -> str | None:
+    if not message:
+        return None
+    cleaned = str(message).replace("[[as_document]]", "").replace("[[audio_as_voice]]", "")
+    cleaned = re.sub(r"(?m)^[ \t]*MEDIA:[^\r\n]*[ \t]*$", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned or None
+
+
+def _parse_send_target_for_mirror(args: dict) -> dict:
+    target = _text(args.get("target")) or ""
+    platform, separator, target_ref = target.partition(":")
+    if not separator:
+        platform = ""
+        target_ref = ""
+
+    chat_id = ""
+    thread_id = _text(args.get("mirrorThreadId"), _text(args.get("threadId")))
+    user_id = _text(args.get("mirrorUserId"), _text(args.get("userId")))
+
+    if platform and target_ref:
+        try:
+            from tools.send_message_tool import _parse_target_ref
+
+            parsed_chat_id, parsed_thread_id, parsed_user_id = _parse_target_ref(platform, target_ref)
+            chat_id = _text(parsed_chat_id) or ""
+            thread_id = thread_id or _text(parsed_thread_id)
+            user_id = user_id or _text(parsed_user_id)
+        except Exception:
+            parts = [part for part in target_ref.split(":") if part]
+            if len(parts) >= 2 and parts[0] in {"chat", "channel", "group", "dm"}:
+                chat_id = parts[1]
+                thread_id = thread_id or (parts[2] if len(parts) > 2 else None)
+            elif len(parts) >= 2 and parts[0] == "user":
+                user_id = user_id or parts[1]
+            elif parts:
+                chat_id = parts[0]
+                thread_id = thread_id or (parts[1] if len(parts) > 1 else None)
+
+    return {
+        "platform": platform,
+        "chatId": chat_id,
+        "threadId": thread_id,
+        "userId": user_id,
+        "sessionId": _text(args.get("mirrorSessionId"), _text(args.get("sessionId"))),
+    }
+
+
 def _current_hermes_session_context() -> dict:
     try:
         from gateway.session_context import get_session_env
@@ -1010,25 +1606,36 @@ def _current_hermes_session_context() -> dict:
 def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: str | None, agent_id: str | None) -> Any:
     if not isinstance(payload, dict):
         return payload
-    resolved_agent_id = _text(agent_id, _text(cfg.agent_id))
+    profile = _account_profile_envelope(payload)
+    resolved_agent_id = _text(agent_id, _text(cfg.agent_id, _payload_agent_id(payload)))
     binding_ready = bool(cfg.app_token and resolved_agent_id)
-    binding_status = "bound" if binding_ready else "identity_unresolved" if cfg.app_token else "unactivated"
+    binding_status = "bound" if binding_ready else "identity_unresolved" if cfg.app_token else "identity_unverified"
     diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
     relay = payload.get("relay") if isinstance(payload.get("relay"), dict) else {}
-    activation = payload.get("activation") if isinstance(payload.get("activation"), dict) else {}
+    identity_verification = payload.get("identityVerification") if isinstance(payload.get("identityVerification"), dict) else {}
     public_identity_ready = diagnostics.get("publicIdentityReady")
     if not isinstance(public_identity_ready, bool) and payload.get("readiness") in {
         "public_identity_incomplete",
         "paired_but_identity_pending",
     }:
         public_identity_ready = False
+    relay_online = relay.get("online") if isinstance(relay.get("online"), bool) else None
+    relay_resolved = (
+        relay.get("resolved")
+        if isinstance(relay.get("resolved"), bool)
+        else isinstance(relay.get("online"), bool)
+    )
+    result = dict(payload)
+    if relay_online is not True:
+        relay_status = "offline" if relay_online is False else "unconfirmed"
+        result = _with_relay_visibility_warning(result, relay_status)
     return {
-        **payload,
-        "accountId": payload.get("accountId") or account_id,
-        "bindingSource": payload.get("bindingSource") or "hermes_config",
-        "activation": {
-            **activation,
-            "status": activation.get("status") or ("ready" if cfg.app_token else "pending"),
+        **result,
+        "accountId": result.get("accountId") or account_id,
+        "bindingSource": result.get("bindingSource") or "hermes_config",
+        "identityVerification": {
+            **identity_verification,
+            "status": identity_verification.get("status") or ("ready" if cfg.app_token else "pending"),
         },
         "diagnostics": {
             **diagnostics,
@@ -1036,16 +1643,71 @@ def _augment_account_binding(payload: Any, *, cfg: ClaworldConfig, account_id: s
             "bindingReady": diagnostics.get("bindingReady", binding_ready),
             "bindingStatus": diagnostics.get("bindingStatus") or binding_status,
             "publicIdentityReady": public_identity_ready,
-            "accountProfileReady": diagnostics.get("accountProfileReady", _nested_bool(payload.get("accountProfile"), "ready")),
+            "accountProfileReady": diagnostics.get(
+                "accountProfileReady",
+                _nested_bool(_account_profile_payload(payload, profile=profile), "ready"),
+            ),
+            "relayOnline": relay_online,
         },
         "relay": {
             **relay,
             "agentId": relay.get("agentId") or resolved_agent_id,
-            "online": relay.get("online"),
-            "resolved": relay.get("resolved", bool(resolved_agent_id) if resolved_agent_id else False),
+            "online": relay_online,
+            "resolved": relay_resolved,
             "bindingStatus": relay.get("bindingStatus") or binding_status,
         },
     }
+
+
+def _account_profile_envelope(payload: dict) -> dict:
+    profile = payload.get("profile")
+    return profile if isinstance(profile, dict) else {}
+
+
+def _account_profile_payload(payload: dict, *, profile: dict | None = None) -> dict:
+    profile = profile if isinstance(profile, dict) else _account_profile_envelope(payload)
+    nested_account_profile = profile.get("accountProfile")
+    return nested_account_profile if isinstance(nested_account_profile, dict) else {}
+
+
+def _payload_agent_id(payload: dict) -> str | None:
+    profile = _account_profile_envelope(payload)
+    return _text(profile.get("agentId"), _text(payload.get("agentId")))
+
+
+def _with_relay_visibility_warning(payload: dict, relay_status: str) -> dict:
+    result = dict(payload)
+    if _text(result.get("status"), "") in {"", "ok", "ready"}:
+        result["status"] = "degraded"
+    if _text(result.get("readiness"), "") in {"", "ready"}:
+        result["readiness"] = f"relay_online_{relay_status}"
+    warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    code = f"relay_online_{relay_status}"
+    if not any(isinstance(item, dict) and item.get("code") == code for item in warnings):
+        result["warnings"] = [
+            *warnings,
+            {
+                "code": code,
+                "message": "Claworld relay online status must be true before live delivery is considered ready.",
+            },
+        ]
+    return result
+
+
+def _verification_tool_payload(payload: dict) -> dict:
+    """Return an email verification result safe for model/user transcripts."""
+
+    result = dict(payload)
+    result.pop("appToken", None)
+    credential = result.get("credential")
+    if isinstance(credential, dict):
+        redacted_credential = dict(credential)
+        redacted_credential.pop("token", None)
+        if redacted_credential:
+            result["credential"] = redacted_credential
+        else:
+            result.pop("credential", None)
+    return result
 
 
 def _nested_bool(value: Any, key: str) -> bool | None:
@@ -1065,6 +1727,21 @@ CONVERSATION_FILTER_KEYS = {
     "counterpartyAgentId",
 }
 
+LEGACY_CONVERSATION_TARGET_FIELDS = ("identity", "targetAgentId", "targetId")
+
+
+def _validate_conversation_request_args(args: dict) -> None:
+    for key in LEGACY_CONVERSATION_TARGET_FIELDS:
+        if _provided(args, key):
+            raise ValueError(
+                f"{key} is not supported for action=request; use displayName and agentCode from Claworld search/profile results"
+            )
+    _require(args.get("displayName"), "displayName is required for action=request")
+    _require(args.get("agentCode"), "agentCode is required for action=request")
+    for key in ("filters", "direction", "chatRequestId", "conversationKey", "localSessionKey"):
+        if _provided(args, key):
+            raise ValueError(f"{key} is only supported for action=list_related/get_state")
+
 
 def _validate_conversation_query_args(args: dict, action: str) -> None:
     filters = args.get("filters")
@@ -1073,6 +1750,11 @@ def _validate_conversation_query_args(args: dict, action: str) -> None:
     for key in (filters or {}):
         if key not in CONVERSATION_FILTER_KEYS:
             raise ValueError(f"filters.{key} is not supported for action={action}")
+    for key in LEGACY_CONVERSATION_TARGET_FIELDS:
+        if _provided(args, key):
+            raise ValueError(
+                f"{key} is not supported for action={action}; use documented conversation filters"
+            )
     for key in (
         "displayName",
         "agentCode",
@@ -1103,13 +1785,11 @@ def _validate_conversation_query_args(args: dict, action: str) -> None:
 
 def _normalize_account_action(args: dict) -> str:
     aliases = {
-        "activate": "activate_account",
         "view": "view_account",
         "view_public_identity": "view_account",
         "update_public_identity": "update_display_name",
         "update_identity": "update_display_name",
         "update_profile": "update_agent_profile",
-        "update_chat_policy": "set_chat_policy",
     }
     explicit = _text(args.get("action"))
     if explicit:
@@ -1120,19 +1800,41 @@ def _normalize_account_action(args: dict) -> str:
         action = "update_human_profile"
     elif "agentProfile" in args or "profile" in args:
         action = "update_agent_profile"
-    elif "discoverable" in args:
-        action = "set_discoverability"
-    elif "contactable" in args:
-        action = "set_contactability"
-    elif "chatRequestApprovalPolicy" in args:
-        action = "set_chat_policy"
+    elif "visibilityMode" in args:
+        action = "set_visibility_mode"
+    elif "contactPolicy" in args:
+        action = "set_contact_policy"
+    elif "chatRequestPolicy" in args:
+        raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
     elif "proactivitySettings" in args:
         action = "set_proactivity"
+    elif any(
+        _provided(args, key)
+        for key in ("category", "title", "actualBehavior", "expectedBehavior", "reproductionSteps")
+    ):
+        action = "submit_feedback"
     else:
         action = "view_account"
     if action not in ACCOUNT_ACTIONS:
         raise ValueError(f"action must be one of {', '.join(ACCOUNT_ACTIONS)}")
     return action
+
+
+def _validate_account_policy_payload(action: str, args: dict) -> None:
+    if action == "set_visibility_mode":
+        _require(args.get("visibilityMode"), "visibilityMode is required for action=set_visibility_mode")
+        if _provided(args, "contactPolicy"):
+            raise ValueError("contactPolicy is not supported for action=set_visibility_mode")
+        if _provided(args, "chatRequestPolicy"):
+            raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
+        return
+    if action == "set_contact_policy":
+        _require(args.get("contactPolicy"), "contactPolicy is required for action=set_contact_policy")
+        if _provided(args, "visibilityMode"):
+            raise ValueError("visibilityMode is not supported for action=set_contact_policy")
+        if _provided(args, "chatRequestPolicy"):
+            raise ValueError("chatRequestPolicy is not supported by claworld_manage_account; use contactPolicy")
+        return
 
 
 def _normalize_world_action(args: dict) -> str:
@@ -1187,10 +1889,8 @@ def _resolve_agent_id(cfg: ClaworldConfig) -> str:
         payload = request_json(cfg, "GET", "/v1/account", query=_drop_empty({"accountId": cfg.account_id}), timeout=15.0)
     except Exception:
         return ""
-    return _text(
-        payload.get("agentId"),
-        _text(payload.get("relay", {}).get("agentId"), _text(payload.get("profile", {}).get("agentId"))),
-    ) or ""
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    return _text(profile.get("agentId"), _text(payload.get("agentId"))) or ""
 
 
 def _account_id(cfg: ClaworldConfig, args: dict) -> str:
@@ -1209,6 +1909,75 @@ def _action_result(tool: str, action: str, payload: Any) -> dict:
     if not isinstance(payload, dict):
         payload = {"result": payload}
     return {**payload, "tool": tool, "action": action, "status": payload.get("status", "ok")}
+
+
+def _project_feedback_submission(payload: dict) -> dict:
+    feedback = payload.get("feedback") if isinstance(payload.get("feedback"), dict) else {}
+    reporter = feedback.get("reporter") if isinstance(feedback.get("reporter"), dict) else {}
+    public_identity = reporter.get("publicIdentity") if isinstance(reporter.get("publicIdentity"), dict) else {}
+    context = feedback.get("context") if isinstance(feedback.get("context"), dict) else {}
+    runtime_context = feedback.get("runtimeContext") if isinstance(feedback.get("runtimeContext"), dict) else {}
+    return {
+        "status": _text(payload.get("status"), "recorded"),
+        "feedbackId": _text(feedback.get("feedbackId")),
+        "category": _text(feedback.get("category")),
+        "impact": _text(feedback.get("impact"), "medium"),
+        "title": _text(feedback.get("title")),
+        "accountId": _text(feedback.get("accountId")),
+        "reporterAgentId": _text(reporter.get("agentId")),
+        "reporterIdentity": _text(public_identity.get("displayIdentity")),
+        "worldId": _text(context.get("worldId")),
+        "conversationKey": _text(context.get("conversationKey")),
+        "turnId": _text(context.get("turnId")),
+        "deliveryId": _text(context.get("deliveryId")),
+        "tags": _feedback_steps(context.get("tags")),
+        "createdAt": _text(feedback.get("createdAt")),
+        "runtime": _drop_empty(
+            {
+                "channelId": _text(runtime_context.get("channelId")),
+                "toolName": _text(runtime_context.get("toolName")),
+                "accountToolAction": _text(runtime_context.get("accountToolAction")),
+                "pluginVersion": _text(runtime_context.get("pluginVersion")),
+                "modelProvider": _text(runtime_context.get("modelProvider")),
+                "modelId": _text(runtime_context.get("modelId")),
+                "osCategory": _text(runtime_context.get("osCategory")),
+            }
+        ),
+        "nextAction": "keep_feedback_id_for_follow_up",
+    }
+
+
+def _feedback_steps(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+    result = []
+    seen = set()
+    for item in values:
+        text = _text(item)
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
+def _feedback_context(args: dict) -> dict:
+    raw_context = args.get("context") if isinstance(args.get("context"), dict) else {}
+    metadata = raw_context.get("metadata") if isinstance(raw_context.get("metadata"), dict) else {}
+    redaction_notes = _text(args.get("redactionNotes"))
+    if redaction_notes:
+        metadata = {**metadata, "redactionNotes": redaction_notes}
+    return {
+        "worldId": _text(raw_context.get("worldId"), _text(args.get("worldId"))),
+        "conversationKey": _text(raw_context.get("conversationKey"), _text(args.get("conversationKey"))),
+        "turnId": _text(raw_context.get("turnId"), _text(args.get("turnId"))),
+        "deliveryId": _text(raw_context.get("deliveryId"), _text(args.get("deliveryId"))),
+        "targetAgentId": _text(raw_context.get("targetAgentId"), _text(args.get("targetAgentId"))),
+        "tags": _feedback_steps(raw_context.get("tags")),
+        "metadata": metadata,
+    }
 
 
 def _payload(args: dict, *, drop: set[str] | None = None) -> dict:
