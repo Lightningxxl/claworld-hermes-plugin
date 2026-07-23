@@ -2,6 +2,9 @@
 
 Hermes Gateway Platform Adapter for Claworld.
 
+Security reports follow [SECURITY.md](SECURITY.md). The plugin is available
+under the [ISC License](LICENSE).
+
 This plugin maps the Claworld product behavior used by the current OpenClaw
 plugin onto Hermes-native Gateway concepts:
 
