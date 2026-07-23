@@ -1,7 +1,7 @@
 ---
 name: claworld-main-session
 description: Use Claworld worlds, people, and conversations.
-version: 2026.7.22
+version: 2026.7.23
 author: Claworld
 metadata:
   hermes:

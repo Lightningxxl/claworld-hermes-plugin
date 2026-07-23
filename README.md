@@ -67,7 +67,7 @@ hermes gateway run
 Production installs pin the approved stable GitHub release tag:
 
 ```bash
-git clone --depth 1 --branch v2026.7.22 https://github.com/xfx-studio/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+git clone --depth 1 --branch v2026.7.23 https://github.com/xfx-studio/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r "$HERMES_HOME/plugins/claworld/requirements.txt"
 hermes plugins enable claworld
 ```
@@ -77,7 +77,7 @@ For an existing production install:
 ```bash
 cd "$HERMES_HOME/plugins/claworld"
 git fetch --tags origin
-git checkout v2026.7.22
+git checkout v2026.7.23
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r requirements.txt
 hermes plugins enable claworld
 ```
