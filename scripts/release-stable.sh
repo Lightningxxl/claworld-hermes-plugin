@@ -132,6 +132,7 @@ git tag -a "$TAG" -m "claworld-hermes-plugin ${VERSION}"
 git push origin "$TAG"
 gh release create "$TAG" \
   --repo "$RELEASE_REPO" \
+  --target "$HEAD_SHA" \
   --verify-tag \
   --latest \
   --title "claworld-hermes-plugin ${VERSION}" \
