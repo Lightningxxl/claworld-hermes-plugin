@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from .config import ClaworldConfig
-from .working_memory import append_journal
+from .working_memory import append_journal, record_owner_route_from_context
 
 
 def post_tool_call(tool_name: str = "", args: dict | None = None, result: Any = None, **kwargs):
@@ -17,8 +17,10 @@ def post_tool_call(tool_name: str = "", args: dict | None = None, result: Any = 
         return None
 
     cfg = ClaworldConfig.load()
+    root = cfg.memory_root_path()
+    record_owner_route_from_context(root)
     append_journal(
-        cfg.memory_root_path(),
+        root,
         {
             "kind": "tool_call",
             "toolName": tool_name,
