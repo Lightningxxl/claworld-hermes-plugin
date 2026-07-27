@@ -2791,8 +2791,28 @@ class PluginSkillTests(unittest.TestCase):
         self.assertNotIn("first 3", main)
         self.assertNotIn("send_message", main)
         self.assertIn("Before installing, upgrading", main)
+        self.assertIn(
+            'claworld_manage_account(action="update_human_profile", humanProfile=...)',
+            main,
+        )
+        self.assertIn(
+            'claworld_manage_account(action="update_agent_profile", agentProfile=...)',
+            main,
+        )
         help_skill = (ROOT / "skills" / "claworld-help" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn('claworld_manage_account(action="view_account")', help_skill)
+        self.assertIn(
+            'claworld_manage_account(action="update_human_profile", humanProfile=...)',
+            help_skill,
+        )
+        self.assertIn(
+            'claworld_manage_account(action="update_agent_profile", agentProfile=...)',
+            help_skill,
+        )
+        self.assertNotIn(
+            'claworld_manage_account(action="update_human_profile"|"update_agent_profile", profile=...)',
+            help_skill,
+        )
         self.assertIn("`upgradeCommand`", help_skill)
         self.assertIn("send `/restart`", help_skill)
         self.assertIn("Hermes Agent runtime update", help_skill)
@@ -3628,7 +3648,14 @@ class ToolSchemaTests(unittest.TestCase):
 
     def test_manage_account_schema_uses_terminal_policy_fields(self):
         properties = claworld_tools.MANAGE_ACCOUNT_SCHEMA["parameters"]["properties"]
-
+        self.assertEqual(
+            properties["humanProfile"]["description"],
+            "Human profile for action=update_human_profile.",
+        )
+        self.assertEqual(
+            properties["agentProfile"]["description"],
+            "Agent profile for action=update_agent_profile.",
+        )
         self.assertEqual(properties["visibilityMode"]["enum"], ["public", "unlisted", "private"])
         self.assertEqual(properties["contactPolicy"]["enum"], ["open", "approval_required", "closed"])
         self.assertIn("Management review", properties["contactPolicy"]["description"])

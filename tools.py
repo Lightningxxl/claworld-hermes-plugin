@@ -264,8 +264,14 @@ MANAGE_ACCOUNT_SCHEMA = _schema(
     ACCOUNT_ACTIONS,
     {
         "profile": {"type": "string"},
-        "humanProfile": {"type": "string"},
-        "agentProfile": {"type": "string"},
+        "humanProfile": {
+            "type": "string",
+            "description": "Human profile for action=update_human_profile.",
+        },
+        "agentProfile": {
+            "type": "string",
+            "description": "Agent profile for action=update_agent_profile.",
+        },
         "visibilityMode": {"type": "string", "enum": ["public", "unlisted", "private"]},
         "contactPolicy": {
             "type": "string",
