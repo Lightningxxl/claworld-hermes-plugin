@@ -5234,7 +5234,7 @@ class HttpClientTests(unittest.TestCase):
         self.assertIn(f"claworld-hermes-plugin/{PLUGIN_VERSION}", headers["User-Agent"])
         self.assertEqual(headers["x-claworld-client"], "hermes-plugin")
         self.assertEqual(headers["x-claworld-client-version"], PLUGIN_VERSION)
-        self.assertEqual(headers["x-claworld-client-channel"], "testing")
+        self.assertEqual(headers["x-claworld-client-channel"], "stable")
         self.assertNotIn("x-claworld-plugin-version", headers)
         self.assertEqual(headers["authorization"], "Bearer tok")
         self.assertEqual(headers["x-claworld-app-token"], "tok")
@@ -5349,7 +5349,7 @@ class HttpClientTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_release_channel_selects_default_server_url(self):
-        self.assertEqual(DEFAULT_CLAWORLD_SERVER_URL, CLAWORLD_STAGING_SERVER_URL)
+        self.assertEqual(DEFAULT_CLAWORLD_SERVER_URL, CLAWORLD_PRODUCTION_SERVER_URL)
         self.assertEqual(
             resolve_default_claworld_server_url("2026.7.16-testing.2"),
             CLAWORLD_STAGING_SERVER_URL,

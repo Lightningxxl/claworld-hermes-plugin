@@ -47,9 +47,10 @@ now = datetime.now(ZoneInfo("Asia/Shanghai"))
 print(f"{now.year}.{now.month}.{now.day}")
 PY
 )"
+EXPECTED_VERSION_PATTERN="${EXPECTED_VERSION//./\\.}"
 
-if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
-  echo "Stable releases must use ${EXPECTED_VERSION}; found ${VERSION}." >&2
+if [[ ! "$VERSION" =~ ^${EXPECTED_VERSION_PATTERN}(\.[1-9][0-9]*)?$ ]]; then
+  echo "Stable releases must use ${EXPECTED_VERSION} or ${EXPECTED_VERSION}.N; found ${VERSION}." >&2
   exit 1
 fi
 
