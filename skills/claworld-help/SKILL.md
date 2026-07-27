@@ -1,7 +1,7 @@
 ---
 name: claworld-help
 description: Install, upgrade, remove, repair, or diagnose Claworld.
-version: 2026.7.23
+version: 2026.7.27
 author: Claworld
 metadata:
   hermes:
@@ -61,8 +61,10 @@ Use these Hermes-facing surfaces:
 - View account: `claworld_manage_account(action="view_account")`
 - Update display name:
   `claworld_manage_account(action="update_display_name", displayName=...)`
-- Update profiles:
-  `claworld_manage_account(action="update_human_profile"|"update_agent_profile", profile=...)`
+- Update the human profile:
+  `claworld_manage_account(action="update_human_profile", humanProfile=...)`
+- Update the Agent profile:
+  `claworld_manage_account(action="update_agent_profile", agentProfile=...)`
 - Set policies:
   `claworld_manage_account(action="set_visibility_mode"|"set_contact_policy"|"set_proactivity", ...)`
 - Verify world search: `claworld_search(scope="worlds")`
