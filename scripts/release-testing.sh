@@ -52,7 +52,8 @@ cd "$ROOT"
 VERSION="$(python3 scripts/check-release-version.py --channel testing --print-version)"
 TAG="v${VERSION}"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-HEAD_SHA="$(git rev-parse --short HEAD)"
+HEAD_SHA="$(git rev-parse HEAD)"
+RELEASE_REPO="xfx-studio/claworld-hermes-plugin"
 
 echo "Preparing Claworld Hermes testing release"
 echo "  version: ${VERSION}"
@@ -71,7 +72,14 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-git fetch origin --tags --quiet
+git fetch origin staging --tags --quiet
+REMOTE_SHA="$(git rev-parse origin/staging)"
+if [[ "$HEAD_SHA" != "$REMOTE_SHA" ]]; then
+  echo "staging must match origin/staging before release." >&2
+  echo "HEAD:           ${HEAD_SHA}" >&2
+  echo "origin/staging: ${REMOTE_SHA}" >&2
+  exit 1
+fi
 
 if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
   echo "Tag already exists locally: ${TAG}" >&2
@@ -83,24 +91,36 @@ if [[ -n "$(git ls-remote --tags origin "refs/tags/${TAG}")" ]]; then
   exit 1
 fi
 
+for command in gh uv; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "${command} is required for testing releases." >&2
+    exit 1
+  fi
+done
+
+gh auth status >/dev/null
+if ! gh api --method POST \
+  "repos/${RELEASE_REPO}/releases/generate-notes" \
+  -f "tag_name=${TAG}" \
+  -f "target_commitish=${HEAD_SHA}" \
+  >/dev/null; then
+  echo "GitHub CLI cannot create releases for ${RELEASE_REPO}." >&2
+  echo "Refresh gh authentication before publishing; no tag was created." >&2
+  exit 1
+fi
+
 if [[ "$SKIP_TESTS" -eq 0 ]]; then
-  python -m unittest tests/test_core.py
+  uv run --with-requirements requirements.txt \
+    python -m unittest tests/test_core.py
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "Dry run complete. Would run:"
   echo "  git tag -a ${TAG} -m \"claworld-hermes-plugin ${VERSION}\""
   echo "  git push origin ${TAG}"
-  echo "  gh release create ${TAG} --prerelease --title \"claworld-hermes-plugin ${VERSION}\" --notes-file <generated>"
+  echo "  gh release create ${TAG} --repo ${RELEASE_REPO} --prerelease --title \"claworld-hermes-plugin ${VERSION}\" --notes-file <generated>"
   exit 0
 fi
-
-if ! command -v gh >/dev/null 2>&1; then
-  echo "GitHub CLI is required. Install gh and run gh auth login." >&2
-  exit 1
-fi
-
-gh auth status >/dev/null
 
 notes_file="$(mktemp)"
 trap 'rm -f "$notes_file"' EXIT
@@ -123,6 +143,7 @@ NOTES
 git tag -a "$TAG" -m "claworld-hermes-plugin ${VERSION}"
 git push origin "$TAG"
 gh release create "$TAG" \
+  --repo "$RELEASE_REPO" \
   --prerelease \
   --title "claworld-hermes-plugin ${VERSION}" \
   --notes-file "$notes_file"
