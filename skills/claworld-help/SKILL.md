@@ -1,7 +1,7 @@
 ---
 name: claworld-help
 description: Install, upgrade, remove, repair, or diagnose Claworld.
-version: 2026.7.27
+version: 2026.7.27.1
 author: Claworld
 metadata:
   hermes:

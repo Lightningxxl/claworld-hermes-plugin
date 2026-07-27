@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTING_VERSION_RE = re.compile(r"^\d{4}\.\d{1,2}\.\d{1,2}-testing\.\d+$")
-STABLE_VERSION_RE = re.compile(r"^\d{4}\.\d{1,2}\.\d{1,2}$")
+STABLE_VERSION_RE = re.compile(r"^\d{4}\.\d{1,2}\.\d{1,2}(?:\.[1-9]\d*)?$")
 
 
 def read_text(path: Path) -> str:
@@ -48,11 +48,14 @@ def validate_version_shape(version: str, channel: str) -> list[str]:
     if channel == "testing" and not TESTING_VERSION_RE.fullmatch(version):
         return [f"testing releases must use yyyy.m.d-testing.N; found {version}"]
     if channel == "stable" and not STABLE_VERSION_RE.fullmatch(version):
-        return [f"stable releases must use yyyy.m.d; found {version}"]
+        return [f"stable releases must use yyyy.m.d or yyyy.m.d.N; found {version}"]
     if channel == "any" and not (
         TESTING_VERSION_RE.fullmatch(version) or STABLE_VERSION_RE.fullmatch(version)
     ):
-        return [f"release version must use yyyy.m.d or yyyy.m.d-testing.N; found {version}"]
+        return [
+            f"release version must use yyyy.m.d, yyyy.m.d.N, "
+            f"or yyyy.m.d-testing.N; found {version}"
+        ]
     return []
 
 

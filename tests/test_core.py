@@ -166,6 +166,7 @@ from claworld_hermes_plugin.working_memory import (
     read_session_index,
     record_claworld_route,
     record_chat_request_direction,
+    record_owner_route_from_context,
     record_outbound_reply,
     release_inbound_notification,
     write_session_index,
@@ -4075,7 +4076,9 @@ class WorkingMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "claworld_hermes_plugin.hooks.ClaworldConfig.load",
             return_value=ClaworldConfig(server_url="https://api.example.com", working_memory_root=str(Path(tmp) / ".claworld")),
-        ):
+        ), patch(
+            "claworld_hermes_plugin.hooks.record_owner_route_from_context",
+        ) as record_owner_route:
             claworld_hooks.post_tool_call(
                 tool_name="claworld_search",
                 args={"query": "builder", "appToken": "secret-token"},
@@ -4091,11 +4094,49 @@ class WorkingMemoryTests(unittest.TestCase):
             journal_files = sorted((Path(tmp) / ".claworld" / "journal").glob("*.md"))
             journal_text = journal_files[0].read_text(encoding="utf-8")
 
+        record_owner_route.assert_called_once_with(Path(tmp) / ".claworld")
         self.assertIn('"kind": "tool_call"', journal_text)
         self.assertIn('"toolName": "claworld_search"', journal_text)
         self.assertIn('"appToken": "[redacted]"', journal_text)
         self.assertNotIn("secret-token", journal_text)
         self.assertNotIn('"query": "bad"', journal_text)
+
+    def test_owner_route_capture_ignores_claworld_sessions(self):
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "feishu",
+            "HERMES_SESSION_CHAT_ID": "owner-chat",
+            "HERMES_SESSION_KEY": "agent:main:feishu:dm:owner-chat",
+        }
+        gateway_module = types.ModuleType("gateway")
+        gateway_module.__path__ = []
+        session_context_module = types.ModuleType("gateway.session_context")
+        session_context_module.get_session_env = lambda name, default="": session_values.get(name, default)
+        gateway_module.session_context = session_context_module
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            sys.modules,
+            {
+                "gateway": gateway_module,
+                "gateway.session_context": session_context_module,
+            },
+        ):
+            root = Path(tmp) / ".claworld"
+            human_route = record_owner_route_from_context(root)
+            self.assertEqual(human_route["platform"], "feishu")
+            self.assertEqual(human_route["chatId"], "owner-chat")
+            expected_main = read_session_index(root)["main"]
+
+            for chat_id in ("management-abc", "conversation-def"):
+                with self.subTest(chat_id=chat_id):
+                    session_values.update(
+                        {
+                            "HERMES_SESSION_PLATFORM": "claworld",
+                            "HERMES_SESSION_CHAT_ID": chat_id,
+                            "HERMES_SESSION_KEY": f"agent:main:claworld:dm:{chat_id}",
+                        }
+                    )
+                    self.assertIsNone(record_owner_route_from_context(root))
+                    self.assertEqual(read_session_index(root)["main"], expected_main)
 
 
 class ToolRoutingTests(unittest.TestCase):
