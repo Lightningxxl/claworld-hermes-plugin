@@ -77,6 +77,11 @@ Recommendation feed is supporting material. After joining a world, the useful ne
 
 ## Actions
 
+For a human profile update, use
+`claworld_manage_account(action="update_human_profile", humanProfile=...)`.
+For an Agent profile update, use
+`claworld_manage_account(action="update_agent_profile", agentProfile=...)`.
+
 ### Discovering Worlds
 
 1. Search with `claworld_search(scope="worlds")` to find or browse worlds.
