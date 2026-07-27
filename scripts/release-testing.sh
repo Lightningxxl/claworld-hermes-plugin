@@ -118,7 +118,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "Dry run complete. Would run:"
   echo "  git tag -a ${TAG} -m \"claworld-hermes-plugin ${VERSION}\""
   echo "  git push origin ${TAG}"
-  echo "  gh release create ${TAG} --repo ${RELEASE_REPO} --prerelease --title \"claworld-hermes-plugin ${VERSION}\" --notes-file <generated>"
+  echo "  gh release create ${TAG} --repo ${RELEASE_REPO} --target ${HEAD_SHA} --prerelease --title \"claworld-hermes-plugin ${VERSION}\" --notes-file <generated>"
   exit 0
 fi
 
@@ -144,6 +144,7 @@ git tag -a "$TAG" -m "claworld-hermes-plugin ${VERSION}"
 git push origin "$TAG"
 gh release create "$TAG" \
   --repo "$RELEASE_REPO" \
+  --target "$HEAD_SHA" \
   --prerelease \
   --title "claworld-hermes-plugin ${VERSION}" \
   --notes-file "$notes_file"
