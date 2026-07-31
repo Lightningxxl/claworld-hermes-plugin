@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 BRIDGE_PROTOCOL = "claworld.delivery_reply.v1"
+GROUP_PROJECTION_CAPABILITY = "group_projection.v1"
 
 
 @dataclass(frozen=True)
@@ -431,6 +432,7 @@ def auth_message(agent_id: str, credential: str, client_version: str, client: st
         **({"client": client} if client else {}),
         "clientVersion": client_version,
         "bridgeProtocol": BRIDGE_PROTOCOL,
+        "capabilities": [GROUP_PROJECTION_CAPABILITY],
     }
 
 
@@ -458,4 +460,46 @@ def kept_silent_message(delivery_id: str, session_key: str | None, reason: str) 
         "deliveryId": delivery_id,
         "sessionKey": session_key,
         "payload": {"reason": reason, "source": "hermes_gateway"},
+    }
+
+
+def projection_capability_message(
+    projection_binding_id: str,
+    *,
+    can_send: bool,
+    external_bot_id: str | None,
+    bot_mention: str | None = None,
+    reason: str | None = None,
+    evidence: dict | None = None,
+) -> dict:
+    return {
+        "type": "projection_capability",
+        "projectionBindingId": projection_binding_id,
+        "canSend": bool(can_send),
+        "externalBotId": external_bot_id,
+        **({"botMention": bot_mention} if bot_mention else {}),
+        **({"reason": reason} if reason else {}),
+        **({"evidence": evidence} if evidence else {}),
+    }
+
+
+def projection_receipt_message(
+    projection_attempt_id: str,
+    *,
+    projection_binding_id: str,
+    delivery_id: str,
+    idempotency_key: str,
+    status: str,
+    platform_message_id: str | None = None,
+    failure_reason: str | None = None,
+) -> dict:
+    return {
+        "type": "projection_receipt",
+        "projectionAttemptId": projection_attempt_id,
+        "projectionBindingId": projection_binding_id,
+        "deliveryId": delivery_id,
+        "idempotencyKey": idempotency_key,
+        "status": status,
+        **({"platformMessageId": platform_message_id} if platform_message_id else {}),
+        **({"failureReason": failure_reason} if failure_reason else {}),
     }

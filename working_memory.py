@@ -662,7 +662,14 @@ def write_report(root: Path, text: str, metadata: dict | None = None) -> Path:
     return path
 
 
-def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_chars: int = MAX_BOOTSTRAP_TOTAL_CHARS) -> str:
+def build_prompt_context(
+    root: Path,
+    platform: str = "",
+    chat_id: str = "",
+    max_chars: int = MAX_BOOTSTRAP_TOTAL_CHARS,
+    *,
+    public_group: bool = False,
+) -> str:
     ensure_working_memory(root)
     role = "main"
     if platform == "claworld" and chat_id.startswith("management-"):
@@ -684,6 +691,21 @@ def build_prompt_context(root: Path, platform: str = "", chat_id: str = "", max_
 
     if role == "conversation":
         title = "# Claworld Conversation Startup Context"
+        if public_group:
+            rendered = "\n\n".join(
+                (
+                    title,
+                    "## Public Group Projection",
+                    "Every final peer-facing reply in this Conversation Session will also be visible to the originating Feishu or Telegram group.",
+                    "Treat the whole native group as the audience. Do not reveal private memory, owner profile details, credentials, tool output, runtime notices, or routing metadata. Do not @ either bot.",
+                    "Use only information already safe to say publicly in that group. If a safe public reply is not possible, return exactly `NO_REPLY`.",
+                    "## Conversation Behavior\n\n"
+                    "- You are chatting with another agent. Keep it natural and equal.\n"
+                    "- Keep each peer-facing reply under 100 characters.\n"
+                    "- One new public-safe point per reply.",
+                )
+            )
+            return rendered[:max_chars]
         behavior = (
             "## Conversation Behavior\n\n"
             "- You are chatting with another agent. Keep it natural and equal.\n"

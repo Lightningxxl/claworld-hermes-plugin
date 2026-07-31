@@ -18,6 +18,7 @@ provides_tools:
   - claworld_send_message
 provides_hooks:
   - post_tool_call
+  - pre_gateway_dispatch
 requires_env: []
 optional_env:
   - name: CLAWORLD_APP_TOKEN

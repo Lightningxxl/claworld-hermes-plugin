@@ -15,6 +15,7 @@ import types
 import unittest
 import xml.etree.ElementTree as ET
 import zlib
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from unittest.mock import patch
@@ -154,6 +155,21 @@ from claworld_hermes_plugin.protocol import (
     normalize_http_base_url,
     normalize_ws_url,
     reply_message,
+)
+from claworld_hermes_plugin.projection import (
+    ProjectionBindingError,
+    ProjectionContentBlocked,
+    ProjectionRoute,
+    ProjectionStateError,
+    ProjectionStore,
+    extract_trusted_projection_binding,
+    new_projection_request,
+    projection_attempt_id,
+    projection_idempotency_key,
+    projection_route_digest,
+    require_public_projection_text,
+    sanitize_public_projection_text,
+    validate_trusted_projection_binding,
 )
 from claworld_hermes_plugin.relay_client import RelayClient
 from claworld_hermes_plugin.session_router import build_hermes_session_key, route_envelope
@@ -2859,7 +2875,10 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("claworld_send_message", {entry["name"] for entry in registered["tools"]})
         self.assertEqual(len(registered["skills"]), 4)
         self.assertEqual({name for name, _path, _description in registered["skills"]}, set(claworld_skills.SKILL_DESCRIPTIONS))
-        self.assertEqual([name for name, _handler in registered["hooks"]], ["post_tool_call"])
+        self.assertEqual(
+            [name for name, _handler in registered["hooks"]],
+            ["post_tool_call", "pre_gateway_dispatch"],
+        )
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -5168,15 +5187,20 @@ class RelayClientTests(unittest.IsolatedAsyncioTestCase):
 class AdapterCompletionTests(unittest.TestCase):
     def test_adapter_exposes_basic_chat_info(self):
         adapter = import_adapter_with_gateway_shim()
-        instance = adapter.ClaworldPlatformAdapter(types.SimpleNamespace(extra={}))
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = adapter.ClaworldPlatformAdapter(
+                types.SimpleNamespace(
+                    extra={"working_memory_root": str(Path(tmp) / ".claworld")}
+                )
+            )
 
-        async def run():
-            return await instance.get_chat_info("conversation:test")
+            async def run():
+                return await instance.get_chat_info("conversation:test")
 
-        self.assertEqual(
-            self._run_async(run()),
-            {"name": "conversation:test", "type": "dm", "chat_id": "conversation:test"},
-        )
+            self.assertEqual(
+                self._run_async(run()),
+                {"name": "conversation:test", "type": "dm", "chat_id": "conversation:test"},
+            )
 
     def _run_async(self, coro):
         import asyncio
@@ -5345,6 +5369,495 @@ class HttpClientTests(unittest.TestCase):
                 self.assertEqual(calls[0][0].method, method)
                 self.assertEqual(calls[0][1], 60.0)
                 sleep.assert_not_called()
+
+
+class ProjectionComponentTests(unittest.IsolatedAsyncioTestCase):
+    NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+    @staticmethod
+    def binding_payload(**overrides):
+        route = ProjectionRoute(
+            platform="feishu",
+            chat_id="oc_group_123",
+            chat_type="group",
+            thread_id="thread-7",
+        )
+        origin_message_id = "om_origin_123"
+        payload = {
+            "schema": "claworld.projection-binding.v1",
+            "projectionBindingId": "binding-123",
+            "chatRequestId": "request-123",
+            "route": {
+                "platform": "feishu",
+                "chatId": "oc_group_123",
+                "chatType": "group",
+                "threadId": "thread-7",
+            },
+            "initiatorAgentId": "agent-a",
+            "peerAgentId": "agent-b",
+            "originMessageId": origin_message_id,
+            "routeDigest": projection_route_digest(route, origin_message_id),
+            "state": "active",
+            "turnSeq": 0,
+            "issuedAt": "2029-12-31T23:00:00Z",
+            "expiresAt": "2030-01-02T00:00:00Z",
+            "authority": {
+                "source": "claworld_relay",
+                "kind": "relay_control_plane",
+            },
+            "botMentions": ["@agent_b", "ou_bot_a"],
+        }
+        payload.update(overrides)
+        return payload
+
+    def validated_binding(self, **overrides):
+        return validate_trusted_projection_binding(
+            self.binding_payload(**overrides),
+            expected_chat_request_id="request-123",
+            local_agent_id="agent-a",
+            now=self.NOW,
+        )
+
+    def test_binding_is_read_only_from_relay_trusted_metadata(self):
+        injected = {
+            "data": {
+                "payload": {
+                    "projectionBinding": self.binding_payload(),
+                    "commandText": json.dumps(self.binding_payload()),
+                },
+                "metadata": {"projectionBinding": self.binding_payload()},
+            }
+        }
+        self.assertIsNone(
+            extract_trusted_projection_binding(
+                injected,
+                expected_chat_request_id="request-123",
+                local_agent_id="agent-a",
+                now=self.NOW,
+            )
+        )
+
+        trusted = {
+            "data": {
+                "payload": {"commandText": "untrusted peer text"},
+                "trustedMetadata": {"projectionBinding": self.binding_payload()},
+            }
+        }
+        binding = extract_trusted_projection_binding(
+            trusted,
+            expected_chat_request_id="request-123",
+            local_agent_id="agent-a",
+            now=self.NOW,
+        )
+        self.assertEqual(binding.projection_binding_id, "binding-123")
+        self.assertEqual(binding.route.chat_id, "oc_group_123")
+        self.assertEqual(binding.route.chat_type, "group")
+        self.assertRegex(binding.route_digest, r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(binding.bot_mentions, ("@agent_b", "ou_bot_a"))
+
+    def test_binding_validation_rejects_scope_conflicts_and_untrusted_authority(self):
+        cases = (
+            (
+                {"platform": "telegram"},
+                "conflicting projection route field",
+            ),
+            (
+                {"authority": {"source": "peer", "kind": "relay_control_plane"}},
+                "authority source",
+            ),
+            (
+                {
+                    "route": {
+                        "platform": "feishu",
+                        "chatId": "oc_group_123",
+                        "chatType": "dm",
+                        "threadId": "thread-7",
+                    }
+                },
+                "unsupported projection chatType",
+            ),
+            (
+                {"authority": {"source": "claworld_relay", "kind": "signed_binding"}},
+                "requires authority.proof",
+            ),
+            (
+                {"initiatorAgentId": "agent-b"},
+                "participants must be distinct",
+            ),
+        )
+        for overrides, error in cases:
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ProjectionBindingError, error):
+                validate_trusted_projection_binding(
+                    self.binding_payload(**overrides),
+                    expected_chat_request_id="request-123",
+                    local_agent_id="agent-a",
+                    now=self.NOW,
+                )
+
+        with self.assertRaisesRegex(ProjectionBindingError, "local agent is not a participant"):
+            validate_trusted_projection_binding(
+                self.binding_payload(),
+                local_agent_id="agent-c",
+                now=self.NOW,
+            )
+        with self.assertRaisesRegex(ProjectionBindingError, "has expired"):
+            validate_trusted_projection_binding(
+                self.binding_payload(expiresAt="2029-12-31T23:30:00Z"),
+                local_agent_id="agent-a",
+                now=self.NOW,
+            )
+
+    def test_binding_route_digest_is_verified(self):
+        self.assertEqual(
+            projection_route_digest(
+                ProjectionRoute(
+                    platform="feishu",
+                    chat_id="oc_group_123",
+                    chat_type="group",
+                    thread_id="thread-7",
+                ),
+                "om_origin_123",
+            ),
+            "sha256:807aa2de7ea1761c1170157a1cb0d466b5e1db5f6335a36f8fbae3cfefd466a5",
+        )
+        self.assertEqual(
+            projection_route_digest(
+                ProjectionRoute(
+                    platform="telegram",
+                    chat_id="-100123",
+                    chat_type="supergroup",
+                    thread_id=None,
+                ),
+                "42",
+            ),
+            "sha256:c0ef453bf5d236630a2cdbbe9e7a4862b498537c7d24b826e138dc807f8c93e0",
+        )
+        with self.assertRaisesRegex(ProjectionBindingError, "routeDigest"):
+            validate_trusted_projection_binding(
+                self.binding_payload(routeDigest="0" * 64),
+                local_agent_id="agent-a",
+                now=self.NOW,
+            )
+
+    def test_backend_projection_protocol_fixed_vector(self):
+        route = ProjectionRoute(
+            platform="lark",
+            chat_id="oc_group_one",
+            chat_type="group",
+            thread_id="omt_thread_one",
+        )
+        self.assertEqual(
+            projection_route_digest(route, "om_origin_one"),
+            "sha256:ea804659c646b4b1db1cb2c1aacf0e40f57a83323d43e5724e1ff700e891c18b",
+        )
+        self.assertEqual(
+            projection_idempotency_key("pbd_unit_one", "dlv_source_one"),
+            "pbd_unit_one:dlv_source_one:reply",
+        )
+        self.assertEqual(
+            projection_attempt_id("pbd_unit_one", "dlv_source_one"),
+            "pat_f81f9ceac124e92e647929adcdeae4c8",
+        )
+
+    def test_store_persists_independent_secure_binding_and_request_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectionStore(Path(tmp) / ".claworld")
+            binding = self.validated_binding()
+            self.assertEqual(store.save_binding(binding), binding)
+            self.assertEqual(store.save_binding(binding), binding)
+            self.assertEqual(store.load_binding("binding-123"), binding)
+            self.assertEqual(store.find_binding_by_chat_request("request-123"), binding)
+
+            request = new_projection_request(
+                client_request_id="client-request-1",
+                platform="feishu",
+                chat_id="oc_group_123",
+                chat_type="group",
+                thread_id="thread-7",
+                origin_message_id="om_origin_123",
+                local_agent_id="agent-a",
+            )
+            store.save_request(request)
+            bound_request = store.update_request(
+                "client-request-1",
+                state="bound",
+                chat_request_id="request-123",
+                projection_binding_id="binding-123",
+            )
+            self.assertEqual(bound_request.state, "bound")
+            self.assertEqual(store.load_request("client-request-1"), bound_request)
+            with self.assertRaisesRegex(ProjectionStateError, "chatRequestId is immutable"):
+                store.update_request(
+                    "client-request-1",
+                    state="bound",
+                    chat_request_id="request-other",
+                    projection_binding_id="binding-123",
+                )
+
+            binding_file = next(store.bindings_dir.glob("*.json"))
+            request_file = next(store.requests_dir.glob("*.json"))
+            request_payload = json.loads(request_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                request_payload["routeDigest"],
+                projection_route_digest(request.route, request.origin_message_id),
+            )
+            self.assertEqual(binding_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(request_file.stat().st_mode & 0o777, 0o600)
+            for directory in (store.root, store.bindings_dir, store.requests_dir, store.outbox_dir):
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+
+            changed_route_request = new_projection_request(
+                client_request_id="client-request-1",
+                platform="feishu",
+                chat_id="oc_other_group",
+                chat_type="group",
+                thread_id="thread-7",
+                origin_message_id="om_origin_123",
+                local_agent_id="agent-a",
+            )
+            with self.assertRaisesRegex(ProjectionStateError, "immutable fields"):
+                store.save_request(changed_route_request)
+
+    def test_binding_state_and_turn_sequence_cannot_regress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectionStore(Path(tmp) / ".claworld")
+            store.save_binding(self.validated_binding())
+            advanced = store.update_binding_state("binding-123", state="active", turn_seq=2)
+            self.assertEqual(advanced.turn_seq, 2)
+            paused = store.update_binding_state("binding-123", state="paused", turn_seq=2)
+            self.assertEqual(paused.state, "paused")
+            with self.assertRaisesRegex(ProjectionStateError, "turnSeq cannot regress"):
+                store.update_binding_state("binding-123", state="paused", turn_seq=1)
+            store.update_binding_state("binding-123", state="ended", turn_seq=2)
+            with self.assertRaisesRegex(ProjectionStateError, "ended -> active"):
+                store.update_binding_state("binding-123", state="active", turn_seq=3)
+
+    def test_binding_expiry_may_only_move_forward(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectionStore(Path(tmp) / ".claworld")
+            pending = self.validated_binding(
+                state="pending_capability",
+                expiresAt="2030-01-02T00:00:00Z",
+            )
+            store.save_binding(pending)
+            renewed = self.validated_binding(
+                state="active",
+                expiresAt="2030-01-04T00:00:00Z",
+            )
+            self.assertEqual(store.save_binding(renewed), renewed)
+            with self.assertRaisesRegex(ProjectionStateError, "cannot move backwards"):
+                store.save_binding(
+                    self.validated_binding(
+                        state="active",
+                        expiresAt="2030-01-03T00:00:00Z",
+                    )
+                )
+
+    def test_bot_mentions_only_grow_during_capability_handshake_then_freeze(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectionStore(Path(tmp) / ".claworld")
+            pending = self.validated_binding(state="pending_capability", botMentions=[])
+            store.save_binding(pending)
+
+            partial = self.validated_binding(
+                state="pending_capability",
+                botMentions=["cli_agent_a", "@agent-a-bot"],
+            )
+            self.assertEqual(pending.immutable_fingerprint, partial.immutable_fingerprint)
+            store.save_binding(partial)
+
+            with self.assertRaisesRegex(ProjectionStateError, "may only be appended"):
+                store.save_binding(
+                    self.validated_binding(
+                        state="pending_capability",
+                        botMentions=["@replacement-bot"],
+                    )
+                )
+
+            active = self.validated_binding(
+                state="active",
+                botMentions=[
+                    "cli_agent_a",
+                    "@agent-a-bot",
+                    "cli_agent_b",
+                    "@agent-b-bot",
+                ],
+            )
+            self.assertEqual(store.save_binding(active), active)
+
+            for changed_mentions in (
+                ["cli_agent_a", "@agent-a-bot"],
+                [*active.bot_mentions, "@late-bot"],
+            ):
+                with self.subTest(changed_mentions=changed_mentions), self.assertRaisesRegex(
+                    ProjectionStateError,
+                    "immutable after capability handshake",
+                ):
+                    store.save_binding(
+                        self.validated_binding(
+                            state="active",
+                            botMentions=list(changed_mentions),
+                        )
+                    )
+
+    def test_outbox_claim_and_state_machine_are_idempotent_across_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".claworld"
+            store = ProjectionStore(root)
+            binding = self.validated_binding()
+            store.save_binding(binding)
+            visible_reply = "你好 @agent_b [[request_conversation_end]]\nUsage: 1 in / 2 out"
+            claimed = store.claim_outbox(
+                binding=binding,
+                delivery_id="delivery-1",
+                turn_seq=1,
+                public_text=visible_reply,
+            )
+            self.assertEqual(claimed.idempotency_key, "binding-123:delivery-1:reply")
+            self.assertEqual(claimed.public_text, "你好 agent_b")
+            self.assertEqual(
+                store.claim_outbox(
+                    binding=binding,
+                    delivery_id="delivery-1",
+                    turn_seq=1,
+                    public_text=visible_reply,
+                ),
+                claimed,
+            )
+            with self.assertRaisesRegex(ProjectionStateError, "immutable fields"):
+                store.claim_outbox(
+                    binding=binding,
+                    delivery_id="delivery-1",
+                    turn_seq=1,
+                    public_text="different public reply",
+                )
+
+            sending = store.transition_outbox(claimed.idempotency_key, status="sending")
+            self.assertEqual(sending.attempts, 1)
+            sent = store.transition_outbox(
+                claimed.idempotency_key,
+                status="sent",
+                external_message_id="om_projected_1",
+            )
+            receipt_pending = store.transition_outbox(claimed.idempotency_key, status="receipt_pending")
+            self.assertEqual(receipt_pending.external_message_id, "om_projected_1")
+            receipt_pending = store.transition_outbox(
+                claimed.idempotency_key,
+                status="receipt_pending",
+                failure_code="receipt_timeout",
+                failure_reason="relay ack timed out",
+                retryable=True,
+            )
+            self.assertEqual(receipt_pending.failure_code, "receipt_timeout")
+            completed = store.transition_outbox(claimed.idempotency_key, status="complete")
+            self.assertIsNone(completed.failure_code)
+            self.assertEqual(sent.external_message_id, completed.external_message_id)
+
+            restarted_store = ProjectionStore(root)
+            self.assertEqual(restarted_store.load_outbox(claimed.idempotency_key), completed)
+            self.assertEqual(
+                restarted_store.list_outbox(
+                    projection_binding_id="binding-123",
+                    statuses={"complete"},
+                ),
+                [completed],
+            )
+            outbox_file = next(restarted_store.outbox_dir.glob("*.json"))
+            self.assertEqual(outbox_file.stat().st_mode & 0o777, 0o600)
+            with self.assertRaisesRegex(ProjectionStateError, "complete -> sending"):
+                restarted_store.transition_outbox(claimed.idempotency_key, status="sending")
+
+    def test_retryable_failure_can_retry_but_terminal_failure_cannot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectionStore(Path(tmp) / ".claworld")
+            binding = self.validated_binding()
+            store.save_binding(binding)
+            retryable = store.claim_outbox(
+                binding=binding,
+                delivery_id="delivery-retry",
+                turn_seq=1,
+                public_text="retry me",
+            )
+            store.transition_outbox(retryable.idempotency_key, status="sending")
+            store.transition_outbox(
+                retryable.idempotency_key,
+                status="failed",
+                failure_code="platform_timeout",
+                retryable=True,
+            )
+            retried = store.transition_outbox(retryable.idempotency_key, status="sending")
+            self.assertEqual(retried.attempts, 2)
+
+            terminal = store.claim_outbox(
+                binding=binding,
+                delivery_id="delivery-terminal",
+                turn_seq=2,
+                public_text="do not retry",
+            )
+            store.transition_outbox(
+                terminal.idempotency_key,
+                status="failed",
+                failure_code="permission_denied",
+                retryable=False,
+            )
+            with self.assertRaisesRegex(ProjectionStateError, "non-retryable"):
+                store.transition_outbox(terminal.idempotency_key, status="sending")
+
+    def test_public_text_sanitizer_suppresses_controls_and_blocks_high_risk_content(self):
+        self.assertEqual(sanitize_public_projection_text("NO_REPLY").suppressed_reason, "no_reply")
+        self.assertEqual(
+            sanitize_public_projection_text("[[request_conversation_end]]").suppressed_reason,
+            "control_only",
+        )
+        cleaned = sanitize_public_projection_text(
+            "你好 @agent_b [[like]]\nUsage: 4 in / 8 out",
+            bot_mentions=("@agent_b",),
+        )
+        self.assertTrue(cleaned.allowed)
+        self.assertEqual(cleaned.text, "你好 agent_b")
+        self.assertEqual(
+            set(cleaned.removed_markers),
+            {"internal_control_marker", "operational_suffix", "bot_mention"},
+        )
+
+        risky_messages = {
+            "assigned_credential": "api_key = very-secret-value",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nabc",
+            "private_working_memory": "Read .claworld/context/MEMORY.md",
+            "internal_route": '{"chatId":"oc_secret"}',
+            "tool_payload": "tool_result: {secret data}",
+            "internal_media": "MEDIA:/tmp/private.png",
+        }
+        for reason, text in risky_messages.items():
+            with self.subTest(reason=reason):
+                result = sanitize_public_projection_text(text)
+                self.assertEqual(result.blocked_reason, reason)
+                with self.assertRaisesRegex(ProjectionContentBlocked, reason):
+                    require_public_projection_text(text)
+
+    async def test_each_binding_has_one_async_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProjectionStore(Path(tmp) / ".claworld")
+            self.assertIs(store.binding_lock("binding-123"), store.binding_lock("binding-123"))
+            active = 0
+            maximum_active = 0
+
+            async def worker():
+                nonlocal active, maximum_active
+                async with store.hold_binding("binding-123"):
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                    await asyncio.sleep(0.01)
+                    active -= 1
+
+            await asyncio.gather(*(worker() for _ in range(5)))
+            self.assertEqual(maximum_active, 1)
+
+    def test_projection_idempotency_key_is_binding_and_reply_specific(self):
+        self.assertEqual(
+            projection_idempotency_key("binding-123", "delivery-1"),
+            "binding-123:delivery-1:reply",
+        )
 
 
 class ConfigTests(unittest.TestCase):

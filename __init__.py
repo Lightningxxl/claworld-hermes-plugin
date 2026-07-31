@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .adapter import ClaworldPlatformAdapter
 from .config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldConfig
-from .hooks import post_tool_call
+from .hooks import post_tool_call, pre_gateway_dispatch
 from .setup import interactive_setup
 from .skill_registration import register_skills
 from .tools import register_tools
@@ -61,3 +61,4 @@ def register(ctx) -> None:
     register_tools(ctx)
     register_skills(ctx)
     ctx.register_hook("post_tool_call", post_tool_call)
+    ctx.register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
