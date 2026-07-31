@@ -390,7 +390,7 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         runtime._reset_projection_runtime_for_tests()
 
-    async def test_feishu_uses_is_in_chat(self):
+    async def test_feishu_uses_exact_is_in_chat_with_trusted_group_route(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -420,20 +420,30 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
         gateway, _ = _gateway("feishu", adapter)
         runtime.pre_gateway_dispatch(event=None, gateway=gateway)
 
-        with patch.object(runtime, "_build_feishu_is_in_chat_request", return_value=object()):
+        request = object()
+        with patch.object(
+            runtime,
+            "_build_feishu_is_in_chat_request",
+            return_value=request,
+        ) as build_request:
             result = await runtime.can_send_to(
                 platform="feishu",
                 chat_id="oc_xfx",
                 profile="default",
+                trusted_chat_type="group",
             )
 
         self.assertTrue(result["success"])
         self.assertTrue(result["canSend"])
         self.assertEqual(result["reason"], "member_verified")
-        self.assertEqual(result["permissionBasis"], "feishu_is_in_chat")
+        self.assertEqual(
+            result["permissionBasis"],
+            "feishu_is_in_chat+trusted_projection_route",
+        )
         self.assertEqual(result["externalBotId"], "ou_bot")
         self.assertEqual(result["botMention"], "ou_bot")
-        is_in_chat.assert_called_once()
+        build_request.assert_called_once_with("oc_xfx")
+        is_in_chat.assert_called_once_with(request)
 
     async def test_feishu_not_member_is_definitive(self):
         response = types.SimpleNamespace(
@@ -468,6 +478,7 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 platform="feishu",
                 chat_id="oc_xfx",
                 profile="default",
+                trusted_chat_type="group",
             )
 
         self.assertTrue(result["success"])
@@ -476,7 +487,7 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["externalBotId"], "cli_app")
         self.assertEqual(result["botMention"], "Agent B")
 
-    async def test_feishu_chat_lookup_fails_closed_for_dm_fallback_without_trusted_route(self):
+    async def test_feishu_rejects_capability_without_trusted_group_route(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -511,11 +522,11 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 profile="default",
             )
 
-        self.assertTrue(result["success"])
+        self.assertFalse(result["success"])
         self.assertFalse(result["canSend"])
-        self.assertEqual(result["reason"], "chat_type_unverified")
+        self.assertEqual(result["reason"], "trusted_group_route_required")
 
-    async def test_feishu_trusted_group_route_survives_ambiguous_dm_fallback(self):
+    async def test_feishu_trusted_group_route_ignores_hermes_dm_fallback(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -562,10 +573,10 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["chatType"], "group")
         self.assertEqual(
             result["permissionBasis"],
-            "feishu_is_in_chat+exact_hermes_fallback+trusted_projection_route",
+            "feishu_is_in_chat+trusted_projection_route",
         )
 
-    async def test_feishu_explicit_p2p_metadata_overrides_trusted_group_route(self):
+    async def test_feishu_chat_visibility_metadata_is_not_used_as_chat_mode(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -588,7 +599,9 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 return fn(request)
 
             async def get_chat_info(self, _chat_id):
-                return {"type": "dm", "raw_type": "p2p"}
+                # Hermes currently maps Feishu chat_type=private/public as if
+                # it were chat_mode, yielding this misleading shape.
+                return {"type": "dm", "raw_type": "private"}
 
         gateway, _ = _gateway("feishu", Adapter())
         runtime.pre_gateway_dispatch(event=None, gateway=gateway)
@@ -596,17 +609,17 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(runtime, "_build_feishu_is_in_chat_request", return_value=object()):
             result = await runtime.can_send_to(
                 platform="feishu",
-                chat_id="oc_dm",
+                chat_id="oc_xfx",
                 profile="default",
                 trusted_chat_type="group",
             )
 
         self.assertTrue(result["success"])
-        self.assertFalse(result["canSend"])
-        self.assertEqual(result["reason"], "not_group_chat")
-        self.assertEqual(result["chatType"], "dm")
+        self.assertTrue(result["canSend"])
+        self.assertEqual(result["reason"], "member_verified")
+        self.assertEqual(result["chatType"], "group")
 
-    async def test_feishu_mismatched_fallback_chat_id_fails_closed(self):
+    async def test_feishu_optional_chat_metadata_does_not_override_exact_membership(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -647,10 +660,10 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["success"])
-        self.assertFalse(result["canSend"])
-        self.assertEqual(result["reason"], "chat_type_unverified")
+        self.assertTrue(result["canSend"])
+        self.assertEqual(result["chatType"], "group")
 
-    async def test_feishu_empty_chat_info_fails_closed_with_trusted_route(self):
+    async def test_feishu_chat_metadata_unavailable_does_not_block_exact_membership(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -687,8 +700,28 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["success"])
-        self.assertFalse(result["canSend"])
-        self.assertEqual(result["reason"], "chat_type_unverified")
+        self.assertTrue(result["canSend"])
+        self.assertEqual(result["chatType"], "group")
+
+    async def test_feishu_rejects_telegram_only_trusted_chat_types(self):
+        adapter = types.SimpleNamespace(
+            _client=types.SimpleNamespace(),
+            _bot_open_id="ou_bot",
+        )
+        gateway, _ = _gateway("feishu", adapter)
+        runtime.pre_gateway_dispatch(event=None, gateway=gateway)
+
+        for chat_type in ("supergroup", "channel"):
+            with self.subTest(chat_type=chat_type):
+                result = await runtime.can_send_to(
+                    platform="feishu",
+                    chat_id="oc_xfx",
+                    profile="default",
+                    trusted_chat_type=chat_type,
+                )
+                self.assertFalse(result["success"])
+                self.assertFalse(result["canSend"])
+                self.assertEqual(result["reason"], "trusted_group_route_required")
 
     async def test_telegram_checks_membership_and_permissions(self):
         bot = types.SimpleNamespace(id=123, username="agent_a_bot")

@@ -422,6 +422,17 @@ async def _can_send_to_feishu(
     *,
     trusted_chat_type: str | None,
 ) -> dict[str, Any]:
+    # Feishu's is_in_chat endpoint is group-only.  Require the exact
+    # relay-controlled Feishu route type before asking the current bot's own
+    # credentials to prove membership in that same chat id.  Telegram-only
+    # audience types must never be accepted here.
+    if trusted_chat_type != "group":
+        return _capability_result(
+            target,
+            success=False,
+            can_send=False,
+            reason="trusted_group_route_required",
+        )
     bot_open_id = _optional_text(getattr(adapter, "_bot_open_id", None))
     app_id = _optional_text(getattr(adapter, "_app_id", None))
     bot_name = _optional_text(getattr(adapter, "_bot_name", None))
@@ -447,18 +458,6 @@ async def _can_send_to_feishu(
             reason="adapter_not_connected",
             **identity,
         )
-
-    chat_info: dict[str, Any] = {}
-    get_chat_info = getattr(adapter, "get_chat_info", None)
-    if callable(get_chat_info):
-        try:
-            maybe_info = await get_chat_info(target["chatId"])
-            if isinstance(maybe_info, dict):
-                chat_info = maybe_info
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            chat_info = {}
 
     try:
         request = _build_feishu_is_in_chat_request(target["chatId"])
@@ -499,55 +498,16 @@ async def _can_send_to_feishu(
             success=True,
             can_send=False,
             reason="bot_not_member",
-            chat_type=_optional_text(chat_info.get("type")),
+            chat_type="group",
             **identity,
         )
-
-    normalized_chat_type = _optional_text(chat_info.get("type"))
-    normalized_chat_type = normalized_chat_type.lower() if normalized_chat_type else None
-    raw_chat_type = _optional_text(chat_info.get("raw_type"))
-    raw_chat_type = raw_chat_type.lower() if raw_chat_type else None
-
-    # Hermes' Feishu adapter currently returns an exact synthetic fallback
-    # ``{chat_id: id, name: id, type: "dm"}`` when the optional chat.get
-    # metadata lookup fails.  That value must not be confused with successful
-    # P2P metadata, which includes raw_type=p2p.  Accept only the adapter's
-    # precise fallback shape, only for the same bound chat id, only when this
-    # call carries the relay-controlled group type, and only after the official
-    # is_in_chat endpoint above proved this bot belongs to that exact chat.
-    # Empty, partial, mismatched, or future unknown shapes still fail closed.
-    metadata_group = (
-        normalized_chat_type == "group" and raw_chat_type == "group"
-    )
-    exact_hermes_lookup_fallback = (
-        normalized_chat_type == "dm"
-        and "raw_type" not in chat_info
-        and _text(chat_info.get("chat_id")) == target["chatId"]
-        and _text(chat_info.get("name")) == target["chatId"]
-    )
-    binding_group = trusted_chat_type in _GROUP_CHAT_TYPES
-    if not metadata_group and not (exact_hermes_lookup_fallback and binding_group):
-        reason = "not_group_chat" if raw_chat_type == "p2p" else "chat_type_unverified"
-        return _capability_result(
-            target,
-            success=True,
-            can_send=False,
-            reason=reason,
-            chat_type=normalized_chat_type,
-            **identity,
-        )
-    permission_basis = (
-        "feishu_is_in_chat"
-        if metadata_group
-        else "feishu_is_in_chat+exact_hermes_fallback+trusted_projection_route"
-    )
     return _capability_result(
         target,
         success=True,
         can_send=True,
         reason="member_verified",
         chat_type="group",
-        permission_basis=permission_basis,
+        permission_basis="feishu_is_in_chat+trusted_projection_route",
         **identity,
     )
 
