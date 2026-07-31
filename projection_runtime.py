@@ -108,9 +108,21 @@ def pre_gateway_dispatch(
     if platform == "telegram" and chat_type == "forum":
         chat_type = "supergroup"
     chat_id = _text(getattr(source, "chat_id", ""))
-    message_id = _text(
-        getattr(source, "message_id", None) or getattr(event, "message_id", None)
-    )
+    source_message_id = _text(getattr(source, "message_id", None))
+    event_message_id = _text(getattr(event, "message_id", None))
+    if (
+        source_message_id
+        and event_message_id
+        and source_message_id != event_message_id
+    ):
+        # Two adapter-owned representations of one inbound event must agree.
+        # Reject ambiguity instead of choosing one id and risking a route that
+        # cannot be tied to the turn Hermes actually executes.
+        logger.warning(
+            "Projection route capture rejected mismatched source/event message ids"
+        )
+        return None
+    message_id = source_message_id or event_message_id
     if (
         platform not in _SUPPORTED_PROJECTION_PLATFORMS
         or chat_type not in _GROUP_CHAT_TYPES
@@ -118,6 +130,25 @@ def pre_gateway_dispatch(
         or not message_id
     ):
         return None
+
+    # Hermes currently derives HERMES_SESSION_MESSAGE_ID from
+    # ``SessionSource.message_id``.  Some native adapters (notably Feishu)
+    # place the authoritative inbound id only on ``MessageEvent.message_id``
+    # even though both objects describe the same adapter-authenticated event.
+    # Bind that exact id onto the mutable source before Hermes builds the
+    # SessionContext.  This is not a latest-route fallback: the value remains
+    # scoped to this one event, and route lookup still requires the exact
+    # platform/chat/profile/message-id tuple below.
+    if not source_message_id:
+        try:
+            setattr(source, "message_id", message_id)
+        except Exception:
+            # An incompatible/frozen upstream source simply leaves the later
+            # session lookup unable to resolve this cache entry, so projection
+            # continues to fail closed.
+            logger.warning(
+                "Projection route capture could not bind the inbound message id to SessionSource"
+            )
 
     now = time.time()
     route = CapturedProjectionRoute(

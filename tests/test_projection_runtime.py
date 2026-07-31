@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
 import types
 import unittest
@@ -42,11 +43,11 @@ def _source(
     )
 
 
-def _event(source=None, *, internal: bool = False):
+def _event(source=None, *, internal: bool = False, message_id: str | None = None):
     source = source or _source()
     return types.SimpleNamespace(
         source=source,
-        message_id=source.message_id,
+        message_id=source.message_id if message_id is None else message_id,
         internal=internal,
     )
 
@@ -102,6 +103,145 @@ class ProjectionRouteCaptureTests(unittest.TestCase):
                 chat_id="oc_exact",
                 origin_message_id="om_other",
             )
+        )
+
+    def test_binds_event_message_id_to_source_for_exact_session_lookup(self):
+        gateway, _ = _gateway("feishu", object())
+        source = _source(
+            platform="feishu",
+            chat_id="oc_exact",
+            message_id="",
+        )
+        event = _event(source, message_id="om_event_exact")
+
+        runtime.pre_gateway_dispatch(event=event, gateway=gateway)
+
+        # Feishu supplies the inbound id on MessageEvent while Hermes builds
+        # HERMES_SESSION_MESSAGE_ID from SessionSource.  The hook must bridge
+        # those two adapter-owned representations without using a latest-route
+        # fallback or model-authored routing data.
+        self.assertEqual(source.message_id, "om_event_exact")
+        session_values = {
+            "HERMES_SESSION_PLATFORM": "feishu",
+            "HERMES_SESSION_CHAT_ID": "oc_exact",
+            "HERMES_SESSION_MESSAGE_ID": source.message_id,
+            "HERMES_SESSION_PROFILE": "default",
+        }
+        gateway_module = types.ModuleType("gateway")
+        session_context_module = types.ModuleType("gateway.session_context")
+        session_context_module.get_session_env = (
+            lambda name, default="": session_values.get(name, default)
+        )
+        gateway_module.session_context = session_context_module
+        with patch.dict(
+            sys.modules,
+            {
+                "gateway": gateway_module,
+                "gateway.session_context": session_context_module,
+            },
+        ):
+            route = runtime.get_current_projection_route()
+        self.assertIsNotNone(route)
+        self.assertEqual(route.origin_message_id, "om_event_exact")
+
+    def test_rejects_mismatched_source_and_event_message_ids(self):
+        gateway, _ = _gateway("feishu", object())
+        source = _source(
+            platform="feishu",
+            chat_id="oc_exact",
+            message_id="om_source",
+        )
+
+        runtime.pre_gateway_dispatch(
+            event=_event(source, message_id="om_event"),
+            gateway=gateway,
+        )
+
+        self.assertEqual(source.message_id, "om_source")
+        self.assertIsNone(
+            runtime.get_captured_projection_route(
+                platform="feishu",
+                chat_id="oc_exact",
+                origin_message_id="om_source",
+            )
+        )
+        self.assertIsNone(
+            runtime.get_captured_projection_route(
+                platform="feishu",
+                chat_id="oc_exact",
+                origin_message_id="om_event",
+            )
+        )
+
+    def test_real_hermes_session_context_resolves_exact_event_message_id(self):
+        hermes_root = Path(sys.prefix).resolve().parent
+        if not (hermes_root / "gateway" / "run.py").is_file():
+            self.skipTest("Hermes source tree is unavailable")
+        script = r'''
+import importlib.util
+import sys
+import types
+
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.base import MessageEvent
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource, build_session_context
+from gateway.session_context import get_session_env
+
+spec = importlib.util.spec_from_file_location("projection_runtime_under_test", sys.argv[1])
+runtime = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runtime
+spec.loader.exec_module(runtime)
+
+source = SessionSource(
+    platform=Platform.FEISHU,
+    chat_id="oc_contract",
+    chat_type="group",
+    user_id="ou_user",
+    message_id=None,
+    profile="default",
+)
+event = MessageEvent(
+    text="approved projection request",
+    source=source,
+    message_id="om_contract_exact",
+)
+runner = object.__new__(GatewayRunner)
+runner.adapters = {}
+runner.delivery_router = types.SimpleNamespace(adapters={})
+runner._profile_adapters = {}
+runner._active_profile_name = lambda: "default"
+
+runtime.pre_gateway_dispatch(event=event, gateway=runner)
+context = build_session_context(source, GatewayConfig(platforms={}))
+context.session_key = "agent:main:feishu:group:oc_contract:ou_user"
+tokens = runner._set_session_env(context)
+try:
+    assert get_session_env("HERMES_SESSION_MESSAGE_ID", "") == "om_contract_exact"
+    route = runtime.get_current_projection_route()
+finally:
+    runner._clear_session_env(tokens)
+
+assert route is not None
+assert route.origin_message_id == "om_contract_exact"
+'''
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(ROOT / "projection_runtime.py"),
+            ],
+            cwd=hermes_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"Hermes contract subprocess failed: {completed.stderr}",
         )
 
     def test_ignores_dm_internal_and_unsupported_routes(self):
