@@ -438,6 +438,7 @@ class ProjectionBindingIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 chat_id="-100123456",
                 thread_id="88",
                 profile="worker",
+                trusted_chat_type="group",
             )
             selection = first.projection_profile_store.load_binding_profile(BINDING_ID)
             self.assertEqual(selection.profile, "worker")

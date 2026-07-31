@@ -476,7 +476,7 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["externalBotId"], "cli_app")
         self.assertEqual(result["botMention"], "Agent B")
 
-    async def test_feishu_chat_lookup_fails_closed_for_dm_fallback(self):
+    async def test_feishu_chat_lookup_fails_closed_for_dm_fallback_without_trusted_route(self):
         response = types.SimpleNamespace(
             success=lambda: True,
             data=types.SimpleNamespace(is_in_chat=True),
@@ -513,7 +513,182 @@ class ProjectionCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["success"])
         self.assertFalse(result["canSend"])
+        self.assertEqual(result["reason"], "chat_type_unverified")
+
+    async def test_feishu_trusted_group_route_survives_ambiguous_dm_fallback(self):
+        response = types.SimpleNamespace(
+            success=lambda: True,
+            data=types.SimpleNamespace(is_in_chat=True),
+        )
+        client = types.SimpleNamespace(
+            im=types.SimpleNamespace(
+                v1=types.SimpleNamespace(
+                    chat_members=types.SimpleNamespace(is_in_chat=lambda _request: response)
+                )
+            )
+        )
+
+        class Adapter:
+            _client = client
+            _bot_open_id = "ou_bot"
+            _app_id = "cli_app"
+            _bot_name = "Agent A"
+
+            async def _run_blocking(self, fn, request):
+                return fn(request)
+
+            async def get_chat_info(self, _chat_id):
+                # This is the exact fallback shape returned by Hermes when
+                # chat.get fails: it deliberately has no raw_type evidence.
+                return {
+                    "chat_id": "oc_xfx",
+                    "name": "oc_xfx",
+                    "type": "dm",
+                }
+
+        gateway, _ = _gateway("feishu", Adapter())
+        runtime.pre_gateway_dispatch(event=None, gateway=gateway)
+
+        with patch.object(runtime, "_build_feishu_is_in_chat_request", return_value=object()):
+            result = await runtime.can_send_to(
+                platform="feishu",
+                chat_id="oc_xfx",
+                profile="default",
+                trusted_chat_type="group",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["canSend"])
+        self.assertEqual(result["chatType"], "group")
+        self.assertEqual(
+            result["permissionBasis"],
+            "feishu_is_in_chat+exact_hermes_fallback+trusted_projection_route",
+        )
+
+    async def test_feishu_explicit_p2p_metadata_overrides_trusted_group_route(self):
+        response = types.SimpleNamespace(
+            success=lambda: True,
+            data=types.SimpleNamespace(is_in_chat=True),
+        )
+        client = types.SimpleNamespace(
+            im=types.SimpleNamespace(
+                v1=types.SimpleNamespace(
+                    chat_members=types.SimpleNamespace(is_in_chat=lambda _request: response)
+                )
+            )
+        )
+
+        class Adapter:
+            _client = client
+            _bot_open_id = "ou_bot"
+            _app_id = "cli_app"
+            _bot_name = "Agent A"
+
+            async def _run_blocking(self, fn, request):
+                return fn(request)
+
+            async def get_chat_info(self, _chat_id):
+                return {"type": "dm", "raw_type": "p2p"}
+
+        gateway, _ = _gateway("feishu", Adapter())
+        runtime.pre_gateway_dispatch(event=None, gateway=gateway)
+
+        with patch.object(runtime, "_build_feishu_is_in_chat_request", return_value=object()):
+            result = await runtime.can_send_to(
+                platform="feishu",
+                chat_id="oc_dm",
+                profile="default",
+                trusted_chat_type="group",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["canSend"])
         self.assertEqual(result["reason"], "not_group_chat")
+        self.assertEqual(result["chatType"], "dm")
+
+    async def test_feishu_mismatched_fallback_chat_id_fails_closed(self):
+        response = types.SimpleNamespace(
+            success=lambda: True,
+            data=types.SimpleNamespace(is_in_chat=True),
+        )
+        client = types.SimpleNamespace(
+            im=types.SimpleNamespace(
+                v1=types.SimpleNamespace(
+                    chat_members=types.SimpleNamespace(is_in_chat=lambda _request: response)
+                )
+            )
+        )
+
+        class Adapter:
+            _client = client
+            _bot_open_id = "ou_bot"
+            _app_id = "cli_app"
+            _bot_name = "Agent A"
+
+            async def _run_blocking(self, fn, request):
+                return fn(request)
+
+            async def get_chat_info(self, _chat_id):
+                return {
+                    "chat_id": "oc_other",
+                    "name": "oc_other",
+                    "type": "dm",
+                }
+
+        gateway, _ = _gateway("feishu", Adapter())
+        runtime.pre_gateway_dispatch(event=None, gateway=gateway)
+
+        with patch.object(runtime, "_build_feishu_is_in_chat_request", return_value=object()):
+            result = await runtime.can_send_to(
+                platform="feishu",
+                chat_id="oc_xfx",
+                profile="default",
+                trusted_chat_type="group",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["canSend"])
+        self.assertEqual(result["reason"], "chat_type_unverified")
+
+    async def test_feishu_empty_chat_info_fails_closed_with_trusted_route(self):
+        response = types.SimpleNamespace(
+            success=lambda: True,
+            data=types.SimpleNamespace(is_in_chat=True),
+        )
+        client = types.SimpleNamespace(
+            im=types.SimpleNamespace(
+                v1=types.SimpleNamespace(
+                    chat_members=types.SimpleNamespace(is_in_chat=lambda _request: response)
+                )
+            )
+        )
+
+        class Adapter:
+            _client = client
+            _bot_open_id = "ou_bot"
+            _app_id = "cli_app"
+            _bot_name = "Agent A"
+
+            async def _run_blocking(self, fn, request):
+                return fn(request)
+
+            async def get_chat_info(self, _chat_id):
+                return {}
+
+        gateway, _ = _gateway("feishu", Adapter())
+        runtime.pre_gateway_dispatch(event=None, gateway=gateway)
+
+        with patch.object(runtime, "_build_feishu_is_in_chat_request", return_value=object()):
+            result = await runtime.can_send_to(
+                platform="feishu",
+                chat_id="oc_xfx",
+                profile="default",
+                trusted_chat_type="group",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["canSend"])
+        self.assertEqual(result["reason"], "chat_type_unverified")
 
     async def test_telegram_checks_membership_and_permissions(self):
         bot = types.SimpleNamespace(id=123, username="agent_a_bot")

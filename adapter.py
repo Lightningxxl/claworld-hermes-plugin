@@ -425,6 +425,9 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
                 chat_id=binding.route.chat_id,
                 thread_id=binding.route.thread_id,
                 profile=profile,
+                # This value is accepted only from relay-controlled binding
+                # metadata validated above, never from model/tool arguments.
+                trusted_chat_type=binding.route.chat_type,
             )
             can_send = result.get("canSend") is True
             reason = str(result.get("reason") or "projection_preflight_failed").strip()

@@ -249,6 +249,7 @@ async def can_send_to(
     chat_id: str,
     thread_id: str | None = None,
     profile: str | None = None,
+    trusted_chat_type: str | None = None,
 ) -> dict[str, Any]:
     """Check whether this Hermes profile's bot can project to a native group.
 
@@ -259,6 +260,16 @@ async def can_send_to(
     """
 
     target = _target_fields(platform, chat_id, thread_id, profile)
+    normalized_trusted_chat_type = _optional_text(trusted_chat_type)
+    if normalized_trusted_chat_type:
+        normalized_trusted_chat_type = normalized_trusted_chat_type.lower()
+        if normalized_trusted_chat_type not in _GROUP_CHAT_TYPES:
+            return _capability_result(
+                target,
+                success=False,
+                can_send=False,
+                reason="invalid_trusted_chat_type",
+            )
     if target["platform"] not in _SUPPORTED_PROJECTION_PLATFORMS:
         return _capability_result(
             target,
@@ -294,7 +305,11 @@ async def can_send_to(
         )
 
     if target["platform"] == "feishu":
-        return await _can_send_to_feishu(adapter, target)
+        return await _can_send_to_feishu(
+            adapter,
+            target,
+            trusted_chat_type=normalized_trusted_chat_type,
+        )
     return await _can_send_to_telegram(adapter, target)
 
 
@@ -401,7 +416,12 @@ def sanitize_projection_content(content: Any) -> tuple[str, bool]:
     return cleaned, cleaned != original.strip()
 
 
-async def _can_send_to_feishu(adapter: Any, target: Mapping[str, Any]) -> dict[str, Any]:
+async def _can_send_to_feishu(
+    adapter: Any,
+    target: Mapping[str, Any],
+    *,
+    trusted_chat_type: str | None,
+) -> dict[str, Any]:
     bot_open_id = _optional_text(getattr(adapter, "_bot_open_id", None))
     app_id = _optional_text(getattr(adapter, "_app_id", None))
     bot_name = _optional_text(getattr(adapter, "_bot_name", None))
@@ -484,22 +504,50 @@ async def _can_send_to_feishu(adapter: Any, target: Mapping[str, Any]) -> dict[s
         )
 
     normalized_chat_type = _optional_text(chat_info.get("type"))
-    if normalized_chat_type not in _GROUP_CHAT_TYPES:
+    normalized_chat_type = normalized_chat_type.lower() if normalized_chat_type else None
+    raw_chat_type = _optional_text(chat_info.get("raw_type"))
+    raw_chat_type = raw_chat_type.lower() if raw_chat_type else None
+
+    # Hermes' Feishu adapter currently returns an exact synthetic fallback
+    # ``{chat_id: id, name: id, type: "dm"}`` when the optional chat.get
+    # metadata lookup fails.  That value must not be confused with successful
+    # P2P metadata, which includes raw_type=p2p.  Accept only the adapter's
+    # precise fallback shape, only for the same bound chat id, only when this
+    # call carries the relay-controlled group type, and only after the official
+    # is_in_chat endpoint above proved this bot belongs to that exact chat.
+    # Empty, partial, mismatched, or future unknown shapes still fail closed.
+    metadata_group = (
+        normalized_chat_type == "group" and raw_chat_type == "group"
+    )
+    exact_hermes_lookup_fallback = (
+        normalized_chat_type == "dm"
+        and "raw_type" not in chat_info
+        and _text(chat_info.get("chat_id")) == target["chatId"]
+        and _text(chat_info.get("name")) == target["chatId"]
+    )
+    binding_group = trusted_chat_type in _GROUP_CHAT_TYPES
+    if not metadata_group and not (exact_hermes_lookup_fallback and binding_group):
+        reason = "not_group_chat" if raw_chat_type == "p2p" else "chat_type_unverified"
         return _capability_result(
             target,
             success=True,
             can_send=False,
-            reason="not_group_chat",
+            reason=reason,
             chat_type=normalized_chat_type,
             **identity,
         )
+    permission_basis = (
+        "feishu_is_in_chat"
+        if metadata_group
+        else "feishu_is_in_chat+exact_hermes_fallback+trusted_projection_route"
+    )
     return _capability_result(
         target,
         success=True,
         can_send=True,
         reason="member_verified",
-        chat_type=normalized_chat_type or "group",
-        permission_basis="feishu_is_in_chat",
+        chat_type="group",
+        permission_basis=permission_basis,
         **identity,
     )
 
