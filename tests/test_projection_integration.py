@@ -560,7 +560,9 @@ class ProjectionBindingIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await instance._on_projection_control_event(
                 _control_event("projection.binding.ready", ready)
             )
-            gap = _binding_payload(state="active", turn_seq=2)
+            # The local initiator legitimately owns odd projection turns.  A
+            # jump from ready(0) to 3 means its own turn 1 was never accepted.
+            gap = _binding_payload(state="active", turn_seq=3)
             attempt = _attempt_payload(gap)
             native_send = AsyncMock()
             with patch.object(adapter_module, "send_without_mirror", native_send):
@@ -571,6 +573,77 @@ class ProjectionBindingIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             gap,
                             attempt=attempt,
                             public_text="out of order",
+                        )
+                    )
+            native_send.assert_not_awaited()
+
+    async def test_peer_first_local_projection_turn_uses_stride_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = _adapter(
+                Path(tmp) / ".claworld",
+                origin_profile=None,
+            )
+            ready = _binding_payload(
+                state="active",
+                turn_seq=0,
+                initiator_agent_id=PEER_AGENT_ID,
+                peer_agent_id=LOCAL_AGENT_ID,
+            )
+            peer_turn = _binding_payload(
+                state="active",
+                turn_seq=2,
+                initiator_agent_id=PEER_AGENT_ID,
+                peer_agent_id=LOCAL_AGENT_ID,
+            )
+            attempt = _attempt_payload(peer_turn)
+            native_send = AsyncMock(
+                return_value={"success": True, "messageId": "external-peer-2"}
+            )
+            with (
+                patch.object(
+                    adapter_module,
+                    "get_current_or_default_projection_profile",
+                    return_value="default",
+                ),
+                patch.object(adapter_module, "send_without_mirror", native_send),
+            ):
+                await instance._on_projection_control_event(
+                    _control_event("projection.binding.ready", ready)
+                )
+                await instance._on_projection_control_event(
+                    _control_event(
+                        "projection.turn.requested",
+                        peer_turn,
+                        attempt=attempt,
+                        public_text="peer public turn two",
+                    )
+                )
+
+            native_send.assert_awaited_once()
+            outbox = instance.projection_store.load_outbox(
+                attempt["idempotencyKey"]
+            )
+            self.assertIsNotNone(outbox)
+            self.assertEqual(outbox.turn_seq, 2)
+            self.assertEqual(outbox.status, "receipt_pending")
+
+    async def test_turn_sequence_parity_must_match_projector_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = _adapter(Path(tmp) / ".claworld")
+            even_initiator_turn = _binding_payload(state="active", turn_seq=2)
+            attempt = _attempt_payload(even_initiator_turn)
+            native_send = AsyncMock()
+            with patch.object(adapter_module, "send_without_mirror", native_send):
+                with self.assertRaisesRegex(
+                    ProjectionBindingError,
+                    "turnSeq alternation",
+                ):
+                    await instance._on_projection_control_event(
+                        _control_event(
+                            "projection.turn.requested",
+                            even_initiator_turn,
+                            attempt=attempt,
+                            public_text="forged parity",
                         )
                     )
             native_send.assert_not_awaited()

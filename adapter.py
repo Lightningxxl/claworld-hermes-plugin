@@ -505,7 +505,14 @@ class ClaworldPlatformAdapter(BasePlatformAdapter):
                     raise ProjectionStateError(
                         "projection turn cannot reactivate a paused or terminal binding"
                     )
-                if binding.turn_seq > existing_binding.turn_seq + 1:
+                # Projection turn events are addressed only to the Agent that
+                # must perform that native send.  With strict relay
+                # alternation, the other Agent owns the intervening global
+                # turn, so one local projector normally observes 1,3,5... or
+                # 2,4,6....  A stride of two is therefore contiguous for this
+                # per-projector stream; anything larger means unseen local
+                # projection work and remains fail-closed.
+                if binding.turn_seq > existing_binding.turn_seq + 2:
                     raise ProjectionStateError("projection turnSeq has a delivery gap")
                 if binding.turn_seq < existing_binding.turn_seq:
                     # An old turn may be replayed only to finish its already
@@ -830,6 +837,15 @@ def _validate_projection_attempt(attempt: dict, *, binding, local_agent_id: str)
         or turn_seq != binding.turn_seq
     ):
         raise ProjectionBindingError("projection attempt turnSeq does not match binding")
+    expected_projector = (
+        binding.initiator_agent_id
+        if turn_seq % 2 == 1
+        else binding.peer_agent_id
+    )
+    if projector_agent_id != expected_projector:
+        raise ProjectionBindingError(
+            "projection attempt projector does not match turnSeq alternation"
+        )
     if str(attempt.get("state") or "").strip() != "pending_receipt":
         raise ProjectionBindingError("projection attempt state must be pending_receipt")
     expires_at = _projection_timestamp(attempt.get("expiresAt"), "projection attempt expiresAt")
