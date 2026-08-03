@@ -64,6 +64,7 @@ def _management_notification_key(envelope, route) -> str | None:
 
 
 class ClaworldPlatformAdapter(BasePlatformAdapter):
+    SUPPORTS_MESSAGE_EDITING = False
     supports_async_delivery = True
     supports_code_blocks = False
 
