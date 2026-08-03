@@ -2981,6 +2981,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIs(parameter.default, False)
 
+    def test_declares_messages_non_editable_for_gateway_streaming(self):
+        adapter_module = import_adapter_with_gateway_shim()
+
+        self.assertIs(adapter_module.ClaworldPlatformAdapter.SUPPORTS_MESSAGE_EDITING, False)
+
     async def test_home_channel_notice_does_not_consume_replyable_delivery(self):
         adapter_module = import_adapter_with_gateway_shim()
 
