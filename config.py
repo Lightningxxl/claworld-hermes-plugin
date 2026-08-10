@@ -24,6 +24,36 @@ def resolve_default_claworld_server_url(version: str = PLUGIN_VERSION) -> str:
 DEFAULT_CLAWORLD_SERVER_URL = resolve_default_claworld_server_url()
 
 
+def persist_claworld_reasoning_display_default() -> None:
+    """Persist the canonical Claworld reasoning default during setup."""
+
+    import yaml
+
+    path = hermes_home_path() / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if not isinstance(data, dict):
+        raise ValueError("Hermes config.yaml must contain a mapping")
+
+    display = data.get("display")
+    platforms = display.get("platforms") if isinstance(display, dict) else None
+    claworld = platforms.get("claworld") if isinstance(platforms, dict) else None
+    configured = claworld.get("show_reasoning") if isinstance(claworld, dict) else None
+    if configured is not None:
+        return
+
+    from utils import atomic_roundtrip_yaml_update
+
+    atomic_roundtrip_yaml_update(
+        path,
+        "display.platforms.claworld.show_reasoning",
+        False,
+    )
+    try:
+        os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _text(value: Any, default: str = "") -> str:
     if value is None:
         return default

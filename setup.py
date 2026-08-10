@@ -8,7 +8,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_CLAWORLD_SERVER_URL, ClaworldConfig, hermes_home_path
+from .config import (
+    DEFAULT_CLAWORLD_SERVER_URL,
+    ClaworldConfig,
+    hermes_home_path,
+    persist_claworld_reasoning_display_default,
+)
 from .http_client import ClaworldHttpError, request_json
 
 
@@ -109,6 +114,7 @@ def persist_setup_credentials(verified_payload: dict[str, Any]) -> dict:
         "CLAWORLD_AGENT_ID": agent_id,
     }
 
+    persist_claworld_reasoning_display_default()
     return save_env_values(values)
 
 
