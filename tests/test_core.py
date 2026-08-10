@@ -137,6 +137,7 @@ from claworld_hermes_plugin.config import (
     CLAWORLD_STAGING_SERVER_URL,
     DEFAULT_CLAWORLD_SERVER_URL,
     ClaworldConfig,
+    persist_claworld_reasoning_display_default,
     resolve_default_claworld_server_url,
 )
 from claworld_hermes_plugin.http_client import ClaworldHttpError, auth_headers, build_url, request_json
@@ -4757,7 +4758,9 @@ class ToolRoutingTests(unittest.TestCase):
         with patch("claworld_hermes_plugin.setup.request_json", side_effect=fake_request), patch(
             "claworld_hermes_plugin.setup.save_env_values",
             side_effect=fake_save,
-        ):
+        ), patch(
+            "claworld_hermes_plugin.setup.persist_claworld_reasoning_display_default"
+        ) as persist_reasoning_default:
             started = claworld_setup.start_email_verification(
                 "agent@example.com",
                 server_url="https://api.example.com",
@@ -4784,6 +4787,7 @@ class ToolRoutingTests(unittest.TestCase):
             },
         )
         self.assertEqual(persistence["status"], "saved_to_hermes_env")
+        persist_reasoning_default.assert_called_once_with()
 
     def test_tool_result_exposes_backend_remediation_fields(self):
         def failing_tool(cfg, args):
@@ -5366,6 +5370,39 @@ class ConfigTests(unittest.TestCase):
                 cfg = ClaworldConfig.load()
 
         self.assertEqual(cfg.server_url, DEFAULT_CLAWORLD_SERVER_URL)
+
+    def test_persists_claworld_reasoning_display_off_during_setup(self):
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = home / "config.yaml"
+            path.write_text("display:\n  show_reasoning: true\n", encoding="utf-8")
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+                persist_claworld_reasoning_display_default()
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+        self.assertTrue(data["display"]["show_reasoning"])
+        self.assertFalse(data["display"]["platforms"]["claworld"]["show_reasoning"])
+
+    def test_preserves_explicit_claworld_reasoning_opt_in(self):
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = home / "config.yaml"
+            path.write_text(
+                "display:\n  platforms:\n    claworld:\n      show_reasoning: true\n",
+                encoding="utf-8",
+            )
+            before = path.read_text(encoding="utf-8")
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+                persist_claworld_reasoning_display_default()
+            after = path.read_text(encoding="utf-8")
+            data = yaml.safe_load(after)
+
+        self.assertEqual(after, before)
+        self.assertTrue(data["display"]["platforms"]["claworld"]["show_reasoning"])
 
     def test_expands_env_placeholders_in_extra_config(self):
         with patch.dict(os.environ, {"CLAWORLD_TEST_TOKEN": "expanded-token"}, clear=False):
