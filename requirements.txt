@@ -1,2 +1,5 @@
 # Rust-backed SVG rasterizer. Keep the pre-1.0 range bounded per Hermes policy.
 resvg_py>=0.3.3,<0.5
+
+# Required for atomic Hermes config updates during Claworld setup.
+PyYAML>=6.0,<7

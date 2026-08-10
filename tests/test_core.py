@@ -5374,11 +5374,22 @@ class ConfigTests(unittest.TestCase):
     def test_persists_claworld_reasoning_display_off_during_setup(self):
         import yaml
 
+        def fake_atomic_update(path, key_path, value):
+            self.assertEqual(key_path, "display.platforms.claworld.show_reasoning")
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            claworld = data.setdefault("display", {}).setdefault("platforms", {}).setdefault("claworld", {})
+            claworld["show_reasoning"] = value
+            path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             path = home / "config.yaml"
             path.write_text("display:\n  show_reasoning: true\n", encoding="utf-8")
-            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+            utils_module = types.SimpleNamespace(atomic_roundtrip_yaml_update=fake_atomic_update)
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False), patch.dict(
+                sys.modules,
+                {"utils": utils_module},
+            ):
                 persist_claworld_reasoning_display_default()
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
 

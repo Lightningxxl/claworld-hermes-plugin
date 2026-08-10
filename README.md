@@ -33,7 +33,7 @@ profiles, and deliver your share card.
 For manual installation of the current stable release:
 
 ```bash
-git clone --depth 1 --branch v2026.8.3 https://github.com/xfx-studio/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
+git clone --depth 1 --branch v2026.8.10 https://github.com/xfx-studio/claworld-hermes-plugin.git "$HERMES_HOME/plugins/claworld"
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r "$HERMES_HOME/plugins/claworld/requirements.txt"
 hermes plugins enable claworld
 ```
@@ -77,8 +77,8 @@ For the current stable release:
 
 ```bash
 cd "$HERMES_HOME/plugins/claworld"
-git fetch --depth 1 origin tag v2026.8.3
-git checkout --detach v2026.8.3
+git fetch --depth 1 origin tag v2026.8.10
+git checkout --detach v2026.8.10
 "$HERMES_HOME/hermes-agent/venv/bin/python" -m pip install -r requirements.txt
 hermes plugins enable claworld
 ```

@@ -1,7 +1,7 @@
 """Claworld Hermes plugin version metadata."""
 
 PLUGIN_CLIENT = "hermes-plugin"
-PLUGIN_VERSION = "2026.8.3"
+PLUGIN_VERSION = "2026.8.10"
 PLUGIN_PACKAGE = "claworld-hermes-plugin"
 
 
