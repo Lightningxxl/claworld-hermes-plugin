@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from .config import ClaworldConfig, hermes_home_path
-from .http_client import download_share_card, public_error_payload, request_json
+from .http_client import ClaworldHttpError, download_share_card, public_error_payload, request_json
+from .projection import (
+    ProjectionRoute,
+    ProjectionStateError,
+    ProjectionStore,
+    new_projection_request,
+    projection_route_digest,
+)
+from .projection_profiles import ProjectionProfileStore
+from .projection_runtime import get_current_projection_route
 from .protocol import classify_reply_content
 from .transcript_report import (
     MAX_PAGE_HEIGHT,
@@ -114,7 +125,11 @@ MANAGE_CONVERSATIONS_DESCRIPTION = (
     "query by chatRequestId includes localTranscriptEpisode.messages with the "
     "ordered visible episode text. For action=request, "
     "copy the target displayName and agentCode from Claworld search/profile "
-    "results; identity and agent ids are not request target fields. For Claworld "
+    "results; identity and agent ids are not request target fields. Set "
+    "projectToOriginGroup=true only when the human explicitly asks for this "
+    "Conversation Session's final turns to be visible in the current native "
+    "Feishu/Telegram group. The exact group route is captured by Hermes and is "
+    "never accepted from requestContext or model-authored ids. For Claworld "
     'problems or feedback, load skill_view("claworld:claworld-help").'
 )
 SEND_MESSAGE_DESCRIPTION = (
@@ -368,6 +383,10 @@ MANAGE_CONVERSATIONS_SCHEMA = _schema(
         },
         "openingPayload": {"type": "object"},
         "requestContext": {"type": "object"},
+        "projectToOriginGroup": {
+            "type": "boolean",
+            "description": "For action=request only. Explicitly request trusted projection of final Conversation Session turns into the current Feishu/Telegram group; exact route fields are captured from Hermes runtime context.",
+        },
         "source": {"type": "string"},
         "idempotencyKey": {"type": "string"},
         "dedupeKey": {"type": "string"},
@@ -1063,27 +1082,82 @@ def _manage_conversations(cfg: ClaworldConfig, args: dict) -> dict:
     if action == "request":
         _validate_conversation_request_args(args)
         request_context = _conversation_request_context(cfg, args)
-        payload = request_json(
-            cfg,
-            "POST",
-            "/v1/chat-requests",
-            timeout=60.0,
-            body=_drop_empty(
-                {
-                    "fromAgentId": agent_id,
-                    "displayName": args.get("displayName"),
-                    "agentCode": args.get("agentCode"),
-                    "kickoffBrief": args.get("kickoffBrief"),
-                    "openingMessage": args.get("openingMessage") or args.get("message"),
-                    "openingPayload": args.get("openingPayload"),
-                    "worldId": args.get("worldId"),
-                    "requestContext": request_context,
-                    "source": args.get("source"),
-                    "idempotencyKey": args.get("idempotencyKey") or args.get("dedupeKey"),
-                    "clientRequestId": args.get("clientRequestId"),
-                }
-            ),
-        )
+        projection_request = None
+        projection_store = None
+        idempotency_key = args.get("idempotencyKey") or args.get("dedupeKey")
+        client_request_id = args.get("clientRequestId")
+        if args.get("projectToOriginGroup") is True:
+            projection_store, projection_request, idempotency_key = (
+                _prepare_projection_request(
+                    cfg,
+                    args,
+                    local_agent_id=agent_id,
+                    request_context=request_context,
+                )
+            )
+            client_request_id = projection_request.client_request_id
+        try:
+            payload = request_json(
+                cfg,
+                "POST",
+                "/v1/chat-requests",
+                timeout=60.0,
+                body=_drop_empty(
+                    {
+                        "fromAgentId": agent_id,
+                        "displayName": args.get("displayName"),
+                        "agentCode": args.get("agentCode"),
+                        "kickoffBrief": args.get("kickoffBrief"),
+                        "openingMessage": args.get("openingMessage") or args.get("message"),
+                        "openingPayload": args.get("openingPayload"),
+                        "worldId": args.get("worldId"),
+                        "requestContext": request_context,
+                        "source": args.get("source"),
+                        "idempotencyKey": idempotency_key,
+                        "clientRequestId": client_request_id,
+                    }
+                ),
+            )
+        except Exception as exc:
+            if projection_store is not None and projection_request is not None:
+                _record_definitive_projection_request_failure(
+                    projection_store,
+                    projection_request.client_request_id,
+                    exc,
+                )
+            raise
+        if projection_store is not None and projection_request is not None:
+            chat_request_id, projection_binding_id = _projection_response_ids(payload)
+            if not chat_request_id or not projection_binding_id:
+                # The POST may already have committed. Keep the request
+                # pending so a retry reuses the exact same durable keys.
+                raise ValueError(
+                    "projected chat request response is missing chatRequestId or projectionBindingId"
+                )
+            persisted = projection_store.load_request(
+                projection_request.client_request_id
+            )
+            if persisted is None:
+                raise ProjectionStateError("projection request disappeared after dispatch")
+            if persisted.state == "pending":
+                projection_store.update_request(
+                    projection_request.client_request_id,
+                    state="bound",
+                    chat_request_id=chat_request_id,
+                    projection_binding_id=projection_binding_id,
+                )
+            elif persisted.state == "bound":
+                if (
+                    persisted.chat_request_id != chat_request_id
+                    or persisted.projection_binding_id != projection_binding_id
+                ):
+                    raise ProjectionStateError(
+                        "projection request response conflicts with its durable binding"
+                    )
+            else:
+                raise ProjectionStateError(
+                    f"projection request cannot bind from state {persisted.state}"
+                )
     elif action in {"list_related", "get_state"}:
         _validate_conversation_query_args(args, action)
         payload = request_json(
@@ -1457,8 +1531,52 @@ def _conversation_filters(args: dict, action: str) -> dict:
 def _conversation_request_context(cfg: ClaworldConfig, args: dict) -> Any:
     base = args.get("requestContext")
     if base is not None and not isinstance(base, dict):
+        if args.get("projectToOriginGroup") is True:
+            raise ValueError("requestContext must be an object when group projection is requested")
         return base
     context = dict(base or {})
+    # Never trust model-authored routing metadata.  Projection authority can
+    # only be added below from the exact native MessageEvent captured by the
+    # Hermes pre_gateway_dispatch hook.
+    context.pop("projection", None)
+
+    if args.get("projectToOriginGroup") is True:
+        route = get_current_projection_route()
+        if route is None:
+            raise ValueError(
+                "group projection requires an exact current Feishu/Telegram group message route"
+            )
+        profile = str(route.profile or "").strip()
+        if not profile:
+            raise ValueError(
+                "group projection requires an explicit captured Hermes profile"
+            )
+        local_route = ProjectionRoute(
+            platform=route.platform,
+            chat_id=route.chat_id,
+            chat_type=route.chat_type,
+            thread_id=route.thread_id,
+        )
+        route_digest = projection_route_digest(
+            local_route,
+            route.origin_message_id,
+        )
+        ProjectionProfileStore(cfg.memory_root_path()).remember_origin_profile(
+            route_digest,
+            profile,
+        )
+        context["projection"] = {
+            "schema": "claworld.projection-request.v1",
+            "requested": True,
+            "originPublicText": route.origin_public_text,
+            "route": {
+                "platform": route.platform,
+                "chatId": route.chat_id,
+                "chatType": route.chat_type,
+                **({"threadId": route.thread_id} if route.thread_id else {}),
+                "originMessageId": route.origin_message_id,
+            },
+        }
     follow_up = context.get("followUp") if isinstance(context.get("followUp"), dict) else {}
     if _text(follow_up.get("sessionKey")):
         return context or None
@@ -1472,6 +1590,188 @@ def _conversation_request_context(cfg: ClaworldConfig, args: dict) -> Any:
     if session.get("platform") and session.get("platform") != "claworld":
         record_owner_route_from_context(cfg.memory_root_path())
     return context
+
+
+def _prepare_projection_request(
+    cfg: ClaworldConfig,
+    args: dict,
+    *,
+    local_agent_id: str | None,
+    request_context: Any,
+) -> tuple[ProjectionStore, Any, str]:
+    """Persist a stable projection request before its network side effect."""
+
+    _require(local_agent_id, "local agentId is required for group projection")
+    if not isinstance(request_context, dict):
+        raise ValueError("group projection requires trusted requestContext")
+    projection = request_context.get("projection")
+    if not isinstance(projection, dict):
+        raise ValueError("group projection requestContext is missing projection metadata")
+    route = projection.get("route")
+    if not isinstance(route, dict):
+        raise ValueError("group projection requestContext is missing its route")
+
+    normalized_agent_id = _text(local_agent_id) or ""
+    origin_message_id = _text(route.get("originMessageId"))
+    _require(origin_message_id, "group projection route requires originMessageId")
+    projection_route = ProjectionRoute(
+        platform=_text(route.get("platform")) or "",
+        chat_id=_text(route.get("chatId")) or "",
+        chat_type=_text(route.get("chatType")) or "",
+        thread_id=_text(route.get("threadId")),
+    )
+    route_digest = projection_route_digest(
+        projection_route,
+        origin_message_id or "",
+    )
+    client_request_id, idempotency_key = _stable_projection_request_keys(
+        local_agent_id=normalized_agent_id,
+        display_name=args.get("displayName"),
+        agent_code=args.get("agentCode"),
+        route_digest=route_digest,
+    )
+    _validate_explicit_projection_request_keys(
+        args,
+        client_request_id=client_request_id,
+        idempotency_key=idempotency_key,
+    )
+    request = new_projection_request(
+        client_request_id=client_request_id,
+        platform=projection_route.platform,
+        chat_id=projection_route.chat_id,
+        chat_type=projection_route.chat_type,
+        thread_id=projection_route.thread_id,
+        origin_message_id=origin_message_id or "",
+        local_agent_id=normalized_agent_id,
+    )
+    store = ProjectionStore(cfg.memory_root_path())
+    existing = store.load_request(client_request_id)
+    if existing is None:
+        store.save_request(request)
+    else:
+        if existing.immutable_fingerprint != request.immutable_fingerprint:
+            raise ProjectionStateError(
+                "stable projection request key collides with different immutable metadata"
+            )
+        if existing.state in {"failed", "expired"}:
+            raise ProjectionStateError(
+                f"projection request is terminal in state {existing.state}"
+            )
+    return store, request, idempotency_key
+
+
+def _stable_projection_request_keys(
+    *,
+    local_agent_id: Any,
+    display_name: Any,
+    agent_code: Any,
+    route_digest: str,
+) -> tuple[str, str]:
+    """Derive restart-stable keys from the semantic projection request."""
+
+    normalized = {
+        "schema": "claworld.projection-request-key.v1",
+        "localAgentId": unicodedata.normalize(
+            "NFC",
+            str(local_agent_id or "").strip(),
+        ),
+        "targetDisplayName": unicodedata.normalize(
+            "NFC",
+            str(display_name or "").strip(),
+        ),
+        "targetAgentCode": unicodedata.normalize(
+            "NFC",
+            str(agent_code or "").strip(),
+        ).upper(),
+        "routeDigest": str(route_digest or "").strip().lower(),
+    }
+    required = (
+        "localAgentId",
+        "targetDisplayName",
+        "targetAgentCode",
+        "routeDigest",
+    )
+    if not all(normalized[key] for key in required):
+        raise ValueError("stable projection request keys require agent, target, and route")
+    digest = hashlib.sha256(
+        json.dumps(
+            normalized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"cpr_{digest[:48]}", f"projection-request:{digest}"
+
+
+def _validate_explicit_projection_request_keys(
+    args: dict,
+    *,
+    client_request_id: str,
+    idempotency_key: str,
+) -> None:
+    explicit_client_id = _text(args.get("clientRequestId"))
+    if explicit_client_id and explicit_client_id != client_request_id:
+        raise ValueError(
+            "clientRequestId for group projection must match the route-derived stable key"
+        )
+    for key in ("idempotencyKey", "dedupeKey"):
+        explicit_key = _text(args.get(key))
+        if explicit_key and explicit_key != idempotency_key:
+            raise ValueError(
+                f"{key} for group projection must match the route-derived stable key"
+            )
+
+
+def _projection_response_ids(payload: Any) -> tuple[str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    chat_request = payload.get("chatRequest")
+    if not isinstance(chat_request, dict):
+        chat_request = {}
+    projection = payload.get("projection")
+    if not isinstance(projection, dict):
+        projection = chat_request.get("projection")
+    if not isinstance(projection, dict):
+        projection = {}
+    projection_binding = payload.get("projectionBinding")
+    if not isinstance(projection_binding, dict):
+        projection_binding = projection.get("projectionBinding")
+    if not isinstance(projection_binding, dict):
+        projection_binding = {}
+    chat_request_id = _text(
+        payload.get("chatRequestId"),
+        _text(chat_request.get("chatRequestId")),
+    )
+    projection_binding_id = _text(
+        payload.get("projectionBindingId"),
+        _text(
+            projection.get("projectionBindingId"),
+            _text(projection_binding.get("projectionBindingId")),
+        ),
+    )
+    return chat_request_id, projection_binding_id
+
+
+def _record_definitive_projection_request_failure(
+    store: ProjectionStore,
+    client_request_id: str,
+    error: Exception,
+) -> None:
+    if not isinstance(error, ClaworldHttpError):
+        return
+    status = int(error.status)
+    if not (400 <= status < 500) or status in {408, 425, 429}:
+        return
+    existing = store.load_request(client_request_id)
+    if existing is None or existing.state != "pending":
+        return
+    store.update_request(
+        client_request_id,
+        state="failed",
+        failure_code=f"http_{status}",
+        failure_reason=f"Claworld rejected the projection request with HTTP {status}",
+    )
 
 
 def _call_send_message_tool(args: dict) -> dict:
@@ -1604,6 +1904,7 @@ def _current_hermes_session_context() -> dict:
         "platform": get_session_env("HERMES_SESSION_PLATFORM", ""),
         "chatId": get_session_env("HERMES_SESSION_CHAT_ID", ""),
         "threadId": get_session_env("HERMES_SESSION_THREAD_ID", ""),
+        "messageId": get_session_env("HERMES_SESSION_MESSAGE_ID", ""),
         "sessionKey": get_session_env("HERMES_SESSION_KEY", ""),
         "sessionId": get_session_env("HERMES_SESSION_ID", ""),
     }
@@ -1771,6 +2072,7 @@ def _validate_conversation_query_args(args: dict, action: str) -> None:
         "kickoffBrief",
         "openingPayload",
         "requestContext",
+        "projectToOriginGroup",
         "source",
         "idempotencyKey",
         "dedupeKey",

@@ -12,17 +12,21 @@ from typing import Awaitable, Callable
 
 from .config import ClaworldConfig
 from .http_client import ClaworldHttpError, request_json
+from .projection import projection_attempt_id, projection_idempotency_key
 from .protocol import (
     auth_message,
     accepted_message,
     build_inbound_envelope,
     kept_silent_message,
     normalize_ws_url,
+    projection_capability_message,
+    projection_receipt_message,
     reply_message,
 )
 from .version import PLUGIN_CLIENT, PLUGIN_VERSION
 
 DeliveryHandler = Callable[[object], Awaitable[None]]
+ControlEventHandler = Callable[[dict], Awaitable[None]]
 
 DELIVERY_VISIBILITY_RETRY_ATTEMPTS = 20
 DELIVERY_VISIBILITY_RETRY_DELAY_SECONDS = 0.01
@@ -37,10 +41,12 @@ class RelayClient:
         config: ClaworldConfig,
         *,
         on_delivery: DeliveryHandler,
+        on_control_event: ControlEventHandler | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.config = config
         self.on_delivery = on_delivery
+        self.on_control_event = on_control_event
         self.logger = logger or logging.getLogger(__name__)
         self.ws = None
         self._receiver_task: asyncio.Task | None = None
@@ -107,6 +113,62 @@ class RelayClient:
             delivery_id=delivery_id,
             command_names=("delivery.kept_silent.requested",),
             fallback=lambda: self._kept_silent_http(delivery_id, reason),
+        )
+
+    async def send_projection_capability(
+        self,
+        projection_binding_id: str,
+        *,
+        can_send: bool,
+        external_bot_id: str | None,
+        bot_mention: str | None = None,
+        reason: str | None = None,
+        evidence: dict | None = None,
+    ) -> None:
+        payload = projection_capability_message(
+            projection_binding_id,
+            can_send=can_send,
+            external_bot_id=external_bot_id,
+            bot_mention=bot_mention,
+            reason=reason,
+            evidence=evidence,
+        )
+        await self._send_with_ack(
+            payload,
+            ack_events=("command.accepted",),
+            delivery_id=projection_binding_id,
+            command_names=("projection.capability.reported",),
+            fallback=lambda: self._projection_capability_http(projection_binding_id, payload),
+        )
+
+    async def send_projection_receipt(
+        self,
+        projection_attempt_id: str,
+        *,
+        projection_binding_id: str,
+        delivery_id: str,
+        idempotency_key: str,
+        status: str,
+        platform_message_id: str | None = None,
+        failure_reason: str | None = None,
+    ) -> object:
+        payload = projection_receipt_message(
+            projection_attempt_id,
+            projection_binding_id=projection_binding_id,
+            delivery_id=delivery_id,
+            idempotency_key=idempotency_key,
+            status=status,
+            platform_message_id=platform_message_id,
+            failure_reason=failure_reason,
+        )
+        return await self._send_with_ack(
+            payload,
+            # Both sent and failed receipts require the backend-authored ACK.
+            # For failed sends it means FAILED + paused is durable; it never
+            # turns the local failed outbox item into a successful projection.
+            ack_events=("projection.receipt.accepted",),
+            delivery_id=projection_attempt_id,
+            fallback=lambda: self._projection_receipt_http(projection_attempt_id, payload),
         )
 
     async def _open_once(self) -> None:
@@ -213,6 +275,32 @@ class RelayClient:
         if event in {"delivery.accepted", "reply.accepted", "command.accepted", "kept_silent.accepted"}:
             self._resolve_ack_waiters(event, message)
             return
+        if event == "projection.receipt.accepted":
+            # This event is both the durable ACK for the sender waiting in
+            # send_projection_receipt() and a control notification used to
+            # complete a receipt_pending outbox after reconnect.  Resolve the
+            # waiter before dispatching the handler so a per-binding handler
+            # lock cannot deadlock the task that is currently reporting it.
+            if not _valid_projection_receipt_ack(message):
+                self.logger.warning("claworld relay delivered an invalid projection receipt ACK")
+                return
+            self._resolve_ack_waiters(event, message)
+            if self.on_control_event is not None:
+                self._dispatch_control_event(message, event)
+            return
+        if event in {
+            "projection.binding.verify",
+            "projection.binding.ready",
+            "projection.turn.requested",
+            "projection.binding.paused",
+            "projection.binding.ended",
+            "projection.binding.expired",
+        }:
+            if self.on_control_event is None:
+                self.logger.warning("claworld relay projection event ignored without handler: %s", event)
+                return
+            self._dispatch_control_event(message, event)
+            return
 
         try:
             envelope = build_inbound_envelope(message)
@@ -237,6 +325,24 @@ class RelayClient:
 
         task.add_done_callback(_done)
 
+    def _dispatch_control_event(self, message: dict, event: str) -> None:
+        task = asyncio.create_task(
+            self.on_control_event(message),
+            name=f"claworld-control-{event}",
+        )
+        self._delivery_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._delivery_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("claworld projection control handler failed: %s", exc)
+
+        task.add_done_callback(_done)
+
     async def _send_json(self, payload: dict) -> None:
         if self.ws is None:
             raise RuntimeError("claworld relay websocket is not connected")
@@ -252,21 +358,20 @@ class RelayClient:
         delivery_id: str,
         fallback,
         command_names: tuple[str, ...] = (),
-    ) -> None:
+    ) -> object:
         timeout = max(float(self.config.reply_ack_timeout_seconds), 0.1)
         if self.ws is None:
-            await asyncio.to_thread(fallback)
-            return
+            return await asyncio.to_thread(fallback)
 
         ack_ids = _ack_ids_for_payload(payload, delivery_id)
         ack_future = self._register_ack_waiter(ack_events, ack_ids, command_names=command_names)
         try:
             await self._send_json(payload)
-            await asyncio.wait_for(ack_future, timeout=timeout)
+            return await asyncio.wait_for(ack_future, timeout=timeout)
         except Exception as exc:
             detail = str(exc) or type(exc).__name__
             self.logger.warning("claworld relay ack failed; using HTTP fallback: %s", detail)
-            await asyncio.to_thread(fallback)
+            return await asyncio.to_thread(fallback)
         finally:
             self._remove_ack_waiter(ack_events, ack_ids, ack_future)
 
@@ -301,17 +406,23 @@ class RelayClient:
     def _resolve_ack_waiters(self, event: str, message: dict) -> None:
         data = message.get("data") if isinstance(message.get("data"), dict) else {}
         command = data.get("command") if isinstance(data.get("command"), dict) else {}
-        delivery_id = (
-            data.get("acceptedDeliveryId")
-            or data.get("repliedDeliveryId")
-            or data.get("keptSilentDeliveryId")
-            or data.get("deliveryId")
-            or data.get("inboxItemId")
-            or command.get("deliveryId")
-            or command.get("aggregateId")
-            or command.get("partitionKey")
-            or message.get("deliveryId")
-        )
+        if event == "projection.receipt.accepted":
+            # A receipt ACK also carries the source deliveryId, but the waiter
+            # is intentionally scoped to the deterministic attempt id.
+            delivery_id = data.get("projectionAttemptId")
+        else:
+            delivery_id = (
+                data.get("acceptedDeliveryId")
+                or data.get("repliedDeliveryId")
+                or data.get("keptSilentDeliveryId")
+                or data.get("deliveryId")
+                or data.get("inboxItemId")
+                or command.get("deliveryId")
+                or command.get("aggregateId")
+                or command.get("partitionKey")
+                or data.get("projectionBindingId")
+                or message.get("deliveryId")
+            )
         delivery_id = str(delivery_id or "").strip()
         if not delivery_id:
             self.logger.debug("claworld relay ack ignored without delivery/session key: event=%s", event)
@@ -398,6 +509,41 @@ class RelayClient:
                 return exc.body
             raise
 
+    def _projection_capability_http(self, projection_binding_id: str, payload: dict) -> dict:
+        binding_id = urllib.parse.quote(str(projection_binding_id), safe="")
+        return request_json(
+            self.config,
+            "POST",
+            f"/v1/projection-bindings/{binding_id}/capabilities",
+            body={
+                "fromAgentId": self.agent_id,
+                "canSend": payload.get("canSend"),
+                "externalBotId": payload.get("externalBotId"),
+                "botMention": payload.get("botMention"),
+                "reason": payload.get("reason"),
+                "evidence": payload.get("evidence"),
+            },
+            timeout=30.0,
+        )
+
+    def _projection_receipt_http(self, projection_attempt_id: str, payload: dict) -> dict:
+        attempt_id = urllib.parse.quote(str(projection_attempt_id), safe="")
+        return request_json(
+            self.config,
+            "POST",
+            f"/v1/projection-attempts/{attempt_id}/receipt",
+            body={
+                "fromAgentId": self.agent_id,
+                "projectionBindingId": payload.get("projectionBindingId"),
+                "deliveryId": payload.get("deliveryId"),
+                "idempotencyKey": payload.get("idempotencyKey"),
+                "status": payload.get("status"),
+                "platformMessageId": payload.get("platformMessageId"),
+                "failureReason": payload.get("failureReason"),
+            },
+            timeout=30.0,
+        )
+
     async def _heartbeat_loop(self) -> None:
         while not self._closed.is_set():
             await asyncio.sleep(self.config.heartbeat_seconds)
@@ -479,6 +625,23 @@ def _delivery_status(body) -> str | None:
 
 def _ack_ids_for_payload(payload: dict, delivery_id: str) -> tuple[str, ...]:
     return _normalize_ack_ids((delivery_id, payload.get("deliveryId"), payload.get("sessionKey")))
+
+
+def _valid_projection_receipt_ack(message: dict) -> bool:
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    attempt_id = str(data.get("projectionAttemptId") or "").strip()
+    binding_id = str(data.get("projectionBindingId") or "").strip()
+    delivery_id = str(data.get("deliveryId") or "").strip()
+    idempotency_key = str(data.get("idempotencyKey") or "").strip()
+    if not all((attempt_id, binding_id, delivery_id, idempotency_key)):
+        return False
+    try:
+        return (
+            idempotency_key == projection_idempotency_key(binding_id, delivery_id)
+            and attempt_id == projection_attempt_id(binding_id, delivery_id)
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _normalize_ack_ids(value: str | tuple[str, ...]) -> tuple[str, ...]:

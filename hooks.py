@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from .config import ClaworldConfig
+from .projection_runtime import pre_gateway_dispatch
 from .working_memory import append_journal, record_owner_route_from_context
 
 
